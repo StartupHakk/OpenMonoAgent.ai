@@ -1,0 +1,25 @@
+# Models are mounted as volumes, not baked into images
+models/
+
+# Reference code is mounted as volume
+ref/
+
+# Build artifacts
+**/bin/
+**/obj/
+**/node_modules/
+
+# llama.cpp build artifacts (source is copied for Dockerfile.llama)
+llama.cpp/build/
+
+# IDE and OS
+.git/
+.vs/
+.vscode/
+*.swp
+*Zone.Identifier
+
+# Docs not needed in container
+docs/
+*.md
+!OPENMONO.md

@@ -1,0 +1,60 @@
+# not needed anymore - we are using the pre-baked image from llamacpp official repo
+ARG BUILD_IMAGE=ubuntu:24.04
+ARG RUNTIME_IMAGE=ubuntu:24.04
+
+FROM ${BUILD_IMAGE} AS build
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc-14 \
+    g++-14 \
+    cmake \
+    git \
+    curl \
+    libopenblas-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# gcc-14 is required as CUDA host compiler on Ubuntu 24.04
+ENV CC=gcc-14 CXX=g++-14 CUDAHOSTCXX=g++-14
+
+WORKDIR /build
+COPY llama.cpp/ .
+
+# Use build args to decide between CUDA and BLAS
+ARG GGML_CUDA=OFF
+ARG CUDA_DOCKER_ARCH=all
+RUN if [ "$GGML_CUDA" = "ON" ]; then \
+        cmake -B build -DGGML_CUDA=ON -DCUDA_DOCKER_ARCH=${CUDA_DOCKER_ARCH} \
+            -DGGML_NATIVE=OFF \
+            -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined \
+            -DCMAKE_BUILD_TYPE=Release; \
+    else \
+        cmake -B build -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS -DCMAKE_BUILD_TYPE=Release; \
+    fi && \
+    cmake --build build --config Release -j$(nproc) --target llama-server
+
+FROM ${RUNTIME_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+# Include CUDA compat libs injected by nvidia-container-toolkit
+ENV LD_LIBRARY_PATH=/usr/local/cuda/compat:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libopenblas0 \
+    libgomp1 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# llama.cpp may place the binary in build/bin/ or build/bin/Release/
+COPY --from=build /build/build/bin/llama-server /usr/local/bin/
+COPY --from=build /build/build/bin/*.so* /usr/local/lib/
+RUN ldconfig
+
+EXPOSE 7474
+HEALTHCHECK --interval=30s --timeout=10s --retries=5 --start-period=120s \
+    CMD curl -sf http://localhost:7474/health || exit 1
+
+ENTRYPOINT ["llama-server"]

@@ -1,0 +1,98 @@
+# OpenMono.ai Inference Benchmark
+# Test mode : cpu
+# Generated : 2026-04-18T21:56:31Z
+# Hostname  : echo6
+# Endpoint  : http://localhost:7474
+# Script    : cpu-test.sh
+# Repo      : a5411f2
+
+## Hardware
+
+### CPU
+Model: AMD Ryzen 9 7940HS w/ Radeon 780M Graphics
+Physical cores: 8
+Logical threads: 16
+
+### Memory
+Total: 28Gi   Used: 12Gi   Free: 321Mi
+
+### OS
+OS: Ubuntu 25.10
+Kernel: 6.17.0-22-generic
+Architecture: x86_64
+
+### GPU
+No NVIDIA GPU detected
+
+## Model (from llama-server /props)
+
+Model path: /models/qwen3.6-35b-a3b-ud-q4_k_xl.gguf
+Context size: 32768
+
+## Benchmark config
+
+Iterations per test : 3
+Warmup enabled      : yes
+Temperature         : 0 (greedy)
+top_k               : 1
+Seed                : 42
+
+## Per-iteration results
+
+test            it    prefill_n   prefill/s    decode_n    decode/s     wall_ms
+----            --    ---------   ---------    --------    --------     -------
+
+### short-gen — Short decode (short prompt, 128 tokens out)
+
+  short-gen         1          36  50.73237824933837         128  8.205510602962073       16334
+  short-gen         2          36  54.60460953912193         128  8.23281367984903       16256
+  short-gen         3          36  59.612419916509495         128  8.400833703987304       15864
+
+### long-gen — Sustained decode (short prompt, 512 tokens out)
+
+  long-gen          1          36  61.81775096719023         168  8.384309184576525       20641
+  long-gen          2          36  61.993504458366196         168  8.471767305967408       20464
+  long-gen          3          36  61.487799795723866         168  8.464004377905503       20455
+
+### long-prefill — Prefill-heavy (long prompt, 128 tokens out)
+
+  long-prefill      1         475  88.49930150761821         128  7.923474587219473       21730
+  long-prefill      2         475  89.48989254053704         128  8.146135043953809       21053
+  long-prefill      3         475  89.75059537710743         128  8.310777364143462       20713
+
+### combined — Combined (long prompt, 512 tokens out)
+
+  combined          1         475  93.8063331716573         512  8.239565230328598       67227
+  combined          2         475  89.76609789607166         512  8.263133815448459       67333
+  combined          3         475  94.0290931953026         512  8.314018126313254       66655
+
+## Per-test summary (tokens/sec)
+
+test            metric         min       max      mean    median
+----            ------         ---       ---      ----    ------
+short-gen       prefill      50.73     59.61     54.98     54.60
+short-gen       decode        8.21      8.40      8.28      8.23
+long-gen        prefill      61.49     61.99     61.77     61.82
+long-gen        decode        8.38      8.47      8.44      8.46
+long-prefill    prefill      88.50     89.75     89.25     89.49
+long-prefill    decode        7.92      8.31      8.13      8.15
+combined        prefill      89.77     94.03     92.53     93.81
+combined        decode        8.24      8.31      8.27      8.26
+
+## Raw data (TSV)
+
+```tsv
+test	iteration	prefill_tokens	prefill_per_sec	decode_tokens	decode_per_sec	wall_ms
+short-gen	1	36	50.73237824933837	128	8.205510602962073	16334
+short-gen	2	36	54.60460953912193	128	8.23281367984903	16256
+short-gen	3	36	59.612419916509495	128	8.400833703987304	15864
+long-gen	1	36	61.81775096719023	168	8.384309184576525	20641
+long-gen	2	36	61.993504458366196	168	8.471767305967408	20464
+long-gen	3	36	61.487799795723866	168	8.464004377905503	20455
+long-prefill	1	475	88.49930150761821	128	7.923474587219473	21730
+long-prefill	2	475	89.48989254053704	128	8.146135043953809	21053
+long-prefill	3	475	89.75059537710743	128	8.310777364143462	20713
+combined	1	475	93.8063331716573	512	8.239565230328598	67227
+combined	2	475	89.76609789607166	512	8.263133815448459	67333
+combined	3	475	94.0290931953026	512	8.314018126313254	66655
+```

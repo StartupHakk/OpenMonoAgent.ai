@@ -1,0 +1,66 @@
+# ==============================================================================
+# OpenMono.ai .gitignore
+# ==============================================================================
+
+# --- Large model files ---
+models/*.gguf
+models/*.bin
+models/*.safetensors
+
+# --- llama.cpp build artifacts ---
+llama.cpp/
+
+# --- code-review-graph (installed tool) ---
+code-review-graph/
+
+# --- .NET local config (may contain secrets) ---
+appsettings.Development.json
+appsettings.Local.json
+
+# --- .NET build outputs ---
+bin/
+obj/
+publish/
+*.dll
+*.exe
+*.pdb
+*.nupkg
+
+# --- IDE and editor files ---
+.vs/
+.vscode/
+*.sln.DotSettings.user
+*.user
+*.suo
+.idea/
+*.lscache
+
+# --- OS files ---
+.DS_Store
+Thumbs.db
+*.Zone.Identifier
+desktop.ini
+
+# --- Docker ---
+docker-compose.override.yml
+docker/.env
+
+# --- User reference projects (keep HelloWorld.cs seed) ---
+ref/*
+!ref/HelloWorld.cs
+
+# --- Logs ---
+logs/
+*.log
+
+# --- Python virtual environments (code-review-graph) ---
+.venv/
+__pycache__/
+*.pyc
+
+# --- Agent conversation history (per-project, not committed) ---
+.openmono/
+
+# --- React UI (server/ui) ---
+server/ui/node_modules/
+server/ui/dist/

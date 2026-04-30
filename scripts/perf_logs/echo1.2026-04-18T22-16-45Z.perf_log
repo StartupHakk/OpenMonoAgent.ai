@@ -1,0 +1,275 @@
+# OpenMono.ai Inference Benchmark
+# Test mode : cpu
+# Generated : 2026-04-18T22:16:45Z
+# Hostname  : echo1
+# Endpoint  : http://localhost:7474
+# Script    : cpu-test.sh
+# Repo      : 8c77760
+
+## Hardware
+
+### CPU
+Model: AMD Ryzen 9 7940HS w/ Radeon 780M Graphics
+Physical cores: 8
+Logical threads: 16
+
+### Memory
+Total: 26Gi   Used: 12Gi   Free: 306Mi
+
+### OS
+OS: Ubuntu 25.10
+Kernel: 6.17.0-22-generic
+Architecture: x86_64
+
+### GPU
+No NVIDIA GPU detected
+
+## Model (from llama-server /props)
+
+Model path: /models/qwen3.6-35b-a3b-ud-q4_k_xl.gguf
+Context size: 32768
+
+## Benchmark config
+
+Iterations per test : 3
+Warmup enabled      : yes
+Temperature         : 0 (greedy)
+top_k               : 1
+Seed                : 42
+
+## Deep system info
+_(diff two logs from 'identical' boxes here to pinpoint hardware/software drift)_
+
+### CPU frequency scaling
+
+Scaling driver : amd-pstate-epp
+Governor(s)    : powersave
+Freq range     : 402 - 5263 MHz (cpu0)
+Current MHz    : 2057 5136 1100 1100 2277 2050 3499 2280 5101 3756 2923 5101 2055 2309 2051 2279
+Boost enabled  : yes
+
+### CPU microcode + vendor
+
+Vendor         : AuthenticAMD
+Family         : 25
+Model number   : 116
+Stepping       : 1
+Microcode      : 0xa704108
+
+### CPU flags (relevant to llama.cpp)
+
+  avx          yes
+  avx2         yes
+  avx512f      yes
+  avx512bw     yes
+  avx512dq     yes
+  avx512vbmi   yes
+  avx512vnni   no
+  fma          yes
+  sse4_1       yes
+  sse4_2       yes
+  bmi1         yes
+  bmi2         yes
+  f16c         yes
+  aes          yes
+
+### CPU vulnerability mitigations
+
+  gather_data_sampling Not affected
+  ghostwrite           Not affected
+  indirect_target_selection Not affected
+  itlb_multihit        Not affected
+  l1tf                 Not affected
+  mds                  Not affected
+  meltdown             Not affected
+  mmio_stale_data      Not affected
+  old_microcode        Not affected
+  reg_file_data_sampling Not affected
+  retbleed             Not affected
+  spec_rstack_overflow Mitigation: Safe RET
+  spec_store_bypass    Mitigation: Speculative Store Bypass disabled via prctl
+  spectre_v1           Mitigation: usercopy/swapgs barriers and __user pointer sanitization
+  spectre_v2           Mitigation: Enhanced / Automatic IBRS; IBPB: conditional; STIBP: always-on; PBRSB-eIBRS: Not affected; BHI: Not affected
+  srbds                Not affected
+  tsa                  Mitigation: Clear CPU buffers
+  tsx_async_abort      Not affected
+  vmscape              Mitigation: IBPB before exit to userspace
+
+### Memory slots (dmidecode type 17)
+
+
+Populated DIMMs: 0
+
+### NUMA topology
+
+available: 1 nodes (0)
+node 0 cpus: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
+node 0 size: 27334 MB
+node 0 free: 300 MB
+node distances:
+node     0 
+   0:   10 
+
+### Memory tuning
+
+  vm.swappiness       : 60
+  vm.vfs_cache_pressure: 100
+  Transparent HPs     : always [madvise] never
+
+### Thermal zones (snapshot)
+
+  acpitz                         20°C
+
+### lm-sensors snapshot
+
+  (sensors not installed — install with: sudo apt install lm-sensors)
+
+### Intel RAPL power limits
+
+  package-0:
+  core:
+
+
+### BIOS / system identity
+
+  bios-vendor               (unavailable)
+  bios-version              (unavailable)
+  bios-release-date         (unavailable)
+  system-manufacturer       (unavailable)
+  system-product-name       (unavailable)
+  system-version            (unavailable)
+  system-serial-number      (unavailable)
+  system-uuid               (unavailable)
+  baseboard-manufacturer    (unavailable)
+  baseboard-product-name    (unavailable)
+  baseboard-version         (unavailable)
+  chassis-type              (unavailable)
+  (re-run with sudo for full BIOS info)
+
+### Kernel + boot
+
+  uname -a     : Linux echo1 6.17.0-22-generic #22-Ubuntu SMP PREEMPT_DYNAMIC Fri Mar 13 12:04:44 UTC 2026 x86_64 GNU/Linux
+  cmdline      : BOOT_IMAGE=/boot/vmlinuz-6.17.0-22-generic root=UUID=674ec6a2-9941-4d6e-960a-e25bde70633b ro crashkernel=2G-4G:320M,4G-32G:512M,32G-64G:1024M,64G-128G:2048M,128G-:4096M
+
+  Key sysctls:
+    kernel.randomize_va_space        2
+    kernel.sched_rt_runtime_us       950000
+    vm.max_map_count                 1048576
+    vm.overcommit_memory             0
+
+### Top 10 processes by CPU (snapshot)
+
+      PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+        1 root      20   0   25688  12588   8988 S   0.0   0.0   0:01.13 systemd
+        2 root      20   0       0      0      0 S   0.0   0.0   0:00.00 kthreadd
+        3 root      20   0       0      0      0 S   0.0   0.0   0:00.00 pool_wo+
+        4 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 kworker+
+        5 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 kworker+
+        6 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 kworker+
+        7 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 kworker+
+        8 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 kworker+
+       10 root      20   0       0      0      0 I   0.0   0.0   0:00.31 kworker+
+       11 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 kworker+
+
+### llama-server configuration (from /props)
+
+  default_generation_settings.n_threads              ?
+  default_generation_settings.n_threads_batch        ?
+  default_generation_settings.n_ctx                  32768
+  default_generation_settings.n_batch                ?
+  default_generation_settings.n_ubatch               ?
+  default_generation_settings.n_gpu_layers           ?
+  n_threads                                          ?
+  n_threads_batch                                    ?
+  total_slots                                        ?
+  chat_template                                      ?
+
+
+## Per-iteration results
+
+test            it    prefill_n   prefill/s    decode_n    decode/s     wall_ms
+----            --    ---------   ---------    --------    --------     -------
+
+### short-gen — Short decode (short prompt, 128 tokens out)
+
+  short-gen         1          36  88.03570336858837         128  17.15726618265304        7888
+  short-gen         2          36  87.84537262298963         128  17.15213231154865        7891
+  short-gen         3          36  86.21969736886223         128  17.14523298228469        7903
+
+### long-gen — Sustained decode (short prompt, 512 tokens out)
+
+  long-gen          1          36  85.66635334991136         168  16.66607971643856       10520
+  long-gen          2          36  86.14480463076183         168  16.67301663798345       10515
+  long-gen          3          36  85.43986101782608         168  17.08550737092179       10274
+
+### long-prefill — Prefill-heavy (long prompt, 128 tokens out)
+
+  long-prefill      1         475  103.24141080365939         128  16.55267948438921       12383
+  long-prefill      2         475  104.04714934905913         128  16.973720834539506       12127
+  long-prefill      3         475  104.54624289415693         128  16.545552361632       12301
+
+### combined — Combined (long prompt, 512 tokens out)
+
+  combined          1         475  104.8181019758764         512  16.377013173132028       35815
+  combined          2         475  100.75470577504763         512  16.34486803226975       36111
+  combined          3         475  100.16644500008118         512  16.342181794898853       36093
+
+## Per-test summary (tokens/sec)
+
+test            metric         min       max      mean    median
+----            ------         ---       ---      ----    ------
+short-gen       prefill      86.22     88.04     87.37     87.85
+short-gen       decode       17.15     17.16     17.15     17.15
+long-gen        prefill      85.44     86.14     85.75     85.67
+long-gen        decode       16.67     17.09     16.81     16.67
+long-prefill    prefill     103.24    104.55    103.94    104.05
+long-prefill    decode       16.55     16.97     16.69     16.55
+combined        prefill     100.17    104.82    101.91    100.75
+combined        decode       16.34     16.38     16.35     16.34
+
+## Raw data (TSV)
+
+```tsv
+test	iteration	prefill_tokens	prefill_per_sec	decode_tokens	decode_per_sec	wall_ms
+short-gen	1	36	88.03570336858837	128	17.15726618265304	7888
+short-gen	2	36	87.84537262298963	128	17.15213231154865	7891
+short-gen	3	36	86.21969736886223	128	17.14523298228469	7903
+long-gen	1	36	85.66635334991136	168	16.66607971643856	10520
+long-gen	2	36	86.14480463076183	168	16.67301663798345	10515
+long-gen	3	36	85.43986101782608	168	17.08550737092179	10274
+long-prefill	1	475	103.24141080365939	128	16.55267948438921	12383
+long-prefill	2	475	104.04714934905913	128	16.973720834539506	12127
+long-prefill	3	475	104.54624289415693	128	16.545552361632	12301
+combined	1	475	104.8181019758764	512	16.377013173132028	35815
+combined	2	475	100.75470577504763	512	16.34486803226975	36111
+combined	3	475	100.16644500008118	512	16.342181794898853	36093
+```
+
+## During-test resource usage (1s sampler)
+
+### CPU frequency during test (MHz, per core)
+
+  core     min     max    mean  samples
+  ----    ----    ----    ----  -------
+  0       1100    5081    4458     196
+  1       1100    5081    4409     196
+  2       1100    5079    4493     196
+  3       1100    5080    4574     196
+  4       1100    5152    3789     196
+  5       1100    5080    4187     196
+  6       1100    5079    4313     196
+  7       1100    5079    4224     196
+  8       1100    5116    4486     196
+  9       1100    5078    4315     196
+  10      1100    5079    4627     196
+  11      1100    5089    4565     196
+  12      1100    5079    4345     196
+  13      1100    5077    4287     196
+  14      1100    5079    4560     196
+  15      1100    5137    4273     196
+
+### Thermal zone temperatures during test (°C)
+
+  zone                             min   max    mean  samples
+  ----                             ---   ---    ----  -------
+  acpitz                            20    20    20.0     196

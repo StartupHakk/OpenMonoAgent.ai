@@ -1,0 +1,43 @@
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+
+# Copy solution-level files needed for restore
+COPY Directory.Build.props ./
+COPY OpenMono.sln ./
+COPY global.json ./
+
+# Copy project file first for layer caching
+COPY src/OpenMono.Cli/OpenMono.Cli.csproj src/OpenMono.Cli/
+
+# Restore dependencies (cached unless csproj changes)
+RUN dotnet restore src/OpenMono.Cli/OpenMono.Cli.csproj
+
+# Copy source and publish
+COPY src/OpenMono.Cli/ src/OpenMono.Cli/
+RUN dotnet publish src/OpenMono.Cli/OpenMono.Cli.csproj \
+    -c Release \
+    -o /app \
+    --no-restore
+
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    ripgrep \
+    curl \
+    jq \
+    tree \
+    python3 \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install code-review-graph for structural code analysis (MCP server)
+RUN pip3 install --no-cache-dir --break-system-packages code-review-graph
+
+# Install graphify for semantic knowledge graph queries (MCP server)
+RUN pip3 install --no-cache-dir --break-system-packages graphifyy
+
+COPY --from=build /app /usr/local/bin/openmono/
+ENV PATH="/usr/local/bin/openmono:${PATH}"
+
+WORKDIR /workspace
+ENTRYPOINT ["openmono"]
