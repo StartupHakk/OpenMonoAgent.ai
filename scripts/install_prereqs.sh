@@ -4,7 +4,7 @@ set -euo pipefail
 # ──────────────────────────────────────────────────────────────────────────────
 # OpenMono.ai — Prerequisite Installer for Ubuntu
 #
-# Installs: Docker, git, cmake, curl, .NET 10, ripgrep, build-essential,
+# Installs: Docker, git, cmake, curl, jq, .NET 10, ripgrep, build-essential,
 #           (and CUDA + nvidia-container-toolkit if an NVIDIA GPU is detected).
 #
 # Options:
@@ -87,6 +87,7 @@ install_pkg() {
 
 install_pkg git git
 install_pkg curl curl
+install_pkg jq jq
 install_pkg cmake cmake
 install_pkg pciutils lspci
 
@@ -402,6 +403,7 @@ check_installed() {
 
 check_installed docker
 check_installed git
+check_installed jq
 check_installed cmake
 check_installed curl
 check_installed rg

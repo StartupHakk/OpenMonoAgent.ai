@@ -4,7 +4,7 @@ set -euo pipefail
 # ──────────────────────────────────────────────────────────────────────────────
 # OpenMono.ai — Prerequisite Installer for macOS
 #
-# Installs: Homebrew, Xcode CLT, git, cmake, curl, .NET 10, ripgrep, Docker
+# Installs: Homebrew, Xcode CLT, git, cmake, curl, jq, .NET 10, ripgrep, Docker
 #           Desktop (and notes on Apple Silicon support).
 #
 # Options:
@@ -117,6 +117,7 @@ install_pkg() {
 
 install_pkg git git
 install_pkg curl curl
+install_pkg jq jq
 install_pkg cmake cmake
 install_pkg ripgrep rg
 install_pkg openblas
@@ -354,6 +355,7 @@ if [ "$DOCKER_DAEMON_TYPE" = "colima" ]; then
     check_installed docker-buildx
 fi
 check_installed git
+check_installed jq
 check_installed cmake
 check_installed curl
 check_installed rg
