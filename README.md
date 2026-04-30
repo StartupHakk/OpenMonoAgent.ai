@@ -199,6 +199,11 @@ Settings load from `~/.openmono/settings.json` (user-level) or `.openmono/settin
 - [Contributing](CONTRIBUTING.md)
 
 ---
+## WIP
+
+- The agent goes to max 25 iterations at the moment which is configured in [ConversationLoop.cs Line 149](https://github.com/StartupHakk/OpenMonoAgent.ai/blob/9b6e95b037c163cfab017f244b09e104f1e7e6a8/src/OpenMono.Cli/Session/ConversationLoop.cs#L149)
+The team is currently working on a fix for it, but increasing this number to a very big value may lead to delayed responses and context window getting filled quickly.
+---
 
 ## Contributing
 
