@@ -58,16 +58,17 @@ REMOTE_PORT="${RELAY_REMOTE_PORT:-}"
 PROXY_PREFIX="${RELAY_PROXY_PREFIX:-}"
 
 if [[ -z "$FRPS_ADDRESS" ]]; then
-    read -rp "Relay frpsAddress (e.g. relay.openmonoagent.ai): " FRPS_ADDRESS
+    read -rp "Relay frpsAddress [default: relay.openmonoagent.ai]: " FRPS_ADDRESS
+    FRPS_ADDRESS="${FRPS_ADDRESS:-relay.openmonoagent.ai}"
 fi
 if [[ -z "$RELAY_TOKEN" ]]; then
-    read -rp "Your relayToken (omr_…):                         " RELAY_TOKEN
+    read -rp "Your relayToken (omr_…): " RELAY_TOKEN
 fi
 if [[ -z "$REMOTE_PORT" ]]; then
-    read -rp "Your allocated remotePort:                       " REMOTE_PORT
+    read -rp "Your allocated remotePort: " REMOTE_PORT
 fi
 if [[ -z "$PROXY_PREFIX" ]]; then
-    read -rp "Your proxy-name prefix (e.g. u1a2b3c4d-):        " PROXY_PREFIX
+    read -rp "Your proxy-name prefix (e.g. u1a2b3c4d-): " PROXY_PREFIX
 fi
 
 if [[ -z "$FRPS_ADDRESS" || -z "$RELAY_TOKEN" || -z "$REMOTE_PORT" || -z "$PROXY_PREFIX" ]]; then
