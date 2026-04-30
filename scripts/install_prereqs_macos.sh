@@ -17,6 +17,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/log.sh
 source "$SCRIPT_DIR/lib/log.sh"
 
+# Ensure REPO_DIR is set (exported from openmono script)
+if [[ -z "${REPO_DIR:-}" ]]; then
+    REPO_DIR="$(dirname "$SCRIPT_DIR")"
+fi
+
+# Add openmono to PATH for current session
+export PATH="$REPO_DIR:$PATH"
+
+# Add to shell rc files for future sessions (macOS)
+for rc_file in "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.bash_profile"; do
+    if [ -f "$rc_file" ] && ! grep -q "export PATH=.*$REPO_DIR" "$rc_file"; then
+        {
+            echo ""
+            echo "# OpenMono.ai CLI"
+            echo "export PATH=$REPO_DIR:\$PATH"
+        } >> "$rc_file"
+    fi
+done
+
 TOTAL_STEPS=8
 
 banner "OpenMono.ai Prerequisites (macOS)"

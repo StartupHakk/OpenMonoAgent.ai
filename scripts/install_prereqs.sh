@@ -17,8 +17,34 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/log.sh
 source "$SCRIPT_DIR/lib/log.sh"
 
+# Ensure REPO_DIR is set (exported from openmono script)
+if [[ -z "${REPO_DIR:-}" ]]; then
+    REPO_DIR="$(dirname "$SCRIPT_DIR")"
+fi
+
+# Add openmono to PATH for current session
+export PATH="$REPO_DIR:$PATH"
+
+# Add to shell rc files for future sessions (Ubuntu/Linux)
+for rc_file in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    if [ -f "$rc_file" ] && ! grep -q "export PATH=.*$REPO_DIR" "$rc_file"; then
+        {
+            echo ""
+            echo "# OpenMono.ai CLI"
+            echo "export PATH=$REPO_DIR:\$PATH"
+        } >> "$rc_file"
+    fi
+done
+
 # Configurable NVIDIA driver version (default: 580-server-open)
 DRIVER_VERSION="${DRIVER_VERSION:-580-server-open}"
+
+# GPU mode: determined by flags or user prompt (exported for install.sh)
+GPU_MODE="${OPENMONO_GPU:-}"
+if [[ -n "${OPENMONO_CPU:-}" ]]; then
+    GPU_MODE=0
+fi
+export GPU_MODE
 
 TOTAL_STEPS=8
 
@@ -138,10 +164,34 @@ elif grep -qi "0x10de" /sys/bus/pci/devices/*/vendor 2>/dev/null; then
     detail "NVIDIA GPU detected via PCI vendor ID (0x10de)"
 fi
 
-if [ "$HAS_NVIDIA_HW" = false ] && ! command -v nvidia-smi &>/dev/null; then
-    info "No NVIDIA GPU detected — skipping CUDA/nvidia-container-toolkit"
+# Determine GPU mode: explicit flag takes precedence, then auto-detect with prompt
+if [[ -z "$GPU_MODE" ]]; then
+    # No flag provided — auto-detect and prompt if NVIDIA hardware is found
+    if [ "$HAS_NVIDIA_HW" = true ] || command -v nvidia-smi &>/dev/null; then
+        echo ""
+        printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
+        printf "${BLUE}${BOLD}  NVIDIA GPU Detected${NC}\n"
+        printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
+        echo ""
+        printf "  Would you like to install on GPU? ${BOLD}(Y/n)${NC}: "
+        read -r _gpu_choice
+        _gpu_choice="${_gpu_choice:-Y}"
+        if [[ "$_gpu_choice" =~ ^[Yy]$ ]]; then
+            GPU_MODE=1
+        else
+            GPU_MODE=0
+        fi
+        echo ""
+    else
+        # No NVIDIA hardware detected
+        GPU_MODE=0
+    fi
+fi
+
+if [ "$GPU_MODE" = 0 ]; then
+    info "GPU mode disabled — skipping CUDA/nvidia-container-toolkit"
 else
-    ok "NVIDIA GPU hardware detected"
+    ok "GPU mode enabled — installing NVIDIA stack"
 
     # Driver
     if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
@@ -166,7 +216,29 @@ else
         fi
 
         run $SUDO ubuntu-drivers autoinstall || warn "Driver install had warnings — check log"
-        ok "NVIDIA drivers installed (reboot may be required)"
+        ok "NVIDIA drivers installed"
+
+        echo ""
+        printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
+        printf "${BLUE}${BOLD}  NVIDIA drivers installed — reboot required${NC}\n"
+        printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
+        echo ""
+        printf "  Would you like to reboot now? ${BOLD}(Y/n)${NC}: "
+        read -r _reboot_choice
+        _reboot_choice="${_reboot_choice:-Y}"
+
+        if [[ "$_reboot_choice" =~ ^[Yy]$ ]]; then
+            echo ""
+            info "After reboot, run: ${BOLD}openmono setup${NC}"
+            echo ""
+            info "Rebooting in 10 seconds (press Ctrl+C to cancel)..."
+            sleep 10
+            $SUDO reboot
+        else
+            err "Reboot cancelled. NVIDIA drivers will not be functional until rebooted."
+            err "Run: sudo reboot"
+            exit 1
+        fi
     fi
 
     # CUDA toolkit (optional — pre-built images include CUDA)
