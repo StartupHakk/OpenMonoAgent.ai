@@ -236,6 +236,48 @@ cmd_setup() {
         err "Installation failed. Full log: $OPENMONO_LOG_FILE"
         exit 1
     }
+
+    # Export REPO_DIR to PATH for immediate use in this shell
+    export PATH="$REPO_DIR:$PATH"
+
+    # Print OS-specific shell reload guidance
+    echo ""
+    printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
+    printf "${BLUE}${BOLD}  Setup Complete${NC}\n"
+    printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
+    echo ""
+    echo "  ${GREEN}✓${NC} OpenMono.ai is ready to use!"
+    echo ""
+    echo "  You can run now:"
+    echo "    ${BOLD}openmono agent${NC}                 # Run the agent"
+    echo "    ${BOLD}openmono config${NC}               # Configure settings"
+    echo "    ${BOLD}openmono --help${NC}               # Show all commands"
+    echo ""
+    echo "  For future shell sessions, add openmono to PATH:"
+    echo ""
+
+    _CURRENT_SHELL=$(basename "$SHELL")
+    case "$_CURRENT_SHELL" in
+        zsh)
+            _RC_FILE="$HOME/.zshrc"
+            echo "    ${BOLD}echo 'export PATH=$REPO_DIR:\$PATH' >> $_RC_FILE${NC}"
+            echo "    ${BOLD}exec zsh${NC}"
+            ;;
+        bash)
+            _RC_FILE="$HOME/.bashrc"
+            echo "    ${BOLD}echo 'export PATH=$REPO_DIR:\$PATH' >> $_RC_FILE${NC}"
+            echo "    ${BOLD}exec bash${NC}"
+            ;;
+        *)
+            # Fallback for other shells
+            echo "    Add this to your shell's rc file (e.g. ~/.zshrc or ~/.bashrc):"
+            echo "    ${BOLD}export PATH=$REPO_DIR:\$PATH${NC}"
+            ;;
+    esac
+
+    echo ""
+    printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
+    echo ""
 }
 
 cmd_start() {
