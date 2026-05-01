@@ -14,6 +14,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[38;2;163;255;102m' # Neon Green (replaces primary blue)
+BOLD='\033[1m'
 NC='\033[0m'
 
 info()  { echo -e "${BLUE}[INFO]${NC} $*"; }
@@ -243,12 +244,12 @@ cmd_setup() {
     printf "${BLUE}${BOLD}  Setup Complete${NC}\n"
     printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
     echo ""
-    echo "  ${GREEN}✓${NC} OpenMono.ai is ready to use!"
+    echo -e "  ${GREEN}✓${NC} OpenMono.ai is ready to use!"
     echo ""
     echo "  You can run now:"
-    echo "    ${BOLD}openmono agent${NC}                 # Run the agent"
-    echo "    ${BOLD}openmono config${NC}               # Configure settings"
-    echo "    ${BOLD}openmono --help${NC}               # Show all commands"
+    echo -e "    ${BOLD}openmono agent${NC}                 # Run the agent"
+    echo -e "    ${BOLD}openmono config${NC}               # Configure settings"
+    echo -e "    ${BOLD}openmono --help${NC}               # Show all commands"
     echo ""
     printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
     echo ""
