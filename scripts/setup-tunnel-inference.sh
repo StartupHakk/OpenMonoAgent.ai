@@ -15,6 +15,7 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 ENV_FILE="$REPO_DIR/docker/.env"
 RELAY_CACHE="$HOME/.openmono/relay.json"
 API_BASE="https://app.openmonoagent.ai"
+RELAY_PUBLIC_HOST="relay.openmonoagent.ai"
 
 RED=$'\033[0;31m'
 GREEN=$'\033[0;32m'
@@ -275,11 +276,11 @@ cat <<EOF
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ${GREEN}✓ frp tunnel connected to $FRPS_ADDRESS:$FRPS_PORT${NC}
 ${GREEN}✓ LLAMA_API_KEY stored in docker/.env${NC}
-${GREEN}✓ Public endpoint: http://$FRPS_ADDRESS:$REMOTE_PORT${NC}
+${GREEN}✓ Public endpoint: http://$RELAY_PUBLIC_HOST:$REMOTE_PORT${NC}
 
 ${BLUE}ON THE AGENT BOX, run:${NC}
 
-  openmono config set llm.endpoint  http://$FRPS_ADDRESS:$REMOTE_PORT
+  openmono config set llm.endpoint  http://$RELAY_PUBLIC_HOST:$REMOTE_PORT
   openmono config set llm.api_key   $LLAMA_API_KEY
 
 Then:  openmono agent
