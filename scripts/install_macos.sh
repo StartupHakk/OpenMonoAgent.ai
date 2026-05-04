@@ -17,6 +17,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/log.sh
 source "$SCRIPT_DIR/lib/log.sh"
+# shellcheck source=lib/shell-rc.sh
+source "$SCRIPT_DIR/lib/shell-rc.sh"
 
 # Role selector — drives which of the 8 install steps actually run.
 if [[ -z "${OPENMONO_ROLE:-}" ]]; then
@@ -433,19 +435,22 @@ fi
 
 for rc in "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.bashrc"; do
     if [ -f "$rc" ]; then
+        # Resolve symlinks before operating on the file
+        rc_resolved=$(resolve_shell_rc_path "$rc")
+
         # Clean up any prior OpenMono block
-        if grep -q "# OpenMono.ai" "$rc"; then
-            sed -i '' '/# OpenMono.ai/,/^$/d' "$rc"
+        if grep -q "# OpenMono.ai" "$rc_resolved"; then
+            sed -i '' '/# OpenMono.ai/,/^$/d' "$rc_resolved"
         fi
         # Strip any stale top-level `alias openmono=` line
-        sed -i '' '/^alias openmono=/d' "$rc"
+        sed -i '' '/^alias openmono=/d' "$rc_resolved"
 
         {
             echo ""
             echo "# OpenMono.ai"
             echo "export LLAMA_PORT=${LLAMA_PORT:-7474}"
             echo "export PATH=\"$INSTALL_DIR:\$PATH\""
-        } >> "$rc"
+        } >> "$rc_resolved"
         detail "PATH updated in $(basename "$rc")"
     fi
 done

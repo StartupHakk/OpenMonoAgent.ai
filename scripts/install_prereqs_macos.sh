@@ -16,6 +16,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/log.sh
 source "$SCRIPT_DIR/lib/log.sh"
+# shellcheck source=lib/shell-rc.sh
+source "$SCRIPT_DIR/lib/shell-rc.sh"
 
 # Ensure REPO_DIR is set (exported from openmono script)
 if [[ -z "${REPO_DIR:-}" ]]; then
@@ -27,12 +29,16 @@ export PATH="$REPO_DIR:$PATH"
 
 # Add to shell rc files for future sessions (macOS)
 for rc_file in "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.bash_profile"; do
-    if [ -f "$rc_file" ] && ! grep -q "export PATH=.*$REPO_DIR" "$rc_file"; then
-        {
-            echo ""
-            echo "# OpenMono.ai CLI"
-            echo "export PATH=$REPO_DIR:\$PATH"
-        } >> "$rc_file"
+    if [ -f "$rc_file" ]; then
+        # Resolve symlinks before operating on the file
+        rc_file_resolved=$(resolve_shell_rc_path "$rc_file")
+        if ! grep -q "export PATH=.*$REPO_DIR" "$rc_file_resolved"; then
+            {
+                echo ""
+                echo "# OpenMono.ai CLI"
+                echo "export PATH=$REPO_DIR:\$PATH"
+            } >> "$rc_file_resolved"
+        fi
     fi
 done
 
@@ -342,14 +348,18 @@ else
 
     # Add to shell rc files (prioritize zsh on macOS, also add bash)
     for rc in "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.bashrc"; do
-        if [ -f "$rc" ] && ! grep -q "DOTNET_ROOT" "$rc"; then
-            {
-                echo ""
-                echo "# .NET SDK"
-                echo 'export DOTNET_ROOT="$HOME/.dotnet"'
-                echo 'export PATH="$DOTNET_ROOT:$PATH"'
-            } >> "$rc"
-            detail "Added .NET to PATH in $(basename "$rc")"
+        if [ -f "$rc" ]; then
+            # Resolve symlinks before operating on the file
+            rc_resolved=$(resolve_shell_rc_path "$rc")
+            if ! grep -q "DOTNET_ROOT" "$rc_resolved"; then
+                {
+                    echo ""
+                    echo "# .NET SDK"
+                    echo 'export DOTNET_ROOT="$HOME/.dotnet"'
+                    echo 'export PATH="$DOTNET_ROOT:$PATH"'
+                } >> "$rc_resolved"
+                detail "Added .NET to PATH in $(basename "$rc")"
+            fi
         fi
     done
     ok ".NET 10 SDK installed ($(dotnet --version 2>/dev/null || echo 'reload shell'))"

@@ -22,6 +22,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/log.sh
 source "$SCRIPT_DIR/lib/log.sh"
+# shellcheck source=lib/shell-rc.sh
+source "$SCRIPT_DIR/lib/shell-rc.sh"
 
 # ── Auto-recover from fresh `usermod -aG docker` ──────────────────────────────
 # Common footgun: install_prereqs.sh just ran `usermod -aG docker $USER`, but
@@ -613,20 +615,23 @@ fi  # End of Step 8 (skipped on agent role)
 
 for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
     if [ -f "$rc" ]; then
+        # Resolve symlinks before operating on the file
+        rc_resolved=$(resolve_shell_rc_path "$rc")
+
         # Clean up any prior OpenMono block, including legacy alias forms.
-        if grep -q "# OpenMono.ai" "$rc"; then
+        if grep -q "# OpenMono.ai" "$rc_resolved"; then
             # Remove from "# OpenMono.ai" up to the next blank line
-            sed -i '/# OpenMono.ai/,/^$/d' "$rc"
+            sed -i '/# OpenMono.ai/,/^$/d' "$rc_resolved"
         fi
         # Also strip any stale top-level `alias openmono=` line from older installs
-        sed -i '/^alias openmono=/d' "$rc"
+        sed -i '/^alias openmono=/d' "$rc_resolved"
 
         {
             echo ""
             echo "# OpenMono.ai"
             echo "export LLAMA_PORT=${LLAMA_PORT:-7474}"
             echo "export PATH=\"$INSTALL_DIR:\$PATH\""
-        } >> "$rc"
+        } >> "$rc_resolved"
         detail "PATH updated in $(basename "$rc")"
     fi
 done
