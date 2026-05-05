@@ -62,6 +62,7 @@ public sealed class AgentTool : ToolBase
         };
 
         var llm = new OpenAiCompatClient(context.Config.Llm);
+        var completedNormally = false;
 
         try
         {
@@ -92,6 +93,7 @@ public sealed class AgentTool : ToolBase
                 if (toolCalls.Count == 0)
                 {
                     resultBuffer.Append(textBuffer);
+                    completedNormally = true;
                     break;
                 }
 
@@ -145,6 +147,9 @@ public sealed class AgentTool : ToolBase
         var result = resultBuffer.Length > 0
             ? resultBuffer.ToString()
             : "Sub-agent completed but produced no text output. Check tool results above.";
+
+        if (!completedNormally)
+            result = $"[Warning: Sub-agent hit its turn limit ({agentDef.MaxTurns} turns) and may be incomplete. Partial result:]\n\n{result}";
 
         return ToolResult.Success($"[Sub-agent '{description}' ({agentType}) completed]\n\n{result}");
     }

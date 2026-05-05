@@ -9,7 +9,7 @@ public sealed class CompactCommand : ICommand
     public CompactCommand(Compactor compactor) => _compactor = compactor;
 
     public string Name => "compact";
-    public string Description => "Summarize conversation history to free context space";
+    public string Description => "Summarize conversation history to free context space. Optional focus: /compact focus on auth code";
     public CommandType Type => CommandType.Local;
 
     public async Task ExecuteAsync(string[] args, CommandContext context, CancellationToken ct)
@@ -22,16 +22,14 @@ public sealed class CompactCommand : ICommand
             return;
         }
 
-        var before = session.Messages.Count;
-        context.Renderer.WriteInfo("Compacting conversation history...");
-
-        var compacted = await _compactor.CompactAsync(session, ct);
+        var focus = args.Length > 0 ? string.Join(" ", args).Trim() : null;
+        var (compacted, report) = await _compactor.CompactAsync(session, focus, ct);
 
         session.Messages.Clear();
         foreach (var msg in compacted.Messages)
             session.AddMessage(msg);
 
-        var freed = before - session.Messages.Count;
-        context.Renderer.WriteInfo($"Compacted: {before} → {session.Messages.Count} messages ({freed} removed). Context freed.");
+        var lastPromptTokens = session.Meta.TokenTracker?.LastPromptTokens ?? 0;
+        report.RenderTo(context.Renderer.WriteInfo, lastPromptTokens);
     }
 }

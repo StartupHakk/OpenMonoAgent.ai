@@ -112,16 +112,7 @@ public sealed class ConversationLoop : IDisposable
 
         else if (_compactor.NeedsCompaction(_checkpointer.BuildContextWindow(_session), lastPromptTokens))
         {
-            _output.WriteInfo("Context window approaching limit. Compacting conversation...");
-            _output.WriteDebug($"[Compact] Triggered — messages={_session.Messages.Count} lastPromptTokens={lastPromptTokens}");
-            var compactSw = Stopwatch.StartNew();
-            var compacted = await _compactor.CompactAsync(_session, ct);
-            compactSw.Stop();
-            _session.Messages.Clear();
-            foreach (var msg in compacted.Messages)
-                _session.AddMessage(msg);
-            _output.WriteInfo($"Compacted to {_session.Messages.Count} messages in {compactSw.Elapsed.TotalSeconds:F1}s.");
-            _output.WriteDebug($"[Compact] Done — {_session.Messages.Count} messages remaining");
+            await RunCompactionAsync(lastPromptTokens, customInstructions: null, ct);
         }
 
         var toolDefs = _session.Meta.PlanMode
@@ -142,7 +133,7 @@ public sealed class ConversationLoop : IDisposable
             EnableThinking = thinking,
         };
 
-        var maxIterations = 25;
+        var maxIterations = 1000;
         for (var i = 0; i < maxIterations; i++)
         {
             ct.ThrowIfCancellationRequested();
@@ -163,27 +154,9 @@ public sealed class ConversationLoop : IDisposable
                 }
                 else if (_compactor.NeedsCompaction(_checkpointer.BuildContextWindow(_session), iterPromptTokens))
                 {
-                    _output.WriteInfo("Context window approaching limit. Compacting conversation...");
-                    _output.WriteDebug($"[Compact] Triggered mid-turn — messages={_session.Messages.Count}");
-                    var compactSw = Stopwatch.StartNew();
-                    var compacted = await _compactor.CompactAsync(_session, ct);
-                    compactSw.Stop();
-                    _session.Messages.Clear();
-                    foreach (var msg in compacted.Messages)
-                        _session.AddMessage(msg);
-                    _output.WriteInfo($"Compacted to {_session.Messages.Count} messages in {compactSw.Elapsed.TotalSeconds:F1}s.");
-                    _output.WriteDebug($"[Compact] Done — {_session.Messages.Count} messages remaining");
+                    await RunCompactionAsync(iterPromptTokens, customInstructions: null, ct);
                     i = -1; continue;
                 }
-            }
-
-            if (i == maxIterations - 2)
-            {
-                _session.AddMessage(new Message
-                {
-                    Role = MessageRole.User,
-                    Content = "[System: You have 1 iteration remaining. Wrap up your current work and respond to the user.]",
-                });
             }
 
             if (i > 0)
@@ -364,6 +337,26 @@ public sealed class ConversationLoop : IDisposable
         await File.WriteAllTextAsync(path, content, ct);
         return path;
     }
+
+    public async Task RunManualCompactionAsync(string? customInstructions, CancellationToken ct)
+    {
+        var lastPromptTokens = _session.Meta.TokenTracker?.LastPromptTokens ?? 0;
+        await RunCompactionAsync(lastPromptTokens, customInstructions, ct);
+    }
+
+    private async Task RunCompactionAsync(int promptTokens, string? customInstructions, CancellationToken ct)
+    {
+        _output.WriteDebug($"[Compact] Triggered — messages={_session.Messages.Count} lastPromptTokens={promptTokens}");
+        var (compacted, report) = await _compactor.CompactAsync(_session, customInstructions, ct);
+
+        _session.Messages.Clear();
+        foreach (var msg in compacted.Messages)
+            _session.AddMessage(msg);
+
+        report.RenderTo(_output.WriteInfo, promptTokens);
+        _output.WriteDebug($"[Compact] Done — {_session.Messages.Count} messages remaining");
+    }
+
 
     private async Task<List<ToolResult>> ExecuteToolCallsAsync(
         List<ToolCall> toolCalls,

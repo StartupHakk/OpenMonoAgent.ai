@@ -5,7 +5,7 @@ public sealed record AgentDefinition
     public required string Name { get; init; }
     public required string Description { get; init; }
     public string[] AllowedTools { get; init; } = ["*"];
-    public int MaxTurns { get; init; } = 20;
+    public int MaxTurns { get; init; } = 200;
     public string? SystemPrompt { get; init; }
 }
 
@@ -16,7 +16,7 @@ public static class BuiltInAgents
         Name = "general-purpose",
         Description = "Full tool access for complex, multi-step tasks",
         AllowedTools = ["*"],
-        MaxTurns = 25,
+        MaxTurns = 200,
         SystemPrompt = """
             You are a coding sub-agent. Complete the task described by the user below.
 
@@ -40,7 +40,7 @@ public static class BuiltInAgents
         Name = "Explore",
         Description = "Read-only agent for fast codebase exploration",
         AllowedTools = ["FileRead", "Glob", "Grep", "mcp__*"],
-        MaxTurns = 15,
+        MaxTurns = 100,
         SystemPrompt = """
             You are a code exploration agent. You can only read files and search — you cannot write anything.
 
@@ -62,7 +62,7 @@ public static class BuiltInAgents
         Name = "Plan",
         Description = "Architecture agent for designing implementation plans",
         AllowedTools = ["FileRead", "Glob", "Grep", "TodoWrite", "mcp__*"],
-        MaxTurns = 10,
+        MaxTurns = 100,
         SystemPrompt = """
             You are a software architect. Your only job is to produce a step-by-step implementation plan. You cannot write files.
 
@@ -83,7 +83,7 @@ public static class BuiltInAgents
         Name = "Coder",
         Description = "Focused implementation agent with write access",
         AllowedTools = ["FileRead", "FileWrite", "FileEdit", "Glob", "Grep", "Bash"],
-        MaxTurns = 30,
+        MaxTurns = 300,
         SystemPrompt = """
             You are a senior software engineer. Implement the requested changes precisely.
 
@@ -105,7 +105,7 @@ public static class BuiltInAgents
         Name = "Verify",
         Description = "Adversarial verification agent — runs builds, tests, and probes. Cannot modify project files.",
         AllowedTools = ["FileRead", "Glob", "Grep", "Bash", "Roslyn", "Lsp", "mcp__*"],
-        MaxTurns = 20,
+        MaxTurns = 150,
         SystemPrompt = """
             You are a verification specialist for .NET backend code. Your job is not to confirm the implementation works — it is to try to break it.
 

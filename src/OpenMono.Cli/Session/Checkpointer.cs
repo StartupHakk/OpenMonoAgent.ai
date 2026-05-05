@@ -134,12 +134,12 @@ public sealed class Checkpointer
 
         var summaryMessages = new List<Message>
         {
-            new() { Role = MessageRole.System, Content = SummarySystemPrompt },
-            new() { Role = MessageRole.User,   Content = $"Summarise this conversation into a checkpoint:\n\n{conversationText}" },
+            new() { Role = MessageRole.System, Content = SummaryPrompt.BuildPrompt() },
+            new() { Role = MessageRole.User,   Content = conversationText },
         };
 
         var sb = new StringBuilder();
-        var opts = new LlmOptions { MaxTokens = 600, Temperature = 0.1 };
+        var opts = new LlmOptions { MaxTokens = 4096, Temperature = 0.1 };
 
         await foreach (var chunk in _llm.StreamChatAsync(summaryMessages, tools: null, opts, ct))
         {
@@ -147,7 +147,7 @@ public sealed class Checkpointer
                 sb.Append(chunk.TextDelta);
         }
 
-        return sb.ToString().Trim();
+        return SummaryPrompt.FormatSummary(sb.ToString());
     }
 
     private static int FindRecentStartIndex(List<Message> messages, int keepTurns)
@@ -178,36 +178,8 @@ public sealed class Checkpointer
         {
             var role = msg.Role.ToString().ToUpperInvariant();
             var content = msg.Content ?? "(tool call/result)";
-            if (content.Length > 600) content = content[..600] + "...";
             sb.AppendLine($"[{role}]: {content}\n");
         }
         return sb.ToString();
     }
-
-    private const string SummarySystemPrompt = """
-        You are a coding-agent context summariser. Compress the conversation into a structured
-        checkpoint that captures everything needed to resume work accurately.
-
-        Use EXACTLY these six sections — no others, no extra prose:
-
-        ## Goal
-        What the user is trying to accomplish overall (1-2 sentences).
-
-        ## Current State
-        Where work stands right now — what was just completed or is in progress (≤3 bullets).
-
-        ## Files in Scope
-        File paths discussed or modified — paths only, no content (bullet list).
-
-        ## Decisions Made
-        Key technical choices and their rationale — "chose X over Y because Z" format (≤3 bullets).
-
-        ## Rejected Approaches
-        What was tried and abandoned, and why — CRITICAL to preserve (bullet list, or "None").
-
-        ## Open Questions
-        Unresolved issues or things pending user input (bullet list, or "None").
-
-        Rules: factual only, no code snippets, each section ≤ 3 bullets, total response ≤ 400 tokens.
-        """;
 }
