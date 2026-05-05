@@ -137,12 +137,6 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     {
         tokenTracker.OnUsageUpdated = (_, _) => ansiTui.OnTokensUpdated();
     }
-    else if (renderer is OpenMono.Tui.TuiRenderer tuiRenderer)
-    {
-        tokenTracker.OnUsageUpdated = (prompt, completion) =>
-            tuiRenderer.UpdateMetrics(prompt, completion, 0);
-    }
-
     var tools = new ToolRegistry();
     tools.Register(new FileReadTool());
     tools.Register(new FileWriteTool());
@@ -211,10 +205,9 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     commands.Register(new CheckpointCommand(checkpointer));
     commands.Register(new ThinkCommand());
 
-    OpenMono.Tui.PauseController? pauseController = (renderer is OpenMono.Tui.TuiRenderer tui) ? tui.PauseController : null;
     var compactor = new Compactor(llm, config.Llm.ContextSize);
     var loop = new ConversationLoop(llm, tools, permissions, renderer, renderer, renderer, config, session, compactor, memoryStore,
-        pauseController: pauseController, checkpointer: checkpointer);
+        checkpointer: checkpointer);
 
     commands.Register(new RetryCommand(loop));
     commands.Register(new CompactCommand(compactor));

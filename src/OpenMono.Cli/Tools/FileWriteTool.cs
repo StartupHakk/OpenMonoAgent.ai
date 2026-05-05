@@ -65,7 +65,7 @@ public sealed class FileWriteTool : ToolBase
         {
             return ToolResult.Error(DiagnoseWriteFailure(resolvedPath));
         }
-        catch (IOException ex) when (ex.HResult == unchecked((int)0x80070020)||
+        catch (IOException ex) when (ex.HResult == unchecked((int)0x80070020)  ||
                                      ex.Message.Contains("being used by another process"))
         {
             return ToolResult.Error($"Cannot write to '{resolvedPath}': file is locked by another process.");

@@ -139,7 +139,7 @@ public sealed class RoslynTool : ToolBase, IDisposable
                         SourceText.From(text, Encoding.UTF8),
                         filePath: file);
                 }
-                catch {}
+                catch {  }
             }
 
             var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
@@ -147,7 +147,7 @@ public sealed class RoslynTool : ToolBase, IDisposable
             foreach (var dll in Directory.EnumerateFiles(runtimeDir, "*.dll"))
             {
                 try { refs.Add(MetadataReference.CreateFromFile(dll)); }
-                catch {}
+                catch {  }
             }
             solution = solution.AddMetadataReferences(_projectId, refs);
 

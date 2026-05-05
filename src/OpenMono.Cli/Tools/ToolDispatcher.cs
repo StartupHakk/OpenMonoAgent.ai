@@ -263,6 +263,16 @@ public sealed class ToolDispatcher : IDisposable
             else
             {
                 _renderer.WriteToolSuccess(call.Name);
+
+                if (call.Name is "FileRead" or "FileWrite" &&
+                    input.TryGetProperty("file_path", out var fpProp) &&
+                    fpProp.GetString() is { } filePath)
+                {
+                    var content = call.Name == "FileWrite"
+                        ? (input.TryGetProperty("content", out var cp) ? cp.GetString() ?? "" : "")
+                        : result.ModelPreview;
+                    _renderer.WriteToolContent(call.Name, filePath, content);
+                }
             }
 
             return result;

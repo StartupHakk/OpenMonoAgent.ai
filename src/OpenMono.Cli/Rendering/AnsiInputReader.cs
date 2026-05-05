@@ -141,8 +141,8 @@ internal sealed class AnsiInputReader(
                         _bgInputBuf.Append(paste.Replace("\r\n", "\n").Replace('\r', '\n'));
                         if (!painter.PaintInProgress) painter.DrawInputText(_bgInputBuf.ToString(), _bgInputBuf.Length);
                     }
-                    else if (scroll > 0) { painter.ScrollBy(+Math.Max(1, painter.ConvHeight - 2)); painter.Paint(); }
-                    else if (scroll < 0) { painter.ScrollBy(-Math.Max(1, painter.ConvHeight - 2)); painter.Paint(); }
+                    else if (scroll > 0) { painter.ScrollBy(+3); painter.Paint(); }
+                    else if (scroll < 0) { painter.ScrollBy(-3); painter.Paint(); }
                     continue;
                 }
                 CurrentTurnCts?.Cancel();
@@ -194,14 +194,14 @@ internal sealed class AnsiInputReader(
 
             if (k.Key == ConsoleKey.PageUp)
             {
-                painter.ScrollBy(+Math.Max(1, painter.ConvHeight - 2));
+                painter.ScrollBy(+3);
                 painter.Paint();
                 continue;
             }
 
             if (k.Key == ConsoleKey.PageDown)
             {
-                painter.ScrollBy(-Math.Max(1, painter.ConvHeight - 2));
+                painter.ScrollBy(-3);
                 painter.Paint();
                 continue;
             }
@@ -366,14 +366,6 @@ internal sealed class AnsiInputReader(
                         Environment.Exit(0);
                     }
 
-                    if (buf.Length == 0)
-                    {
-                        _lastCtrlCTime = now;
-                        suggestions.HideSuggestions(buf.ToString()); sugVis = false;
-                        painter.ShowCtrlCBanner(); ctrlCBannerShown = true;
-                        return "/clear";
-                    }
-
                     _lastCtrlCTime = now;
                     buf.Clear(); cur = 0;
                     suggestions.HideSuggestions(""); sugVis = false;
@@ -422,8 +414,8 @@ internal sealed class AnsiInputReader(
                             if (!sugVis) suggestions.UpdateAtSearch(ps, cur, ref atVis);
                             painter.DrawInputText(ps, cur);
                         }
-                        else if (scroll > 0) { painter.ScrollBy(+Math.Max(1, painter.ConvHeight - 2)); painter.Paint(); }
-                        else if (scroll < 0) { painter.ScrollBy(-Math.Max(1, painter.ConvHeight - 2)); painter.Paint(); }
+                        else if (scroll > 0) { painter.ScrollBy(+3); painter.Paint(); }
+                        else if (scroll < 0) { painter.ScrollBy(-3); painter.Paint(); }
                         continue;
                     }
                     if (atVis) { suggestions.HideAtSuggestions(buf.ToString()); atVis = false; continue; }
@@ -538,13 +530,13 @@ internal sealed class AnsiInputReader(
 
                 if (k.Key == ConsoleKey.PageUp)
                 {
-                    painter.ScrollBy(+Math.Max(1, painter.ConvHeight - 2));
+                    painter.ScrollBy(+3);
                     painter.PaintConvThrottled(force: true);
                     continue;
                 }
                 if (k.Key == ConsoleKey.PageDown)
                 {
-                    painter.ScrollBy(-Math.Max(1, painter.ConvHeight - 2));
+                    painter.ScrollBy(-3);
                     painter.PaintConvThrottled(force: true);
                     continue;
                 }

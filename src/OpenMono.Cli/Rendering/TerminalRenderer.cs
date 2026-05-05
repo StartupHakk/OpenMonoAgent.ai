@@ -172,7 +172,7 @@ public sealed class TerminalRenderer : IRenderer
         if (_thinkingCts is not null)
         {
             _thinkingCts.Cancel();
-            try { _thinkingTask?.Wait(); } catch {}
+            try { _thinkingTask?.Wait(); } catch {  }
             _thinkingCts.Dispose();
             _thinkingCts = null;
             _thinkingTask = null;

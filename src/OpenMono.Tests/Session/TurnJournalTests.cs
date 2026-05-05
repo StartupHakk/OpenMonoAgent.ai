@@ -38,7 +38,7 @@ public class TurnJournalTests : IDisposable
         var journalPath = Path.Combine(_tempDir, "test2.journal.jsonl");
         using var journal = new TurnJournal(journalPath);
 
-        journal.StartTurn(1, null, "model-3");
+        journal.StartTurn(1, null, "claude-3");
         journal.FinishTurn("text_only");
 
         journal.Events.Should().HaveCount(2);
@@ -95,7 +95,7 @@ public class TurnJournalTests : IDisposable
 
         using (var journal = new TurnJournal(journalPath))
         {
-            journal.StartTurn(1, null, "model-3");
+            journal.StartTurn(1, null, "claude-3");
             journal.RecordToolCallReceived("call_1", "FileRead", "{}");
             journal.RecordToolStarted("call_1");
             journal.RecordToolCompleted("call_1", ResultClass.Success);

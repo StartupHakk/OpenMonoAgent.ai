@@ -24,6 +24,7 @@ public interface IOutputSink
     void WriteToolError(string toolName, string error);
     void WriteToolDenied(string toolName, string reason);
     void WriteToolDiff(string diff);
+    void WriteToolContent(string toolName, string filePath, string content) { }
 
     void WriteWarning(string message);
     void WriteError(string message);

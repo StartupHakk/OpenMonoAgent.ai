@@ -97,7 +97,7 @@ public sealed class ArtifactStore : IDisposable
             {
                 if (_artifacts.TryRemove(id, out _))
                 {
-                    try { File.Delete(metadata.Path); } catch {}
+                    try { File.Delete(metadata.Path); } catch {  }
                     removed++;
                 }
             }

@@ -9,7 +9,6 @@ using OpenMono.Memory;
 using OpenMono.Permissions;
 using OpenMono.Rendering;
 using OpenMono.Tools;
-using OpenMono.Tui;
 using OpenMono.Utils;
 
 namespace OpenMono.Session;
@@ -32,7 +31,6 @@ public sealed class ConversationLoop : IDisposable
     private readonly CursorStore _cursorStore;
     private readonly ToolResultCache _cache;
     private readonly ArtifactStore _artifactStore;
-    private readonly PauseController? _pauseController;
 
     private readonly List<string> _recentToolSignatures = [];
     private const int DoomLoopThreshold = 3;
@@ -54,7 +52,6 @@ public sealed class ConversationLoop : IDisposable
         TurnJournal? journal = null,
         ToolResultCache? cache = null,
         ArtifactStore? artifactStore = null,
-        PauseController? pauseController = null,
         Checkpointer? checkpointer = null)
     {
         _llm = llm;
@@ -73,7 +70,6 @@ public sealed class ConversationLoop : IDisposable
         _cursorStore = new CursorStore();
         _cache = cache ?? new ToolResultCache();
         _artifactStore = artifactStore ?? ArtifactStore.ForSession(session, config.DataDirectory);
-        _pauseController = pauseController;
     }
 
     public void Dispose()
@@ -245,8 +241,7 @@ public sealed class ConversationLoop : IDisposable
                     textBuffer.Append(chunk.TextDelta);
                     _output.StreamText(chunk.TextDelta);
 
-                    if (_pauseController is not null)
-                        await _pauseController.WaitIfPausedAsync(ct);
+
                 }
 
                 if (chunk.ToolCallDelta is not null)

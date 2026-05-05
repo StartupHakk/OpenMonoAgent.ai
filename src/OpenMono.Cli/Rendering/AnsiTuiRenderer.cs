@@ -71,7 +71,7 @@ public sealed class AnsiTuiRenderer : IRenderer
             Console.Out.Flush();
             try { Console.TreatControlCAsInput = false; } catch { }
         }
-        catch {}
+        catch {  }
     }
 
     public bool Verbose
@@ -88,18 +88,22 @@ public sealed class AnsiTuiRenderer : IRenderer
     public void ShowWaitingIndicator()      => _painter.ShowWaitingIndicator();
     public void ClearWaitingIndicator()     => _painter.ClearWaitingIndicator();
 
+    private static readonly HashSet<string> _silentTools =
+        ["Glob", "FileRead", "FileWrite", "ListDirectory", "ToolSearch", "Grep"];
+
     public void WriteWelcome(string model, string endpoint) => _painter.WriteWelcome();
     public void WriteMarkdown(string md)                    => _painter.WriteMarkdown(md);
-    public void WriteDebug(string message)                  {}
-    public void WriteToolStart(string n, string a)          => _painter.WriteToolStart(n, a);
-    public void WriteToolSuccess(string n)                  => _painter.WriteToolSuccess(n);
-    public void WriteToolError(string n, string e)          => _painter.WriteToolError(n, e);
+    public void WriteDebug(string message)                  {  }
+    public void WriteToolStart(string n, string a)          { if (!_silentTools.Contains(n)) _painter.WriteToolStart(n, a); }
+    public void WriteToolSuccess(string n)                  { if (!_silentTools.Contains(n)) _painter.WriteToolSuccess(n); }
+    public void WriteToolError(string n, string e)          { if (!_silentTools.Contains(n)) _painter.WriteToolError(n, e); }
     public void WriteToolDenied(string n, string r)         => _painter.WriteToolDenied(n, r);
     public void WriteToolDiff(string diff)                  => _painter.WriteToolDiff(diff);
     public void WriteWarning(string m)                      => _painter.WriteWarning(m);
     public void WriteError(string m)                        => _painter.WriteError(m);
     public void WriteInfo(string m)                         => _painter.WriteInfo(m);
-    public void WriteTodos(IReadOnlyList<TodoItem> todos)   {}
+    public void WriteTodos(IReadOnlyList<TodoItem> todos)   => _painter.WriteTodos(todos);
+    public void WriteToolContent(string n, string p, string c) => _painter.WriteToolContent(n, p, c);
     public void ClearConversation()                         => _painter.ClearConversation();
 
     public void EnableCommandSuggestions(CommandRegistry registry)

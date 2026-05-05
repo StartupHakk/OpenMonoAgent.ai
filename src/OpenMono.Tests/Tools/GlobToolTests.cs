@@ -31,9 +31,19 @@ public class GlobToolTests : IDisposable
     [Fact]
     public async Task GlobCsFiles_FindsMatches()
     {
-        var input = JsonDocument.Parse($$"""{"pattern": "**
+        var input = JsonDocument.Parse($$"""{"pattern": "**/*.cs", "path": "{{_tempDir}}"}""").RootElement;
+        var result = await _tool.ExecuteAsync(input, _context, CancellationToken.None);
 
-*.xyz", "path": "{{_tempDir}}"}""").RootElement;
+        result.IsError.Should().BeFalse();
+        result.Content.Should().Contain("app.cs");
+        result.Content.Should().Contain("test.cs");
+        result.Content.Should().NotContain("readme.md");
+    }
+
+    [Fact]
+    public async Task GlobNoMatches_ReturnsEmptyMessage()
+    {
+        var input = JsonDocument.Parse($$"""{"pattern": "**/*.xyz", "path": "{{_tempDir}}"}""").RootElement;
         var result = await _tool.ExecuteAsync(input, _context, CancellationToken.None);
 
         result.IsError.Should().BeFalse();
