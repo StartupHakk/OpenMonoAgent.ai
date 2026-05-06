@@ -500,9 +500,3 @@ ok "Prerequisites ready"
 
 echo ""
 show_log_location
-echo ""
-info "Reloading shell to activate environment changes..."
-echo ""
-
-# Replace current shell with a fresh instance to pick up all environment updates
-exec "${SHELL}"
