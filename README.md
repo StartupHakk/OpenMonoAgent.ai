@@ -157,7 +157,7 @@ Local llama.cpp is the default and fully supported. OpenAI, Anthropic, and Ollam
 </tr>
 </table>
 
-> **09 · Distributed inference** — Agent on your laptop, inference on a separate GPU machine. Free relay at [app.openmonoagent.ai](https://app.openmonoagent.ai).
+> **09 · Distributed inference** — Agent on your laptop, inference on a separate GPU machine. Free relay at [app.openmonoagent.ai](https://app.openmonoagent.ai). For closed networks (no internet), use a [local relay](docs/CLOSED_NETWORK.md) instead.
 
 ---
 
@@ -195,6 +195,7 @@ Settings load from `~/.openmono/settings.json` (user-level) or `.openmono/settin
 
 - [Roadmap](ROADMAP.md)
 - [Setup & commands](docs/SETUP.md) — daily commands, TUI vs classic, flags
+- [Closed Network Setup](docs/CLOSED_NETWORK.md) — run without internet (local relay)
 - [Architecture](docs/ARCHITECTURE.md) — .NET CLI + llama.cpp + Docker, full diagram
 - [Models & reasoning mode](docs/MODELS.md)
 - [Configuration](docs/CONFIG.md) — settings.json, providers, permissions, MCP servers

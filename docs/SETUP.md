@@ -83,3 +83,27 @@ Shortcuts can be customised in `~/.openmono/tui.json` (user) or `.openmono/tui.j
 
 ---
 
+## Closed Network Setup (No Internet)
+
+If you need to run OpenMono on a closed network without internet access, see:
+
+- [Closed Network Setup Guide](CLOSED_NETWORK.md) — complete walkthrough for:
+  - **Direct connection** (simplest — agent connects directly to inference box)
+  - **Local relay (frps)** (when NAT/firewall blocks direct connection)
+  - **SSH reverse tunnel** (alternative when frp is blocked)
+
+### Quick Reference
+
+**Direct connection:**
+```bash
+# Inference box: openmono setup --inference && openmono start
+# Agent box:     openmono config set llm.endpoint http://<inference-ip>:7474
+```
+
+**Local relay:**
+```bash
+# Relay server:  openmono frps setup
+# Inference box: openmono tunnel setup --local --frps-address=<relay-ip>
+# Agent box:     openmono config set llm.endpoint http://<relay-ip>:4747
+```
+
