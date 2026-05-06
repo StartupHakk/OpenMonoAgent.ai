@@ -116,6 +116,16 @@ cmd_help() {
     printf "  %-14s %s\n" "tunnel status"  "Show tunnel state + configured target"
     printf "  %-14s %s\n" "tunnel logs"    "Tail frpc logs (journalctl -u frpc)"
     echo ""
+    echo "Closed network (no internet required):"
+    printf "  %-14s %s\n" "frps setup"    "Install frps (local relay server for closed networks)"
+    printf "  %-14s %s\n" "frps start"    "Start the local frps relay"
+    printf "  %-14s %s\n" "frps stop"     "Stop the local frps relay"
+    printf "  %-14s %s\n" "frps restart"  "Restart the local frps relay"
+    printf "  %-14s %s\n" "frps status"   "Show frps status"
+    printf "  %-14s %s\n" "frps logs"     "Tail frps logs (journalctl -u frps)"
+    echo ""
+    echo "See docs/CLOSED_NETWORK.md for closed network setup guide."
+    echo ""
     echo "Global flags:"
     printf "  %-14s %s\n" "--verbose, -v" "Enable verbose/debug output (forwarded to the agent)"
     echo ""
@@ -684,10 +694,104 @@ cmd_tunnel() {
             echo "  logs        journalctl -u frpc -f"
             echo ""
             echo "Config file: /etc/frp/frpc.toml"
+            echo ""
+            echo "Options (with setup):"
+            echo "  --local               Use local relay (closed network, no internet)"
+            echo "  --frps-address=<ip>  Specify local relay server address"
+            echo ""
+            echo "Examples:"
+            echo "  openmono tunnel setup                    # OpenMonoAgent relay (internet required)"
+            echo "  openmono tunnel setup --local --frps-address=192.168.1.50"
+            echo "                                         # Local relay (no internet)"
+            echo ""
+            echo "See: docs/CLOSED_NETWORK.md for closed network setup"
             ;;
         *)
             err "Unknown tunnel subcommand: $sub"
             cmd_tunnel help
+            return 1
+            ;;
+    esac
+}
+
+# ── frps (local relay) subcommands — run on the relay server ──────────────────────
+
+frps_require_systemd() {
+    if ! command -v systemctl &>/dev/null; then
+        err "systemctl not available — frps commands are Linux/systemd only."
+        exit 1
+    fi
+}
+
+cmd_frps() {
+    local sub="${1:-help}"
+    shift || true
+    case "$sub" in
+        setup)
+            bash "$REPO_DIR/scripts/setup-local-frps.sh" "$@"
+            ;;
+        start)
+            frps_require_systemd
+            info "Starting frps (local relay)..."
+            sudo systemctl start frps
+            sleep 1
+            if systemctl is-active --quiet frps; then
+                ok "frps is active"
+            else
+                err "frps failed to start. Check: openmono frps logs"
+                exit 1
+            fi
+            ;;
+        stop)
+            frps_require_systemd
+            info "Stopping frps (local relay)..."
+            sudo systemctl stop frps
+            ok "Stopped"
+            ;;
+        restart)
+            frps_require_systemd
+            info "Restarting frps (local relay)..."
+            sudo systemctl restart frps
+            sleep 1
+            if systemctl is-active --quiet frps; then
+                ok "frps is active"
+            else
+                err "frps failed to restart. Check: openmono frps logs"
+                exit 1
+            fi
+            ;;
+        status)
+            frps_require_systemd
+            echo -e "${BLUE}── frps (local relay) service ─────────────────────────${NC}"
+            if systemctl list-unit-files 2>/dev/null | grep -q '^frps\.service'; then
+                sudo systemctl status frps --no-pager || true
+            else
+                warn "frps.service not installed. Run: openmono frps setup"
+            fi
+            ;;
+        logs)
+            frps_require_systemd
+            sudo journalctl -u frps -f
+            ;;
+        help|--help|-h)
+            echo "Usage: openmono frps {setup|start|stop|restart|status|logs}"
+            echo ""
+            echo "Local relay server for closed networks (no internet required)."
+            echo ""
+            echo "Commands:"
+            echo "  setup       Install frps + systemd unit"
+            echo "  start       systemctl start frps"
+            echo "  stop        systemctl stop frps"
+            echo "  restart     systemctl restart frps"
+            echo "  status      Show frps.service state"
+            echo "  logs        journalctl -u frps -f"
+            echo ""
+            echo "After setup, run 'openmono tunnel setup --local' on inference box."
+            echo "See docs/CLOSED_NETWORK.md for full guide."
+            ;;
+        *)
+            err "Unknown frps subcommand: $sub"
+            cmd_frps help
             return 1
             ;;
     esac
@@ -746,6 +850,7 @@ case "$COMMAND" in
     graphify)       cmd_graphify "$@" ;;
     config)         cmd_config "$@" ;;    
     tunnel)         cmd_tunnel "$@" ;;
+    frps)           cmd_frps "$@" ;;
     help|--help|-h) cmd_help ;;
     *)
         err "Unknown command: $COMMAND"

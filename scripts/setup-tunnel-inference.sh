@@ -3,10 +3,11 @@ set -euo pipefail
 
 # ─────────────────────────────────────────────────────────────────────
 # OpenMono.ai — Set up frp client on the inference box.
-# Connects outbound to an OpenMonoAgent Relay instance so the agent box
-# can reach this machine's llama-server without port forwarding.
+# Connects outbound to a relay server (OpenMonoAgent or local) so the
+# agent box can reach this machine's llama-server without port forwarding.
 #
-# Usage: openmono tunnel setup
+# Usage: openmono tunnel setup           # OpenMonoAgent relay (requires internet)
+#        openmono tunnel setup --local  # Local relay (closed network)
 # ─────────────────────────────────────────────────────────────────────
 
 FRP_VERSION="${FRP_VERSION:-0.61.0}"
@@ -14,8 +15,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 ENV_FILE="$REPO_DIR/docker/.env"
 RELAY_CACHE="$HOME/.openmono/relay.json"
+LOCAL_RELAY_CACHE="$HOME/.openmono/local-relay.json"
 API_BASE="https://app.openmonoagent.ai"
 RELAY_PUBLIC_HOST="relay.openmonoagent.ai"
+
+# Parse arguments
+LOCAL_MODE=false
+CUSTOM_FRPS_ADDR=""
+for arg in "$@"; do
+    case "$arg" in
+        --local) LOCAL_MODE=true ;;
+        --frps-address=*) CUSTOM_FRPS_ADDR="${arg#*=}" ;;
+    esac
+done
 
 RED=$'\033[0;31m'
 GREEN=$'\033[0;32m'
@@ -42,7 +54,7 @@ for cmd in curl tar openssl jq systemctl; do
     fi
 done
 
-# ── Load or obtain relay credentials via OTP ─────────────────────────
+# ── Load or obtain relay credentials ─────────────────────────────────
 
 FRPS_ADDRESS=""
 FRPS_PORT=""
@@ -50,110 +62,143 @@ RELAY_TOKEN=""
 REMOTE_PORT=""
 PROXY_PREFIX=""
 
-if [[ -f "$RELAY_CACHE" ]]; then
-    _token="$(jq -r '.relayToken // empty' "$RELAY_CACHE" 2>/dev/null || true)"
-    if [[ -n "$_token" ]]; then
-        info "Found existing relay credentials for $(jq -r '.email // "unknown"' "$RELAY_CACHE")"
-        RELAY_TOKEN="$(jq -r '.relayToken'    "$RELAY_CACHE")"
-        REMOTE_PORT="$(jq -r '.remotePort'    "$RELAY_CACHE")"
-        PROXY_PREFIX="$(jq -r '.proxyPrefix'  "$RELAY_CACHE")"
-        FRPS_ADDRESS="$(jq -r '.frpsAddress'  "$RELAY_CACHE")"
-        FRPS_PORT="$(jq -r    '.frpsPort'     "$RELAY_CACHE")"
+if [[ "$LOCAL_MODE" == "true" ]]; then
+    info "Local relay mode — skipping OpenMonoAgent signup"
+    
+    # Use custom address if provided, otherwise prompt
+    if [[ -n "$CUSTOM_FRPS_ADDR" ]]; then
+        FRPS_ADDRESS="$CUSTOM_FRPS_ADDR"
+    else
+        echo ""
+        echo -e "${BLUE}OpenMono.ai${NC} — Local Relay Tunnel Setup"
+        echo "─────────────────────────────────────────"
+        echo ""
+        printf "  Enter the relay server address (IP or hostname): "
+        read -r FRPS_ADDRESS
     fi
-fi
-
-if [[ -z "$RELAY_TOKEN" ]]; then
-    echo ""
-    echo -e "${BLUE}OpenMono.ai${NC} — Relay Tunnel Setup"
-    echo "─────────────────────────────────────────"
-    echo ""
-
-    # Ask for email
-    printf "  Enter your email address: "
-    read -r USER_EMAIL
-    if [[ -z "$USER_EMAIL" || "$USER_EMAIL" != *@* ]]; then
-        err "Invalid email address."
-        exit 1
-    fi
-
-    # Request OTP
-    echo ""
-    info "Sending verification code to $USER_EMAIL..."
-    _otp_req=$(curl -sf -w "\n%{http_code}" \
-        -X POST "$API_BASE/api/cli/otp" \
-        -H "Content-Type: application/json" \
-        -d "{\"email\":\"$USER_EMAIL\"}" 2>/dev/null || true)
-
-    _otp_code=$(echo "$_otp_req" | tail -1)
-    if [[ "$_otp_code" == "429" ]]; then
-        err "Too many requests. Try again in a few minutes."
-        exit 1
-    elif [[ "$_otp_code" != "200" && "$_otp_code" != "201" ]]; then
-        err "Failed to send code (HTTP $_otp_code). Check your connection."
+    
+    # Load credentials from local frps setup
+    if [[ -f "$LOCAL_RELAY_CACHE" ]]; then
+        info "Found existing local relay credentials"
+        RELAY_TOKEN="$(jq -r '.relayToken' "$LOCAL_RELAY_CACHE")"
+        FRPS_PORT="$(jq -r '.frpsPort' "$LOCAL_RELAY_CACHE")"
+    else
+        err "Local relay credentials not found at $LOCAL_RELAY_CACHE"
+        err "Run 'openmono frps setup' on the relay server first."
         exit 1
     fi
-
-    ok "Code sent to $USER_EMAIL"
-    echo ""
-    printf "  Enter the code from your email: "
-    read -r USER_OTP
-
-    # Verify OTP
-    echo ""
-    info "Verifying..."
-    _verify_resp=$(curl -sf -w "\n%{http_code}" \
-        -X POST "$API_BASE/api/cli/otp/verify" \
-        -H "Content-Type: application/json" \
-        -d "{\"email\":\"$USER_EMAIL\",\"otp\":\"$USER_OTP\"}" 2>/dev/null || true)
-
-    _verify_http=$(echo "$_verify_resp" | tail -1)
-    _verify_body=$(echo "$_verify_resp" | head -n -1)
-
-    if [[ "$_verify_http" == "429" ]]; then
-        err "Too many incorrect attempts. Run the command again to get a new code."
-        exit 1
-    elif [[ "$_verify_http" != "200" ]]; then
-        err "Invalid or expired code (HTTP $_verify_http). Run the command again to get a new one."
-        exit 1
+    
+    # Generate remote port (use a default for local)
+    REMOTE_PORT=4747
+    PROXY_PREFIX="local_"
+    
+else
+    # Original OpenMonoAgent relay flow
+    if [[ -f "$RELAY_CACHE" ]]; then
+        _token="$(jq -r '.relayToken // empty' "$RELAY_CACHE" 2>/dev/null || true)"
+        if [[ -n "$_token" ]]; then
+            info "Found existing relay credentials for $(jq -r '.email // "unknown"' "$RELAY_CACHE")"
+            RELAY_TOKEN="$(jq -r '.relayToken'    "$RELAY_CACHE")"
+            REMOTE_PORT="$(jq -r '.remotePort'    "$RELAY_CACHE")"
+            PROXY_PREFIX="$(jq -r '.proxyPrefix'  "$RELAY_CACHE")"
+            FRPS_ADDRESS="$(jq -r '.frpsAddress'  "$RELAY_CACHE")"
+            FRPS_PORT="$(jq -r    '.frpsPort'     "$RELAY_CACHE")"
+        fi
     fi
 
-    RELAY_TOKEN="$(echo "$_verify_body" | jq -r '.relayToken')"
-    REMOTE_PORT="$(echo "$_verify_body" | jq -r '.remotePort')"
-    PROXY_PREFIX="$(echo "$_verify_body" | jq -r '.proxyPrefix')"
-    FRPS_ADDRESS="$(echo "$_verify_body" | jq -r '.frpsAddress')"
-    FRPS_PORT="$(echo "$_verify_body"    | jq -r '.frpsPort')"
+    if [[ -z "$RELAY_TOKEN" ]]; then
+        echo ""
+        echo -e "${BLUE}OpenMono.ai${NC} — Relay Tunnel Setup"
+        echo "─────────────────────────────────────────"
+        echo ""
 
-    if [[ -z "$RELAY_TOKEN" || "$RELAY_TOKEN" == "null" ]]; then
-        err "Unexpected response from server. Contact support."
-        exit 1
+        # Ask for email
+        printf "  Enter your email address: "
+        read -r USER_EMAIL
+        if [[ -z "$USER_EMAIL" || "$USER_EMAIL" != *@* ]]; then
+            err "Invalid email address."
+            exit 1
+        fi
+
+        # Request OTP
+        echo ""
+        info "Sending verification code to $USER_EMAIL..."
+        _otp_req=$(curl -sf -w "\n%{http_code}" \
+            -X POST "$API_BASE/api/cli/otp" \
+            -H "Content-Type: application/json" \
+            -d "{\"email\":\"$USER_EMAIL\"}" 2>/dev/null || true)
+
+        _otp_code=$(echo "$_otp_req" | tail -1)
+        if [[ "$_otp_code" == "429" ]]; then
+            err "Too many requests. Try again in a few minutes."
+            exit 1
+        elif [[ "$_otp_code" != "200" && "$_otp_code" != "201" ]]; then
+            err "Failed to send code (HTTP $_otp_code). Check your connection."
+            exit 1
+        fi
+
+        ok "Code sent to $USER_EMAIL"
+        echo ""
+        printf "  Enter the code from your email: "
+        read -r USER_OTP
+
+        # Verify OTP
+        echo ""
+        info "Verifying..."
+        _verify_resp=$(curl -sf -w "\n%{http_code}" \
+            -X POST "$API_BASE/api/cli/otp/verify" \
+            -H "Content-Type: application/json" \
+            -d "{\"email\":\"$USER_EMAIL\",\"otp\":\"$USER_OTP\"}" 2>/dev/null || true)
+
+        _verify_http=$(echo "$_verify_resp" | tail -1)
+        _verify_body=$(echo "$_verify_resp" | head -n -1)
+
+        if [[ "$_verify_http" == "429" ]]; then
+            err "Too many incorrect attempts. Run the command again to get a new code."
+            exit 1
+        elif [[ "$_verify_http" != "200" ]]; then
+            err "Invalid or expired code (HTTP $_verify_http). Run the command again to get a new one."
+            exit 1
+        fi
+
+        RELAY_TOKEN="$(echo "$_verify_body" | jq -r '.relayToken')"
+        REMOTE_PORT="$(echo "$_verify_body" | jq -r '.remotePort')"
+        PROXY_PREFIX="$(echo "$_verify_body" | jq -r '.proxyPrefix')"
+        FRPS_ADDRESS="$(echo "$_verify_body" | jq -r '.frpsAddress')"
+        FRPS_PORT="$(echo "$_verify_body"    | jq -r '.frpsPort')"
+
+        if [[ -z "$RELAY_TOKEN" || "$RELAY_TOKEN" == "null" ]]; then
+            err "Unexpected response from server. Contact support."
+            exit 1
+        fi
+
+        # Save credentials
+        mkdir -p "$(dirname "$RELAY_CACHE")"
+        jq -n \
+            --arg email     "$USER_EMAIL" \
+            --arg token     "$RELAY_TOKEN" \
+            --argjson port  "$REMOTE_PORT" \
+            --arg prefix    "$PROXY_PREFIX" \
+            --arg addr      "$FRPS_ADDRESS" \
+            --argjson fport "$FRPS_PORT" \
+            '{email:$email,relayToken:$token,remotePort:$port,proxyPrefix:$prefix,frpsAddress:$addr,frpsPort:$fport}' \
+            > "$RELAY_CACHE"
+        chmod 0600 "$RELAY_CACHE"
+        ok "Credentials saved to $RELAY_CACHE"
     fi
-
-    # Save credentials
-    mkdir -p "$(dirname "$RELAY_CACHE")"
-    jq -n \
-        --arg email     "$USER_EMAIL" \
-        --arg token     "$RELAY_TOKEN" \
-        --argjson port  "$REMOTE_PORT" \
-        --arg prefix    "$PROXY_PREFIX" \
-        --arg addr      "$FRPS_ADDRESS" \
-        --argjson fport "$FRPS_PORT" \
-        '{email:$email,relayToken:$token,remotePort:$port,proxyPrefix:$prefix,frpsAddress:$addr,frpsPort:$fport}' \
-        > "$RELAY_CACHE"
-    chmod 0600 "$RELAY_CACHE"
-    ok "Credentials saved to $RELAY_CACHE"
 fi
 
 # ── Validate ─────────────────────────────────────────────────────────
 
-if [[ -z "$FRPS_ADDRESS" || -z "$RELAY_TOKEN" || -z "$REMOTE_PORT" || -z "$PROXY_PREFIX" ]]; then
-    err "Relay credentials incomplete. Delete $RELAY_CACHE and run again."
+if [[ -z "$FRPS_ADDRESS" || -z "$RELAY_TOKEN" ]]; then
+    err "Relay credentials incomplete. Check configuration and run again."
     exit 1
 fi
 
-if ! [[ "$RELAY_TOKEN" =~ ^omr_ ]]; then
+if [[ "$LOCAL_MODE" == "false" ]] && ! [[ "$RELAY_TOKEN" =~ ^omr_ ]]; then
     warn "relayToken does not start with 'omr_' — double-check credentials."
 fi
-if ! [[ "$REMOTE_PORT" =~ ^[0-9]+$ ]]; then
+if [[ -n "$REMOTE_PORT" ]] && ! [[ "$REMOTE_PORT" =~ ^[0-9]+$ ]]; then
     err "remotePort must be numeric (got: $REMOTE_PORT)"
     exit 1
 fi
@@ -192,6 +237,7 @@ sudo mkdir -p /etc/frp
 sudo tee /etc/frp/frpc.toml > /dev/null <<EOF
 # frp client — OpenMono.ai inference-box side
 # Generated by openmono tunnel setup on $(date -u +%Y-%m-%dT%H:%M:%SZ)
+# Mode: $([[ "$LOCAL_MODE" == "true" ]] && echo "Local Relay" || echo "OpenMonoAgent Relay")
 
 serverAddr = "$FRPS_ADDRESS"
 serverPort = $FRPS_PORT
@@ -271,7 +317,27 @@ fi
 
 # ── Report ───────────────────────────────────────────────────────────
 
-cat <<EOF
+if [[ "$LOCAL_MODE" == "true" ]]; then
+    cat <<EOF
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${GREEN}✓ frp tunnel connected to $FRPS_ADDRESS:$FRPS_PORT${NC}
+${GREEN}✓ LLAMA_API_KEY stored in docker/.env${NC}
+${GREEN}✓ Local endpoint: http://$FRPS_ADDRESS:$REMOTE_PORT${NC}
+
+${BLUE}ON THE AGENT BOX, run:${NC}
+
+  openmono config set llm.endpoint  http://$FRPS_ADDRESS:$REMOTE_PORT
+  openmono config set llm.api_key   $LLAMA_API_KEY
+
+Then:  openmono agent
+
+${YELLOW}To check tunnel status:${NC}  sudo systemctl status frpc
+${YELLOW}To tail tunnel logs:${NC}      sudo journalctl -u frpc -f
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EOF
+else
+    cat <<EOF
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ${GREEN}✓ frp tunnel connected to $FRPS_ADDRESS:$FRPS_PORT${NC}
@@ -289,3 +355,4 @@ ${YELLOW}To check tunnel status:${NC}  sudo systemctl status frpc
 ${YELLOW}To tail tunnel logs:${NC}      sudo journalctl -u frpc -f
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EOF
+fi
