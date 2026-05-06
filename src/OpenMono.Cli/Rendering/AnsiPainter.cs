@@ -1252,7 +1252,7 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
     {
         sb.Append($"{E}[?7l{E}[{_th};1H{E}[2K{BgStatus}");
         var tracker = session.Meta.TokenTracker;
-        var tok     = tracker?.TotalTokens ?? 0;
+        var tok     = tracker?.LastPromptTokens ?? 0;
         var ctx     = config.Llm.ContextSize;
         var pct     = ctx > 0 ? (int)((double)tok / ctx * 100) : 0;
 

@@ -230,8 +230,9 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                             PromptTokens = usageEl.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : 0,
                             CompletionTokens = usageEl.TryGetProperty("completion_tokens", out var cpt) ? cpt.GetInt32() : 0,
                         };
-                        OnDebug?.Invoke($"[SSE] usage: prompt={usage.PromptTokens} completion={usage.CompletionTokens} total={usage.TotalTokens}");
-                        Log.Debug($"SSE usage: prompt={usage.PromptTokens} completion={usage.CompletionTokens}");
+                        var usageMsg = $"[SSE] usage: prompt={usage.PromptTokens} completion={usage.CompletionTokens} total={usage.TotalTokens}";
+                        OnDebug?.Invoke(usageMsg);
+                        Log.Info(usageMsg);
                     }
 
                     if (!root.TryGetProperty("choices", out var choices)) continue;

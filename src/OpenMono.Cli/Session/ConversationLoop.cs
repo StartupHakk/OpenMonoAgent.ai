@@ -299,7 +299,7 @@ public sealed class ConversationLoop : IDisposable
             }
         }
 
-        _output.WriteWarning($"Reached maximum iteration limit ({maxIterations}). Stopping.");
+        await ReportIterationCapAsync(maxIterations, new List<ToolCall>(), ct);
         _journal.FinishTurn("max_iterations");
         }
         finally
@@ -323,6 +323,113 @@ public sealed class ConversationLoop : IDisposable
             _recentToolSignatures.RemoveRange(0, _recentToolSignatures.Count - DoomLoopThreshold);
 
         return isDoomLoop;
+    }
+
+    private async Task ReportIterationCapAsync(int maxIterations, List<ToolCall> lastToolCalls, CancellationToken ct)
+    {
+        var toolCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var filesTouched = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var fileToolNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "FileRead", "FileEdit", "FileWrite", "Read", "Edit", "Write" };
+
+        foreach (var msg in _session.Messages)
+        {
+            if (msg.ToolCalls is null) continue;
+            foreach (var call in msg.ToolCalls)
+            {
+                toolCounts.TryGetValue(call.Name, out var n);
+                toolCounts[call.Name] = n + 1;
+
+                if (!fileToolNames.Contains(call.Name)) continue;
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(call.Arguments);
+                    foreach (var key in new[] { "file_path", "path" })
+                    {
+                        if (doc.RootElement.TryGetProperty(key, out var el)
+                            && el.ValueKind == System.Text.Json.JsonValueKind.String)
+                        {
+                            var p = el.GetString();
+                            if (!string.IsNullOrWhiteSpace(p)) filesTouched.Add(p);
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+
+        _output.WriteWarning($"Safety cap reached — the agent consumed all {maxIterations} steps allowed per turn.");
+        _output.WriteWarning("This limit exists to prevent runaway tasks from running indefinitely.");
+        _output.WriteInfo("Session breakdown:");
+
+        if (toolCounts.Count > 0)
+        {
+            var toolSummary = string.Join("  ", toolCounts
+                .OrderByDescending(kv => kv.Value)
+                .Select(kv => $"{kv.Key}×{kv.Value}"));
+            _output.WriteInfo($"  Tools used:   {toolSummary}");
+        }
+
+        if (filesTouched.Count > 0)
+            _output.WriteInfo($"  Files touched ({filesTouched.Count}): {string.Join(", ", filesTouched.OrderBy(f => f))}");
+
+        if (lastToolCalls.Count > 0)
+        {
+            var lastArgs = lastToolCalls[0].Arguments;
+            if (lastArgs.Length > 150) lastArgs = lastArgs[..150] + "…";
+            _output.WriteInfo($"  Last action:  {lastToolCalls[0].Name} — {lastArgs}");
+        }
+
+        _output.WriteInfo("Summarising what was accomplished...");
+
+        var convText = new System.Text.StringBuilder();
+        foreach (var msg in _session.Messages)
+        {
+            if (msg.Role == MessageRole.System) continue;
+            var role = msg.Role.ToString().ToUpperInvariant();
+            convText.AppendLine($"[{role}]: {msg.Content ?? "(tool call/result)"}\n");
+        }
+
+        var summaryMessages = new List<Message>
+        {
+            new()
+            {
+                Role = MessageRole.System,
+                Content = """
+                    An AI coding agent was stopped after hitting its iteration cap. Summarise what it accomplished.
+                    Use short bullet points only. Cover:
+                    - What was completed
+                    - What was partially done or in progress
+                    - What was not started or left unresolved
+                    - Any repeated errors or blockers the agent kept hitting
+
+                    Do not call tools. Plain text only.
+                    """,
+            },
+            new() { Role = MessageRole.User, Content = convText.ToString() },
+        };
+
+        try
+        {
+            var sb = new System.Text.StringBuilder();
+            var opts = new LlmOptions { MaxTokens = 1024, Temperature = 0.1 };
+            await foreach (var chunk in _llm.StreamChatAsync(summaryMessages, tools: null, opts, ct))
+            {
+                if (chunk.TextDelta is not null) sb.Append(chunk.TextDelta);
+            }
+            if (sb.Length > 0)
+                _output.WriteInfo(sb.ToString());
+        }
+        catch (Exception ex)
+        {
+            _output.WriteDebug($"[IterationCap] Summary call failed: {ex.Message}");
+        }
+
+        _output.WriteInfo("To continue:");
+        _output.WriteInfo("  Type your next message — the agent will pick up from context");
+        _output.WriteInfo("  /compact    — summarise history to free context space before continuing");
+        _output.WriteInfo("  /checkpoint — compress older turns and continue with a fresh window");
+        _output.WriteInfo("  /clear      — wipe the session and start fresh");
     }
 
     private async Task<string> StoreContentReplacementAsync(
