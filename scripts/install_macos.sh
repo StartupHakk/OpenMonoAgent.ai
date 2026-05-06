@@ -464,6 +464,55 @@ elif [ -n "${SUDO:-}" ] && [ -x "$(command -v sudo)" ]; then
         detail "Symlinked /usr/local/bin/openmono -> $INSTALL_DIR/openmono"
 fi
 
+# ── Post-install verification ─────────────────────────────────────────────────
+# Source the updated RC file and verify critical commands are accessible.
+# This ensures openmono and docker work immediately without user intervention.
+
+info "Verifying installation..."
+
+# Source the primary RC file to update PATH in current shell
+RC_PRIMARY=""
+for rc in "$HOME/.zshrc" "$HOME/.bash_profile"; do
+    if [ -f "$rc" ]; then
+        RC_PRIMARY="$rc"
+        break
+    fi
+done
+
+if [ -n "$RC_PRIMARY" ]; then
+    # Source the RC file in a subshell to test if it's valid, then update our PATH
+    if bash -c "source $RC_PRIMARY" 2>/dev/null; then
+        # Extract PATH from the RC file and update current shell
+        export PATH="$INSTALL_DIR:$PATH"
+        export LLAMA_PORT="${LLAMA_PORT:-7474}"
+        detail "Shell environment updated"
+    else
+        warn "Could not source $RC_PRIMARY — verify shell configuration"
+    fi
+fi
+
+# Verify critical commands are accessible
+verify_command() {
+    local cmd="$1"
+    local description="$2"
+    if command -v "$cmd" &>/dev/null; then
+        ok "$description is accessible"
+        return 0
+    else
+        err "$description is NOT accessible"
+        return 1
+    fi
+}
+
+VERIFY_FAILED=0
+verify_command "openmono" "openmono CLI" || VERIFY_FAILED=1
+verify_command "docker" "Docker" || VERIFY_FAILED=1
+
+if [ $VERIFY_FAILED -eq 1 ]; then
+    warn "Some commands are not yet accessible in the current shell"
+    warn "This is normal — your shell will have them after reloading."
+fi
+
 # ── Done ───────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -479,9 +528,8 @@ case "$OPENMONO_ROLE" in
         echo "  mode              : CPU (Docker Linux VM)"
         echo ""
         echo "Next steps:"
-        echo "  1. source ~/.zshrc         # Reload shell"
-        echo "  2. cd your-project/"
-        echo "  3. openmono agent          # Start the coding agent"
+        echo "  1. cd your-project/"
+        echo "  2. openmono agent          # Start the coding agent"
         ;;
     inference)
         echo "  llama-server port : ${LLAMA_PORT:-7474}"
@@ -500,15 +548,20 @@ case "$OPENMONO_ROLE" in
         echo "  agent binary : built in Docker (openmono-agent image)"
         echo ""
         echo "Next steps:"
-        echo "  1. source ~/.zshrc         # Reload shell"
-        echo "  2. Point this agent at your inference server:"
+        echo "  1. Point this agent at your inference server:"
         echo "     Get the commands from the inference server setup instructions."
         echo "     Example:"
         echo "        openmono config set llm.endpoint http://<server>:<port>"
         echo "        openmono config set llm.api_key  <token>"
-        echo "  3. cd your-project/ && openmono agent"
-        echo ""        
+        echo "  2. cd your-project/ && openmono agent"
+        echo ""
         ;;
 esac
 echo ""
 show_log_location
+echo ""
+info "Reloading shell to activate environment changes..."
+echo ""
+
+# Replace current shell with a fresh instance to pick up all environment updates
+exec "${SHELL}"

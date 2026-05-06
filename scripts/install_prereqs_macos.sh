@@ -314,15 +314,30 @@ if [ -f "$_BUILDX_BIN" ]; then
     detail "Linked docker-buildx as Docker CLI plugin"
 fi
 
-# Register Colima for auto-start at login (if Colima was installed)
+# Start Colima and enable auto-start at login (if Colima was installed)
 if command -v colima &>/dev/null && command -v brew &>/dev/null; then
-    info "Registering Colima to start automatically at login..."
-    if brew services start colima 2>/dev/null; then
-        ok "Colima registered for auto-start at login (via launchd)"
+    info "Starting Colima and enabling auto-start..."
+    if run brew services start colima; then
+        ok "Colima started and enabled for auto-start at login (via launchd)"
+
+        # Wait for Colima VM to be ready
+        info "Waiting for Colima to be fully ready..."
+        COLIMA_READY=false
+        for i in $(seq 1 60); do
+            if docker info &>/dev/null 2>&1; then
+                COLIMA_READY=true
+                break
+            fi
+            sleep 1
+        done
+
+        if [ "$COLIMA_READY" = true ]; then
+            ok "Colima is ready"
+        else
+            warn "Colima is starting but not yet accessible (may take a moment)"
+        fi
     else
-        warn "Could not register Colima for auto-start."
-        warn "After each reboot, run: colima start"
-        warn "Or register manually: brew services start colima"
+        die "Could not start Colima with 'brew services start colima'. Check Colima logs: colima logs"
     fi
 fi
 
@@ -362,7 +377,7 @@ else
             fi
         fi
     done
-    ok ".NET 10 SDK installed ($(dotnet --version 2>/dev/null || echo 'reload shell'))"
+    ok ".NET 10 SDK installed ($(dotnet --version 2>/dev/null || echo 'version check pending'))"
 fi
 
 # ── Step 8: Summary ──────────────────────────────────────────────────────────
@@ -374,7 +389,7 @@ check_installed() {
     if command -v "$cmd" &>/dev/null; then
         printf "  ${GREEN}✓${NC} %s\n" "$cmd"
     else
-        printf "  ${YELLOW}…${NC} %s (may need shell reload)\n" "$cmd"
+        printf "  ${YELLOW}…${NC} %s\n" "$cmd"
     fi
 }
 
@@ -394,25 +409,11 @@ check_installed dotnet
 echo ""
 ok "Prerequisites ready"
 
-# Homebrew shell integration note
-if [ "$ARCH" = "arm64" ]; then
-    echo ""
-    printf "${YELLOW}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
-    printf "${YELLOW}${BOLD}  Homebrew PATH Integration${NC}\n"
-    printf "${YELLOW}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
-    echo ""
-    echo "  For Apple Silicon Macs, add Homebrew to your shell:"
-    echo ""
-    echo "    ${BOLD}eval \"\$(/opt/homebrew/bin/brew shellenv)\"${NC}"
-    echo ""
-    echo "  This is typically auto-added by Homebrew to:"
-    echo "    ~/.zprofile  (Zsh login shell)"
-    echo "    ~/.zshrc  (Zsh interactive shell)"
-    echo "    ~/.bash_profile  (Bash login shell)"
-    echo ""
-    echo "  Reload your shell if Homebrew commands are not found:"
-    echo "    ${BOLD}exec zsh${NC}  or  ${BOLD}exec bash${NC}"
-    echo ""
-fi
-
+echo ""
 show_log_location
+echo ""
+info "Reloading shell to activate environment changes..."
+echo ""
+
+# Replace current shell with a fresh instance to pick up all environment updates
+exec "${SHELL}"
