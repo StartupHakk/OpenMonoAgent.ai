@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using OpenMono.Permissions;
+using OpenMono.Utils;
 
 namespace OpenMono.Tools;
 
@@ -87,17 +88,14 @@ public sealed class BashTool : ToolBase
 
         var psi = new ProcessStartInfo
         {
-            FileName = "/bin/bash",
-            ArgumentList = { "-c", command },
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
             WorkingDirectory = context.WorkingDirectory,
         };
-
-        psi.Environment["HOME"] = Environment.GetEnvironmentVariable("HOME") ?? "/root";
-        psi.Environment["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? "/usr/local/bin:/usr/bin:/bin";
+        ShellHelper.ConfigureProcessForShell(psi, command);
+        ShellHelper.SetShellEnvironment(psi);
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeoutMs);
@@ -177,7 +175,7 @@ public sealed class BashTool : ToolBase
 
     private static ToolResult RunBackground(string command, ToolContext context)
     {
-        var home = Environment.GetEnvironmentVariable("HOME") ?? "/root";
+        var home = ShellHelper.GetHomeDirectory();
         var bgDir = Path.Combine(home, ".openmono", "bg");
         try { Directory.CreateDirectory(bgDir); }
         catch (Exception ex)
@@ -192,8 +190,6 @@ public sealed class BashTool : ToolBase
 
         var psi = new ProcessStartInfo
         {
-            FileName = "/bin/bash",
-            ArgumentList = { "-c", wrapped },
             RedirectStandardInput = false,
             RedirectStandardOutput = false,
             RedirectStandardError = false,
@@ -201,8 +197,8 @@ public sealed class BashTool : ToolBase
             CreateNoWindow = true,
             WorkingDirectory = context.WorkingDirectory,
         };
-        psi.Environment["HOME"] = home;
-        psi.Environment["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? "/usr/local/bin:/usr/bin:/bin";
+        ShellHelper.ConfigureProcessForShell(psi, wrapped);
+        ShellHelper.SetShellEnvironment(psi);
 
         Process? process;
         try

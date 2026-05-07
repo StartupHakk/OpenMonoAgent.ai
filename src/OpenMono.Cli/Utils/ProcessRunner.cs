@@ -12,13 +12,12 @@ public static class ProcessRunner
     {
         var psi = new ProcessStartInfo
         {
-            FileName = "/bin/bash",
-            ArgumentList = { "-c", command },
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        ShellHelper.ConfigureProcessForShell(psi, command);
 
         if (workingDirectory is not null)
             psi.WorkingDirectory = workingDirectory;

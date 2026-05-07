@@ -12,6 +12,9 @@ public static class PathUtils
     {
         var normalizedPath = Path.GetFullPath(path);
         var normalizedBase = Path.GetFullPath(basePath);
-        return normalizedPath.StartsWith(normalizedBase, StringComparison.Ordinal);
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        return normalizedPath.StartsWith(normalizedBase, comparison);
     }
 }
