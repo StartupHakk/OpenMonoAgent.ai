@@ -363,6 +363,7 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
             ["repetition_penalty"] = options.RepetitionPenalty,
             ["stream"] = true,
             ["stream_options"] = new { include_usage = true },
+            ["cache_prompt"] = true,
         };
 
         if (options.EnableThinking.HasValue)
