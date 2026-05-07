@@ -89,7 +89,7 @@ By default these write to the project-level `.openmono/settings.json`. Pass `--g
     "postToolUse": [],
     "sessionStart": []
   },
-  "mcpServers": {
+  "mcp_servers": {
     "my-server": {
       "command": "npx",
       "args": ["-y", "@my-org/mcp-server"],
@@ -218,12 +218,12 @@ Hooks from user and project settings are merged additively.
 
 ---
 
-## `mcpServers`
+## `mcp_servers`
 
 MCP servers started as subprocesses on session init. Each server's tools are registered as `mcp__{serverName}__{toolName}`.
 
 ```jsonc
-"mcpServers": {
+"mcp_servers": {
   "my-server": {
     "command": "npx",
     "args": ["-y", "@my-org/mcp-server"],
