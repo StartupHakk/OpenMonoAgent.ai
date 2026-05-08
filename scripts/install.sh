@@ -195,6 +195,8 @@ next_step "Checking system requirements"
 #         CPU   → Qwen3.6-35B-A3B Q4_K_XL (MoE, 3.5B active params)
 _VRAM_MB=0
 _GPU_TIER=0
+MODEL_NAME=""
+MODEL_ACCURACY=""
 if [ "$OPENMONO_ROLE" != "agent" ]; then
     if [ "${GPU_MODE:-0}" = "1" ]; then
         if command -v nvidia-smi &>/dev/null; then
@@ -685,6 +687,7 @@ if [[ -n "${OPENMONO_ENV_FILE:-}" ]]; then
 export INSTALL_DIR="$INSTALL_DIR"
 export LLAMA_PORT="${LLAMA_PORT:-7474}"
 export OPENMONO_ROLE="$OPENMONO_ROLE"
+export MODEL_NAME="${MODEL_NAME:-}"
 export MODEL_ACCURACY="${MODEL_ACCURACY:-standard}"
 ENVEOF
     _log "Wrote install environment to: $OPENMONO_ENV_FILE"

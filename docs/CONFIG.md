@@ -5,8 +5,9 @@ Settings are loaded in this order, each layer overriding the previous:
 1. Built-in defaults
 2. `~/.openmono/settings.json` — user-level
 3. `.openmono/settings.json` — project-level (in cwd)
-4. `--config <path>` — CLI flag
-5. Environment variables — highest priority
+4. `--config <path>` — load settings from a specific file
+5. Environment variables
+6. CLI flags (`--model`, `--endpoint`, etc.) — highest priority
 
 ---
 
@@ -19,7 +20,7 @@ Flags passed to `openmono agent` override settings.json and env vars for that se
 | `--config <path>` | — | Load settings from a specific file |
 | `--model <name>` | `llm.model` | Override the model name |
 | `--endpoint <url>` | `llm.endpoint` | Override the LLM server endpoint |
-| `--api-key <key>` | `llm.apiKey` | Set API key for cloud providers |
+| `--api-key <key>` | `llm.api_key` | Set API key for cloud providers |
 | `--verbose` | `verbose` | Show full LLM stream, SSE events, and token counts |
 | `--classic` | — | Use classic scrolling terminal instead of TUI |
 
@@ -33,7 +34,7 @@ Read and write settings.json from the terminal without editing the file directly
 openmono config set llm.endpoint http://localhost:7474
 openmono config set llm.model qwen3.6-27b
 openmono config get llm.endpoint
-openmono config unset llm.apiKey
+openmono config unset llm.api_key
 ```
 
 By default these write to the project-level `.openmono/settings.json`. Pass `--global` to write to `~/.openmono/settings.json` instead.
@@ -47,20 +48,20 @@ By default these write to the project-level `.openmono/settings.json`. Pass `--g
   "llm": {
     "endpoint": "http://localhost:7474",
     "model": "qwen3.6-27b",
-    "maxOutputTokens": 16384,
+    "max_output_tokens": 16384,
     "temperature": 0.7,
-    "topP": 0.8,
-    "topK": 20,
-    "presencePenalty": 1.5
+    "top_p": 0.8,
+    "top_k": 20,
+    "presence_penalty": 1.5
   },
   "providers": {
     "anthropic": {
-      "apiKey": "sk-ant-...",
+      "api_key": "sk-ant-...",
       "model": "claude-opus-4-7",
       "active": false
     },
     "openai": {
-      "apiKey": "sk-...",
+      "api_key": "sk-...",
       "model": "gpt-4o",
       "active": false
     },
@@ -80,16 +81,16 @@ By default these write to the project-level `.openmono/settings.json`. Pass `--g
     }
   },
   "hooks": {
-    "preToolUse": [
+    "pre_tool_use": [
       {
-        "if": { "tool": "Bash", "inputContains": "rm" },
+        "if": { "tool": "Bash", "input_contains": "rm" },
         "run": "echo '{{tool_name}}: {{tool_input}}' >> audit.log"
       }
     ],
-    "postToolUse": [],
-    "sessionStart": []
+    "post_tool_use": [],
+    "session_start": []
   },
-  "mcpServers": {
+  "mcp_servers": {
     "my-server": {
       "command": "npx",
       "args": ["-y", "@my-org/mcp-server"],
@@ -97,19 +98,19 @@ By default these write to the project-level `.openmono/settings.json`. Pass `--g
       "enabled": true
     }
   },
-  "modelPresets": {
+  "model_presets": {
     "precise": {
       "temperature": 0.2,
-      "topP": 0.9,
+      "top_p": 0.9,
       "active": false
     }
   },
   "playbooks": {
     "paths": [".openmono/playbooks/", "~/.openmono/playbooks/"]
   },
-  "autoDetectCodeGraph": true,
+  "auto_detect_code_graph": true,
   "verbose": false,
-  "dataDirectory": "~/.openmono"
+  "data_directory": "~/.openmono"
 }
 ```
 
@@ -117,21 +118,21 @@ By default these write to the project-level `.openmono/settings.json`. Pass `--g
 
 ## `llm`
 
-Controls the active LLM connection and sampling parameters. At startup, `model` and `contextSize` are overridden automatically from the llama.cpp `/props` endpoint.
+Controls the active LLM connection and sampling parameters. At startup, `model` and `context_size` are overridden automatically from the llama.cpp `/props` endpoint.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `endpoint` | string | `http://localhost:7474` | OpenAI-compatible chat endpoint |
 | `model` | string | *(from /props)* | Model name sent in requests |
-| `apiKey` | string | — | API key for cloud providers |
-| `contextSize` | int | *(from /props)* | Context window size in tokens |
-| `maxOutputTokens` | int | `16384` | Max tokens per response |
+| `api_key` | string | — | API key for cloud providers |
+| `context_size` | int | *(from /props)* | Context window size in tokens |
+| `max_output_tokens` | int | `16384` | Max tokens per response |
 | `temperature` | float | `0.7` | Sampling temperature |
-| `topP` | float | `0.8` | Nucleus sampling threshold |
-| `topK` | int | `20` | Top-K sampling |
-| `presencePenalty` | float | `1.5` | Penalise repeated tokens |
-| `minP` | float | `0.0` | Min-P sampling cutoff |
-| `repetitionPenalty` | float | `1.0` | Repetition penalty multiplier |
+| `top_p` | float | `0.8` | Nucleus sampling threshold |
+| `top_k` | int | `20` | Top-K sampling |
+| `presence_penalty` | float | `1.5` | Penalise repeated tokens |
+| `min_p` | float | `0.0` | Min-P sampling cutoff |
+| `repetition_penalty` | float | `1.0` | Repetition penalty multiplier |
 
 ---
 
@@ -141,15 +142,15 @@ Named provider configurations. Set `"active": true` on one to use it as the acti
 
 ```jsonc
 "providers": {
-  "anthropic": { "apiKey": "sk-ant-...", "model": "claude-opus-4-7", "active": true },
-  "openai":    { "apiKey": "sk-...",     "model": "gpt-4o",           "active": false },
+  "anthropic": { "api_key": "sk-ant-...", "model": "claude-opus-4-7", "active": true },
+  "openai":    { "api_key": "sk-...",     "model": "gpt-4o",           "active": false },
   "ollama":    { "endpoint": "http://localhost:11434", "model": "llama3", "active": false }
 }
 ```
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `apiKey` | string | Provider API key |
+| `api_key` | string | Provider API key |
 | `endpoint` | string | Override the default endpoint URL |
 | `model` | string | Model name for this provider |
 | `active` | bool | Set to `true` to activate this provider |
@@ -180,7 +181,7 @@ Per-tool allow/deny/ask rules. Rules are glob patterns matched against the tool'
 | List | Behaviour |
 |------|-----------|
 | `allow` | Auto-approve without prompting |
-| `deny` | Reject silently |
+| `deny` | Reject and show a denial warning to the user |
 | `ask` | Always prompt, even if a session-level allow is set |
 
 Permissions from user and project settings are merged additively.
@@ -193,14 +194,14 @@ Shell commands triggered at key points in the agent loop. Templates `{{tool_name
 
 ```jsonc
 "hooks": {
-  "preToolUse": [
+  "pre_tool_use": [
     {
-      "if": { "tool": "Bash", "inputContains": "rm" },
+      "if": { "tool": "Bash", "input_contains": "rm" },
       "run": "echo '{{tool_name}}: {{tool_input}}' >> audit.log"
     }
   ],
-  "postToolUse": [],
-  "sessionStart": [
+  "post_tool_use": [],
+  "session_start": [
     { "run": "echo 'Session started' >> session.log" }
   ]
 }
@@ -208,27 +209,27 @@ Shell commands triggered at key points in the agent loop. Templates `{{tool_name
 
 | Hook | When |
 |------|------|
-| `sessionStart` | Once, when the agent session initialises |
-| `preToolUse` | Before each tool call |
-| `postToolUse` | After each tool call completes |
+| `session_start` | Once, when the agent session initialises |
+| `pre_tool_use` | Before each tool call |
+| `post_tool_use` | After each tool call completes |
 
-The `if` condition is optional. Both `tool` (exact name) and `inputContains` (substring) can be combined.
+The `if` condition is optional. Both `tool` (exact name) and `input_contains` (substring) can be combined.
 
 Hooks from user and project settings are merged additively.
 
 ---
 
-## `mcpServers`
+## `mcp_servers`
 
 MCP servers started as subprocesses on session init. Each server's tools are registered as `mcp__{serverName}__{toolName}`.
 
 ```jsonc
-"mcpServers": {
+"mcp_servers": {
   "my-server": {
     "command": "npx",
     "args": ["-y", "@my-org/mcp-server"],
     "env": { "API_KEY": "..." },
-    "workingDirectory": "/path/to/dir",
+    "working_directory": "/path/to/dir",
     "enabled": true
   }
 }
@@ -239,28 +240,28 @@ MCP servers started as subprocesses on session init. Each server's tools are reg
 | `command` | yes | Executable to run |
 | `args` | no | Arguments array |
 | `env` | no | Extra environment variables |
-| `workingDirectory` | no | Working directory for the subprocess |
+| `working_directory` | no | Working directory for the subprocess |
 | `enabled` | no | Set to `false` to disable without removing (default: `true`) |
 
-**Auto-detected servers**: `code-review-graph` and `graphify` are registered automatically if found in PATH with a graph DB present — no config needed.
+**Auto-detected servers**: `code-review-graph` is registered automatically if found in PATH with a graph DB present — no config needed.
 
 ---
 
-## `modelPresets`
+## `model_presets`
 
 Named LLM parameter bundles. Activate one via `"active": true` or the `OPENMONO_MODEL_PRESET` env var. The built-in `qwen` preset ships with the default sampling values for Qwen3.6.
 
 ```jsonc
-"modelPresets": {
+"model_presets": {
   "precise": {
     "temperature": 0.2,
-    "topP": 0.95,
-    "topK": 40,
+    "top_p": 0.95,
+    "top_k": 40,
     "active": false
   },
   "creative": {
     "temperature": 1.0,
-    "topP": 0.9,
+    "top_p": 0.9,
     "active": false
   }
 }
@@ -286,12 +287,12 @@ Additional directories to scan for `.yaml` playbook files. Paths are checked in 
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `autoDetectCodeGraph` | bool | `true` | Auto-register MCP graph servers if found |
+| `auto_detect_code_graph` | bool | `true` | Auto-register MCP graph servers if found |
 | `verbose` | bool | `false` | Log full LLM stream and tool pipeline |
-| `showDetail` | bool | `false` | Show extra detail in TUI panels |
-| `dataDirectory` | string | `~/.openmono` | Where sessions, memory, and checkpoints are stored |
-| `workingDirectory` | string | cwd | Override the workspace root |
-| `hostWorkingDirectory` | string | — | Host path when running inside Docker (used for bind-mount mapping) |
+| `show_detail` | bool | `false` | Show extra detail in TUI panels |
+| `data_directory` | string | `~/.openmono` | Where sessions, memory, and checkpoints are stored |
+| `working_directory` | string | cwd | Override the workspace root |
+| `host_working_directory` | string | — | Host path when running inside Docker (used for bind-mount mapping) |
 
 ---
 
@@ -303,16 +304,16 @@ All env vars override their settings.json equivalents regardless of load order.
 |----------|--------------------|
 | `OPENMONO_ENDPOINT` | `llm.endpoint` |
 | `OPENMONO_MODEL` | `llm.model` |
-| `OPENMONO_API_KEY` | `llm.apiKey` |
-| `OPENMONO_CONTEXT_SIZE` | `llm.contextSize` |
-| `OPENMONO_MAX_OUTPUT_TOKENS` | `llm.maxOutputTokens` |
-| `OPENMONO_TOP_P` | `llm.topP` |
-| `OPENMONO_TOP_K` | `llm.topK` |
-| `OPENMONO_PRESENCE_PENALTY` | `llm.presencePenalty` |
-| `OPENMONO_MIN_P` | `llm.minP` |
-| `OPENMONO_REPETITION_PENALTY` | `llm.repetitionPenalty` |
-| `OPENMONO_WORKSPACE` | `workingDirectory` |
-| `OPENMONO_HOST_WORKSPACE` | `hostWorkingDirectory` |
-| `OPENMONO_DATA_DIR` | `dataDirectory` |
+| `OPENMONO_API_KEY` | `llm.api_key` |
+| `OPENMONO_CONTEXT_SIZE` | `llm.context_size` |
+| `OPENMONO_MAX_OUTPUT_TOKENS` | `llm.max_output_tokens` |
+| `OPENMONO_TOP_P` | `llm.top_p` |
+| `OPENMONO_TOP_K` | `llm.top_k` |
+| `OPENMONO_PRESENCE_PENALTY` | `llm.presence_penalty` |
+| `OPENMONO_MIN_P` | `llm.min_p` |
+| `OPENMONO_REPETITION_PENALTY` | `llm.repetition_penalty` |
+| `OPENMONO_WORKSPACE` | `working_directory` |
+| `OPENMONO_HOST_WORKSPACE` | `host_working_directory` |
+| `OPENMONO_DATA_DIR` | `data_directory` |
 | `OPENMONO_MODEL_PRESET` | Activate a preset by name |
 | `OPENMONO_PROVIDER` | Activate a provider by name |

@@ -163,19 +163,21 @@ Local llama.cpp is the default and fully supported. OpenAI, Anthropic, and Ollam
   <img src="docs/assets/dual-box-server.png" alt="Distributed inference: agent on laptop, inference on GPU machine" width="680" />
 </div>
 
+→ [Dual-box setup guide](docs/SETUP.md#dual-box-setup) — tunnel setup, relay connection, troubleshooting
+
 ---
 
 ## Supported Hardware
 
-| | GPU | CPU |
-|--|-----|-----|
-| **Model** | Qwen3.6-27B-Q4_K_M | Qwen3.6-35B-A3B-UD-Q4_K_XL |
-| **Minimum** | 24 GB VRAM | 24 GB RAM |
-| **Speed** | ~45–50 tok/s (RTX 3090) | ~17–20 tok/s |
-| **Auto-configured** | ✓ | ✓ |
+| VRAM / RAM | Model | Accuracy | Speed |
+|------------|-------|----------|-------|
+| GPU 24 GB+ | Qwen3.6-27B-Q4_K_M | Full | ~45–70 tok/s |
+| GPU 16 GB | Qwen3.6-35B-A3B-UD-IQ3_S | Lower | ~30–40 tok/s |
+| GPU 12 GB | Qwen3.5-9B-Q4_K_M | Lower | ~25–35 tok/s |
+| CPU 24 GB RAM | Qwen3.6-35B-A3B-UD-Q4_K_XL | Full | ~17–20 tok/s |
 
 > [!NOTE]
-> The installer detects your hardware and selects the right model automatically — no config needed. Requires Ubuntu 26.04 LTS (recommended) or 25.10.
+> The installer detects your hardware and selects the right model automatically — no config needed. 12 GB and 16 GB GPU cards are supported but run lower accuracy models. For best results, use a 24 GB card. Requires Ubuntu 26.04 LTS (recommended) or 25.10.
 
 ## Architecture
 
@@ -207,13 +209,6 @@ Settings load from `~/.openmono/settings.json` (user-level) or `.openmono/settin
 - [graphify](docs/graphify.md) — semantic code graph, 25+ languages
 - [code-review-graph](docs/code-review-graph.md) — structural call graph via MCP
 - [Contributing](CONTRIBUTING.md)
-
----
-## WIP
-
-- The agent goes to max 25 iterations at the moment which is configured in [ConversationLoop.cs Line 149](https://github.com/StartupHakk/OpenMonoAgent.ai/blob/9b6e95b037c163cfab017f244b09e104f1e7e6a8/src/OpenMono.Cli/Session/ConversationLoop.cs#L149)
-The team is currently working on a fix for it, but increasing this number to a very big value may lead to delayed responses and context window getting filled quickly.
----
 
 > [!NOTE]
 > OpenMono is in **Public Beta**. Early access is open, and we're shipping updates fast. Try it out and tell us what you'd like to see next.
