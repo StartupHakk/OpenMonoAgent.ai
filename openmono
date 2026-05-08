@@ -9,6 +9,7 @@ set -eo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOCKER_DIR="$REPO_DIR/docker"
 LLAMA_PORT="${LLAMA_PORT:-7474}"
+OPENMONO_VERSION="$(cat "$REPO_DIR/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "unknown")"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -79,11 +80,16 @@ _ensure_docker() {
 
 # ── Commands ──────────────────────────────────────────────────────────────────
 
+cmd_version() {
+    echo "openmono $OPENMONO_VERSION"
+}
+
 cmd_help() {
     echo ""
     echo -e "${BLUE}╔══════════════════════════════════════╗${NC}"
     echo -e "${BLUE}║        OpenMono.ai — AI Agent        ║${NC}"
     echo -e "${BLUE}╚══════════════════════════════════════╝${NC}"
+    echo -e "  version $OPENMONO_VERSION"
     echo ""
     echo "Usage: openmono [--verbose|-v] <command>"
     echo ""
@@ -94,6 +100,7 @@ cmd_help() {
     echo "Any box:"
     printf "  %-14s %s\n" "setup"   "Install (--full|--inference|--agent) [--gpu|--cpu]"
     printf "  %-14s %s\n" "config"  "Read/write ~/.openmono/settings.json (e.g. llm.endpoint, llm.api_key)"
+    printf "  %-14s %s\n" "version" "Print the CLI version"
     printf "  %-14s %s\n" "help"    "Show this help"
     echo ""
     echo "Agent box (run the coding agent):"
@@ -976,6 +983,7 @@ case "$COMMAND" in
     graphify)       cmd_graphify "$@" ;;
     config)         cmd_config "$@" ;;    
     tunnel)         cmd_tunnel "$@" ;;
+    version|--version|-V) cmd_version ;;
     help|--help|-h) cmd_help ;;
     *)
         err "Unknown command: $COMMAND"

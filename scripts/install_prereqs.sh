@@ -212,7 +212,8 @@ else
 fi
 
 if [ "$GPU_MODE" = 0 ]; then
-    info "GPU mode disabled — skipping CUDA/nvidia-container-toolkit"
+    info "GPU not detected — skipping CUDA/nvidia-container-toolkit"
+    info "Switching to CPU mode automatically"
 else
     ok "GPU mode enabled — installing NVIDIA stack"
 
