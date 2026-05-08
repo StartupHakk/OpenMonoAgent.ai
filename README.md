@@ -172,8 +172,8 @@ Local llama.cpp is the default and fully supported. OpenAI, Anthropic, and Ollam
 | VRAM / RAM | Model | Accuracy | Speed |
 |------------|-------|----------|-------|
 | GPU 24 GB+ | Qwen3.6-27B-Q4_K_M | Full | ~45–70 tok/s |
-| GPU 16 GB | Qwen3.6-35B-A3B-UD-IQ3_S | Lower | ~30–40 tok/s |
-| GPU 12 GB | Qwen3.5-9B-Q4_K_M | Lower | ~25–35 tok/s |
+| GPU 16 GB | Qwen3.6-35B-A3B-UD-IQ3_S | Lower | ~25–35 tok/s |
+| GPU 12 GB | Qwen3.5-9B-Q4_K_M | Lower | ~15–20 tok/s |
 | CPU 24 GB RAM | Qwen3.6-35B-A3B-UD-Q4_K_XL | Full | ~17–20 tok/s |
 
 > [!NOTE]
