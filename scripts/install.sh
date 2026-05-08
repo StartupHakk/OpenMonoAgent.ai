@@ -33,6 +33,21 @@ source "$SCRIPT_DIR/lib/log.sh"
 #   (c) but the user IS in the docker group at the system level,
 # then re-exec ourselves via `sg docker` so the group IS active in the
 # subshell. Silent if already fine.
+if command -v docker &>/dev/null && ! docker info &>/dev/null 2>&1; then
+    if id -nG 2>/dev/null | grep -qw docker; then
+        if command -v sg &>/dev/null && sg docker -c "docker info" &>/dev/null 2>&1; then
+            info "Re-launching with docker group active (no manual 'newgrp' needed)..."
+            exec sg docker -- bash "$0" "$@"
+        else
+            warn "Docker group membership exists but sg activation failed."
+            warn "Run ONE of the following, then re-run: openmono setup"
+            warn "  1. newgrp docker"
+            warn "  2. exec su -l \$USER"
+            warn "  3. Log out and back in"
+            exit 1
+        fi
+    fi
+fi
 
 # Role selector — drives which of the 8 install steps actually run.
 # If the caller (openmono setup) already exported OPENMONO_ROLE, use it.
