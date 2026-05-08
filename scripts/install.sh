@@ -583,6 +583,9 @@ case "$OPENMONO_ROLE" in
     full)
         echo "  llama-server port : ${LLAMA_PORT:-7474}"
         echo "  mode              : $([ "${HAS_GPU:-false}" = true ] && echo GPU || echo CPU)"
+        echo ""
+        printf "  ${BOLD}Reload your shell to apply changes:${NC}\n"
+        printf "    source ~/.bashrc\n"
         ;;
     inference)
         echo "  llama-server port : ${LLAMA_PORT:-7474}"
