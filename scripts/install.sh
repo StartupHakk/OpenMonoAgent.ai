@@ -96,6 +96,17 @@ next_step() {
 # ── Prerequisite Check ────────────────────────────────────────────────────────
 # Verify that install_prereqs.sh has been run successfully before proceeding.
 
+# Cross-distro package check helper (needed for nvidia-container-toolkit check)
+pkg_is_installed() {
+  local pkg="$1"
+  if command -v dpkg &>/dev/null; then dpkg -s "$pkg" &>/dev/null 2>&1
+  elif command -v rpm &>/dev/null; then rpm -q "$pkg" &>/dev/null 2>&1
+  elif command -v pacman &>/dev/null; then pacman -Qi "$pkg" &>/dev/null 2>&1
+  elif command -v zypper &>/dev/null; then zypper search -i "$pkg" &>/dev/null 2>&1 | grep -q "^i.*$pkg"
+  else false
+  fi
+}
+
 check_prerequisites() {
     local missing=()
     local warnings=()
@@ -139,8 +150,8 @@ check_prerequisites() {
         if ! command -v nvidia-smi &>/dev/null; then
             warnings+=("NVIDIA GPU detected but drivers not installed")
         fi
-        if ! dpkg -s nvidia-container-toolkit &>/dev/null 2>&1; then
-            warnings+=("nvidia-container-toolkit not installed (required for GPU Docker)")
+  if ! command -v nvidia-container-toolkit &>/dev/null 2>&1 && ! pkg_is_installed nvidia-container-toolkit; then
+    warnings+=("nvidia-container-toolkit not installed (required for GPU Docker)")
         fi
     fi
 

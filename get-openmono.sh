@@ -17,7 +17,18 @@ NC='\033[0m'
 info() { echo -e "${BLUE}[INFO]${NC} $*"; }
 ok()   { echo -e "${GREEN}[OK]${NC} $*"; }
 err()  { echo -e "${RED}[ERROR]${NC} $*" >&2; }
-die()  { err "$*"; exit 1; }
+die() { err "$*"; exit 1; }
+
+pkg_install_hint() {
+  if command -v dnf &>/dev/null; then echo "sudo dnf install"
+  elif command -v yum &>/dev/null; then echo "sudo yum install"
+  elif command -v apt &>/dev/null; then echo "sudo apt install"
+  elif command -v pacman &>/dev/null; then echo "sudo pacman -S"
+  elif command -v zypper &>/dev/null; then echo "sudo zypper install"
+  elif command -v brew &>/dev/null; then echo "brew install"
+  else echo "your package manager's install command for"
+  fi
+}
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 
@@ -38,8 +49,8 @@ done
 
 # ── Preflight checks ──────────────────────────────────────────────────────────
 
-command -v git  &>/dev/null || die "git is required – install it first: sudo apt install git"
-command -v curl &>/dev/null || die "curl is required – install it first: sudo apt install curl"
+command -v git &>/dev/null || die "git is required – install it first: $(pkg_install_hint) git"
+command -v curl &>/dev/null || die "curl is required – install it first: $(pkg_install_hint) curl"
 
 # ── Clone or update ───────────────────────────────────────────────────────────
 
