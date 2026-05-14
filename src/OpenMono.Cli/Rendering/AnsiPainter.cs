@@ -1181,7 +1181,7 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
     {
         sb.Append($"{E}[{row + 1};1H{BgStatus}");
         var model = config.Llm.Model;
-        if (model.Length > 20) model = model[..20];
+        if (model.Length > 50) model = model[..49] + "…";
         sb.Append($" {Fbb}{B}Build{R}{BgStatus}  {B}{Fw}{model}{R}{BgStatus}");
         sb.Append(new string(' ', Math.Max(0, w - 8 - model.Length)));
         sb.Append(R);

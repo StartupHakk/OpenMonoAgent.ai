@@ -222,7 +222,12 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
 
     renderer.WriteWelcome(config.Llm.Model, config.Llm.Endpoint);
 
-    _ = RunWarmupAsync(config.Llm.Endpoint, systemPrompt, tools.BuildToolDefinitions(), config.Llm.Model, notify: msg => renderer.WriteInfo(msg));
+    Task? warmupTask = null;
+    if (!await IsServerWarmAsync(config.Llm.Endpoint))
+    {
+        renderer.WriteInfo("Warming KV cache in background — first response will be slower.");
+        warmupTask = SendWarmupAsync(config.Llm.Endpoint, systemPrompt, tools.BuildToolDefinitions(), config.Llm.Model);
+    }
 
     var lastCtrlCExitTime = DateTime.MinValue;
 
@@ -343,6 +348,14 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
         using var turnCts = new CancellationTokenSource();
         currentTurnCts = turnCts;
         if (ansiTui is not null) ansiTui.CurrentTurnCts = turnCts;
+        if (warmupTask is not null)
+        {
+            renderer.WriteInfo(warmupTask.IsCompleted
+                ? "KV cache warm — responses will be fast."
+                : "KV cache still warming — this response will be slower.");
+            warmupTask = null;
+        }
+
         try
         {
             await loop.RunTurnAsync(resolvedInput, turnCts.Token);
@@ -412,29 +425,30 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     renderer.WriteInfo($"Session saved: {session.Id}");
 }
 
-static async Task RunWarmupAsync(string endpoint, string systemPrompt, System.Text.Json.JsonElement toolDefs, string model, Action<string>? notify = null)
+static async Task<bool> IsServerWarmAsync(string endpoint)
 {
-    var baseUrl = endpoint.TrimEnd('/');
-    var apiKey  = Environment.GetEnvironmentVariable("OPENMONO_API_KEY")
-               ?? Environment.GetEnvironmentVariable("LLAMA_API_KEY")
-               ?? "";
-
-    using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-
     try
     {
-        var metrics = await http.GetStringAsync($"{baseUrl}/metrics");
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        var metrics = await http.GetStringAsync($"{endpoint.TrimEnd('/')}/metrics");
         var line = metrics.Split('\n')
             .FirstOrDefault(l => l.StartsWith("llamacpp:prompt_tokens_total"));
         if (line is not null && double.TryParse(line.Split(' ').LastOrDefault(), out var tokens) && tokens > 0)
         {
             Log.Debug($"[warmup] Server already processed {tokens} prompt tokens — skipping.");
-            return;
+            return true;
         }
     }
     catch { }
+    return false;
+}
 
-    notify?.Invoke("Model is cold — first response may be slower while the cache warms up.");
+static async Task SendWarmupAsync(string endpoint, string systemPrompt, System.Text.Json.JsonElement toolDefs, string model)
+{
+    var baseUrl = endpoint.TrimEnd('/');
+    var apiKey  = Environment.GetEnvironmentVariable("OPENMONO_API_KEY")
+               ?? Environment.GetEnvironmentVariable("LLAMA_API_KEY")
+               ?? "";
 
     var bodyDict = new Dictionary<string, object?>
     {
@@ -454,6 +468,7 @@ static async Task RunWarmupAsync(string endpoint, string systemPrompt, System.Te
         bodyDict["tools"] = toolDefs;
 
     var json = System.Text.Json.JsonSerializer.Serialize(bodyDict);
+    using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
     var request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/v1/chat/completions")
     {
         Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json"),
@@ -466,7 +481,8 @@ static async Task RunWarmupAsync(string endpoint, string systemPrompt, System.Te
     {
         using var response = await http.SendAsync(request);
         response.EnsureSuccessStatusCode();
-        Log.Debug($"[warmup] Done in {(DateTime.UtcNow - t0).TotalSeconds:F1}s — full prompt + tools cached.");
+        var elapsed = (DateTime.UtcNow - t0).TotalSeconds;
+        Log.Debug($"[warmup] Done in {elapsed:F1}s — full prompt + tools cached.");
     }
     catch (Exception ex)
     {
@@ -490,9 +506,11 @@ static async Task TryRecoverLlamaServerAsync(IRenderer renderer, string workingD
     if (!dockerAvailable)
     {
         renderer.WriteWarning("docker is not accessible from inside this container.");
-        renderer.WriteInfo("On your host machine, cd into the repo's docker/ directory and run:");
-        renderer.WriteInfo("  docker compose --profile full up -d llama-server");
-        renderer.WriteInfo($"Check: curl {healthUrl}  (HTTP 200 = ready)");
+        renderer.WriteInfo("On your host machine run:");
+        renderer.WriteInfo("  cd ~/openmono.ai/docker");
+        renderer.WriteInfo("  docker compose up -d llama-server");
+        var hostHealthUrl = healthUrl.Replace("llama-server", "localhost");
+        renderer.WriteInfo($"Check: curl {hostHealthUrl}  (HTTP 200 = ready)");
         renderer.WriteInfo($"Watching {healthUrl} — I'll notify you when it's up (Ctrl+C to skip)...");
         await PollHealthAsync(renderer, healthUrl, timeoutSeconds: 300);
         return;

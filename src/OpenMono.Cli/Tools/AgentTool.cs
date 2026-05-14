@@ -84,7 +84,6 @@ public sealed class AgentTool : ToolBase
                         {
                             if (!responseStarted)
                             {
-                                context.WriteOutput($"**[{agentDef.Name}: {description}]**");
                                 context.BeginResponse?.Invoke();
                                 responseStarted = true;
                             }
