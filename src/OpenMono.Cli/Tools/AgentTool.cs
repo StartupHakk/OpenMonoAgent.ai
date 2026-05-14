@@ -66,7 +66,7 @@ public sealed class AgentTool : ToolBase
 
             var sink = new SubAgentOutputSink(description, context.WriteOutput);
             var inputReader = new NullInputReader();
-            var llm = new OpenAiCompatClient(context.Config.Llm);
+            var llm = new OpenAiCompatClient(context.Config.Llm) { ApiKey = context.Config.Llm.ApiKey };
 
             try
             {
