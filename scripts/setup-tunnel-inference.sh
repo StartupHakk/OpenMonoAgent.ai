@@ -28,6 +28,80 @@ ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
+# ── Parse arguments ──────────────────────────────────────────────────
+
+SHOW_ONLY=false
+for arg in "$@"; do
+    case "$arg" in
+        --inference) SHOW_ONLY=true ;;
+    esac
+done
+
+# ── Display-only mode: show existing credentials without installing ───
+
+if [[ "$SHOW_ONLY" == "true" ]]; then
+    if [[ ! -f "$RELAY_CACHE" ]]; then
+        err "No relay credentials found at $RELAY_CACHE"
+        err "Run 'openmono tunnel setup' (without --inference) to authenticate first."
+        exit 1
+    fi
+
+    _token="$(jq -r '.relayToken // empty' "$RELAY_CACHE" 2>/dev/null || true)"
+    if [[ -z "$_token" ]]; then
+        err "Relay cache exists but has no relayToken. Delete $RELAY_CACHE and run setup again."
+        exit 1
+    fi
+
+    RELAY_TOKEN="$_token"
+    REMOTE_PORT="$(jq -r '.remotePort'   "$RELAY_CACHE")"
+    FRPS_ADDRESS="$(jq -r '.frpsAddress' "$RELAY_CACHE")"
+    FRPS_PORT="$(jq -r    '.frpsPort'    "$RELAY_CACHE")"
+
+    LLAMA_API_KEY=""
+    if [[ -f "$ENV_FILE" ]]; then
+        LLAMA_API_KEY="$(grep '^LLAMA_API_KEY=' "$ENV_FILE" | cut -d= -f2- | tr -d '[:space:]' || true)"
+    fi
+    if [[ -z "$LLAMA_API_KEY" ]]; then
+        err "No LLAMA_API_KEY found in $ENV_FILE"
+        err "Run 'openmono tunnel setup' (without --inference) to generate one."
+        exit 1
+    fi
+
+    cat <<EOF
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${GREEN}Inference box connection details${NC}
+
+  LLAMA API Key:  $LLAMA_API_KEY
+  Base URL:       http://$RELAY_PUBLIC_HOST:$REMOTE_PORT
+
+${BLUE}ON THE AGENT BOX, run:${NC}
+
+  openmono config set llm.endpoint  http://$RELAY_PUBLIC_HOST:$REMOTE_PORT
+  openmono config set llm.api_key   $LLAMA_API_KEY
+
+Then:  openmono agent
+
+${YELLOW}Relay server:${NC} $FRPS_ADDRESS:$FRPS_PORT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EOF
+
+    info "Sending connection details to your registered email..."
+    CONNECT_HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+        -X POST "$API_BASE/api/connection/connect" \
+        -H "Authorization: Bearer $RELAY_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"apiKey\": \"$LLAMA_API_KEY\"}")
+
+    if [[ "$CONNECT_HTTP_CODE" == "200" ]]; then
+        ok "Connection details sent to your email."
+    else
+        warn "Could not send connection email (HTTP $CONNECT_HTTP_CODE)."
+    fi
+
+    exit 0
+fi
+
 # ── Prerequisite checks ──────────────────────────────────────────────
 
 if [[ $EUID -ne 0 ]] && ! command -v sudo &>/dev/null; then
