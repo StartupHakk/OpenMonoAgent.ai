@@ -49,9 +49,15 @@ FRPS_PORT=""
 RELAY_TOKEN=""
 REMOTE_PORT=""
 PROXY_PREFIX=""
+LLAMA_API_KEY=""
 
 if [[ -f "$RELAY_CACHE" ]]; then
+    # Show current configuration and ask if user wants to reuse it
     _token="$(jq -r '.relayToken // empty' "$RELAY_CACHE" 2>/dev/null || true)"
+    if [[ -z "$_token" ]]; then
+        err "Relay cache exists but has no relayToken. Delete $RELAY_CACHE and run setup again."
+        exit 1
+    fi
     if [[ -n "$_token" ]]; then
         info "Found existing relay credentials for $(jq -r '.email // "unknown"' "$RELAY_CACHE")"
         RELAY_TOKEN="$(jq -r '.relayToken'    "$RELAY_CACHE")"
@@ -60,9 +66,52 @@ if [[ -f "$RELAY_CACHE" ]]; then
         FRPS_ADDRESS="$(jq -r '.frpsAddress'  "$RELAY_CACHE")"
         FRPS_PORT="$(jq -r    '.frpsPort'     "$RELAY_CACHE")"
     fi
-fi
+    
+    if [[ -f "$ENV_FILE" ]]; then
+        LLAMA_API_KEY="$(grep '^LLAMA_API_KEY=' "$ENV_FILE" | cut -d= -f2- | tr -d '[:space:]' || true)"
+    fi
 
-if [[ -z "$RELAY_TOKEN" ]]; then
+    if [[ -z "$LLAMA_API_KEY" ]]; then
+        err "No LLAMA_API_KEY found in $ENV_FILE"
+        err "Run 'openmono tunnel setup'"
+        exit 1
+    fi
+
+    cat <<EOF
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${GREEN}Inference box connection details${NC}
+
+  LLAMA API Key:  $LLAMA_API_KEY
+  Base URL:       http://$RELAY_PUBLIC_HOST:$REMOTE_PORT
+
+${BLUE}ON THE AGENT BOX, run:${NC}
+
+  openmono config set llm.endpoint  http://$RELAY_PUBLIC_HOST:$REMOTE_PORT
+  openmono config set llm.api_key   $LLAMA_API_KEY
+
+Then:  openmono agent
+
+${YELLOW}Relay server:${NC} $FRPS_ADDRESS:$FRPS_PORT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EOF
+
+    info "Sending connection details to your registered email..."
+    CONNECT_HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+        -X POST "$API_BASE/api/connection/connect" \
+        -H "Authorization: Bearer $RELAY_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"apiKey\": \"$LLAMA_API_KEY\"}")
+
+    if [[ "$CONNECT_HTTP_CODE" == "200" ]]; then
+        ok "Connection details sent to your email."
+    else
+        warn "Could not send connection email (HTTP $CONNECT_HTTP_CODE)."
+    fi
+
+    exit 0
+    else
+    # No valid cached credentials, go through OTP flow
     echo ""
     echo -e "${BLUE}OpenMono.ai${NC} — Relay Tunnel Setup"
     echo "─────────────────────────────────────────"
@@ -141,7 +190,9 @@ if [[ -z "$RELAY_TOKEN" ]]; then
         > "$RELAY_CACHE"
     chmod 0600 "$RELAY_CACHE"
     ok "Credentials saved to $RELAY_CACHE"
+
 fi
+
 
 # ── Validate ─────────────────────────────────────────────────────────
 
@@ -160,7 +211,6 @@ fi
 
 # ── Reuse existing API key, or generate one if absent ────────────────
 
-LLAMA_API_KEY=""
 if [[ -f "$ENV_FILE" ]]; then
     LLAMA_API_KEY="$(grep '^LLAMA_API_KEY=' "$ENV_FILE" | cut -d= -f2- | tr -d '[:space:]' || true)"
 fi
