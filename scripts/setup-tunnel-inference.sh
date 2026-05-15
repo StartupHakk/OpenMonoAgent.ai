@@ -319,8 +319,8 @@ fi
 if command -v docker &>/dev/null && docker compose version &>/dev/null 2>&1; then
     if (cd "$REPO_DIR/docker" && docker compose ps --services 2>/dev/null | grep -q '^llama-server$'); then
         info "Restarting llama-server with new API key..."
-        (cd "$REPO_DIR/docker" && docker compose restart llama-server) || \
-            warn "Restart failed — run manually: cd docker && docker compose restart llama-server"
+        (cd "$REPO_DIR/docker" && docker compose up -d llama-server) || \
+            warn "Restart failed — run manually: cd ${REPO_DIR}/docker && docker compose up -d llama-server"
     else
         info "llama-server not running yet. Start it with: openmono start"
     fi
