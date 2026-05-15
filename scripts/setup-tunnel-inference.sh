@@ -162,7 +162,7 @@ fi
 
 LLAMA_API_KEY=""
 if [[ -f "$ENV_FILE" ]]; then
-    LLAMA_API_KEY="$(grep '^LLAMA_API_KEY=' "$ENV_FILE" | cut -d= -f2- | tr -d '[:space:]')"
+    LLAMA_API_KEY="$(grep '^LLAMA_API_KEY=' "$ENV_FILE" | cut -d= -f2- | tr -d '[:space:]' || true)"
 fi
 if [[ -z "$LLAMA_API_KEY" ]]; then
     LLAMA_API_KEY="$(openssl rand -hex 24)"
