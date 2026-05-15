@@ -8,7 +8,7 @@ Commands are grouped by which box they run on.
 
 | Command | Description |
 |---------|-------------|
-| `openmono setup [--full\|--inference\|--agent] [--gpu\|--cpu]` | Install and configure a box role |
+| `openmono setup [--full\|--agent] [--gpu\|--cpu]` | Install and configure a box role |
 | `openmono config <set\|get\|unset> <key> [value]` | Read/write `~/.openmono/settings.json` |
 | `openmono help` | Show help |
 
