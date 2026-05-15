@@ -416,10 +416,38 @@ cmd_start() {
         exit 1
     fi
 
-    info "Starting llama-server on port ${LLAMA_PORT}..."
-    docker compose up -d llama-server
+    # Check for native llama-server on macOS
+    local settings="$HOME/.openmono/settings.json"
+    local native_path=""
+    local model_path=""
+    local api_key=""
+    local ctx_size=32768
+    
+    if [[ -f "$settings" ]] && command -v jq &>/dev/null; then
+        native_path=$(jq -r '.llm.native_path // empty' "$settings")
+        model_path=$(jq -r '.llm.model_path // "models/qwen3.6-35b-a3b-ud-q4_k_xl.gguf"' "$settings")
+        api_key=$(jq -r '.llm.api_key // empty' "$settings")
+        cfg_ctx=$(jq -r '.llm.context_size // empty' "$settings")
+        [[ -n "$cfg_ctx" ]] && ctx_size="$cfg_ctx"
+    fi
 
-    info "Waiting for llama-server to be healthy (model loading can take 1-2 min)..."
+    if [[ "$(uname)" == "Darwin" && -n "$native_path" && -x "$native_path" ]]; then
+        info "Starting native llama-server on port ${LLAMA_PORT}..."
+        mkdir -p "$HOME/.openmono/logs"
+        nohup "$native_path" \
+          --model "$REPO_DIR/$model_path" \
+          --host 0.0.0.0 \
+          --port "${LLAMA_PORT}" \
+          --ctx-size "$ctx_size" \
+          --n-gpu-layers 99 \
+          --flash-attn on \
+          ${api_key:+--api-key "$api_key"} > "$HOME/.openmono/logs/native-llama.log" 2>&1 &
+    else
+        info "Starting llama-server container on port ${LLAMA_PORT}..."
+        docker compose up -d llama-server
+    fi
+
+    info "Waiting for llama-server to be healthy..."
     HEALTHY=false
     for i in $(seq 1 36); do
         if curl -sf "http://localhost:${LLAMA_PORT}/health" &>/dev/null; then
@@ -447,16 +475,18 @@ cmd_stop() {
     export LLAMA_PORT
     info "Stopping containers..."
     docker compose down
+    
+    # Kill native llama-server if running
+    if [[ "$(uname)" == "Darwin" ]]; then
+        pkill -f llama-server || true
+    fi
     ok "Stopped"
 }
 
 cmd_restart() {
     _ensure_docker
-    cd "$DOCKER_DIR"
-    export LLAMA_PORT
-    info "Restarting llama-server..."
-    docker compose restart llama-server
-    ok "Restarted"
+    cmd_stop
+    cmd_start
 }
 
 cmd_agent() {
@@ -480,10 +510,6 @@ cmd_agent() {
         local cfg_endpoint cfg_key
         cfg_endpoint=$(jq -r '.llm.endpoint // empty' "$settings")
         cfg_key=$(jq -r '.llm.api_key // empty' "$settings")
-        # Don't override OPENMONO_ENDPOINT with a localhost address — inside the
-        # container network the llama-server service is only reachable by its
-        # service name.  docker-compose already defaults to http://llama-server:7474;
-        # exporting localhost would shadow that with an address the container can't reach.
         if [[ -n "$cfg_endpoint" ]] && \
            [[ "$cfg_endpoint" != "http://localhost:${LLAMA_PORT}" ]] && \
            [[ "$cfg_endpoint" != "http://localhost:7474" ]]; then
@@ -492,11 +518,6 @@ cmd_agent() {
         [[ -n "$cfg_key" ]] && export OPENMONO_API_KEY="$cfg_key"
     fi
 
-    # If the endpoint is local (no remote configured), make sure llama-server is
-    # up and healthy before starting the agent. Skip this entirely for remote/tunnel
-    # endpoints — the agent connects outbound and doesn't need a local server.
-    # Also skip on agent-only installs with no endpoint configured: the user must
-    # point at a remote inference server first.
     local effective_endpoint="${OPENMONO_ENDPOINT:-http://llama-server:7474}"
     local local_health="http://localhost:${LLAMA_PORT}/health"
     if [[ "$effective_endpoint" == "http://llama-server:7474" || \
@@ -504,31 +525,10 @@ cmd_agent() {
           "$effective_endpoint" == "http://localhost:7474" ]]; then
         if [[ "${OPENMONO_ROLE:-}" == "agent" ]]; then
             warn "No remote inference endpoint configured for agent-only install."
-            warn "Set one before running the agent:"
-            warn "  openmono config set llm.endpoint http://<server-ip>:<port>"
-            warn "  openmono config set llm.api_key  <your-api-key>"
             exit 1
         fi
         if ! curl -sf "$local_health" &>/dev/null; then
-            info "llama-server not running — starting it now..."
-            docker compose up -d llama-server
-            info "Waiting for llama-server to be healthy (model load can take 1-2 min)..."
-            local healthy=false
-            for i in $(seq 1 36); do
-                if curl -sf "$local_health" &>/dev/null; then
-                    healthy=true
-                    break
-                fi
-                sleep 5
-                printf "."
-            done
-            echo ""
-            if [ "$healthy" = true ]; then
-                ok "llama-server is healthy"
-            else
-                warn "llama-server did not become healthy within 180s — starting agent anyway"
-                warn "Check: openmono logs"
-            fi
+            cmd_start
         fi
     fi
 

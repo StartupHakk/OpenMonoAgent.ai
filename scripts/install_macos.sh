@@ -31,8 +31,8 @@ esac
 
 # Step counts vary by role.
 case "$OPENMONO_ROLE" in
-    full)      TOTAL_STEPS=8 ;;
-    inference) TOTAL_STEPS=7 ;;
+    full)      TOTAL_STEPS=9 ;;
+    inference) TOTAL_STEPS=8 ;;
     agent)     TOTAL_STEPS=5 ;;
 esac
 
@@ -407,6 +407,24 @@ if [ "$OPENMONO_ROLE" != "agent" ]; then
     fi
 fi
 
+
+# ── Step 9: Building native inference engine (Metal) ─────────────────────────
+
+if [ "$OPENMONO_ROLE" != "agent" ]; then
+    next_step "Building native inference engine (Metal)"
+    if [ ! -d "$INSTALL_DIR/llama.cpp" ]; then
+        info "Cloning llama.cpp..."
+        git clone https://github.com/ggml-org/llama.cpp.git "$INSTALL_DIR/llama.cpp"
+    fi
+    info "Compiling llama.cpp with Metal support..."
+    cmake -S "$INSTALL_DIR/llama.cpp" -B "$INSTALL_DIR/llama.cpp/build" -DGGML_METAL=ON
+    cmake --build "$INSTALL_DIR/llama.cpp/build" --config Release -j
+    # Auto-configure the paths
+    "$INSTALL_DIR/openmono" config set llm.native_path "$INSTALL_DIR/llama.cpp/build/bin/llama-server"
+    "$INSTALL_DIR/openmono" config set llm.model_path "models/qwen3.6-35b-a3b-ud-q4_k_xl.gguf"
+    # Point to the alias by default on macOS
+    "$INSTALL_DIR/openmono" config set llm.endpoint "http://llama-server:7474"
+fi
 # ── Shell integration ─────────────────────────────────────────────────────────
 # Shell rc file updates are handled by openmono cmd_setup after installation completes
 # This ensures we only update the appropriate files for the user's actual shell
