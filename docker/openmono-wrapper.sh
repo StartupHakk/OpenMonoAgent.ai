@@ -16,7 +16,8 @@ DOCKER_ARGS=(
   --interactive
   --tty
   -v "${WORKSPACE}:/workspace"
-  -v "${CONFIG_DIR}:/root/.openmono"
+  -v "${CONFIG_DIR}:/home/agent/.openmono"
+  -e "HOME=/home/agent"
   -e "OPENMONO_IN_CONTAINER=1"
 )
 

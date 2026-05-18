@@ -43,10 +43,11 @@ services:
     profiles: ["full", "agent"]
     volumes:
       - ${WORKSPACE:-.}:/workspace
-      - ${HOME}/.openmono:/root/.openmono
-      - ${HOME}/.code-review-graph:/root/.code-review-graph
+      - ${HOME}/.openmono:/home/agent/.openmono
+      - ${HOME}/.code-review-graph:/home/agent/.code-review-graph
       - ../ref:/ref:ro
     environment:
+      - HOME=/home/agent
       - OPENMONO_ENDPOINT=${OPENMONO_ENDPOINT:-http://llama-server:7474}
       - OPENMONO_WORKSPACE=/workspace
       - OPENMONO_HOST_WORKSPACE=${WORKSPACE:-.}
