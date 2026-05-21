@@ -136,7 +136,7 @@ public sealed class ConversationLoop : IDisposable
             return;
         }
         _session.TurnCount++;
-        return RunTurnInternalAsync(ct);
+        await RunTurnInternalAsync(ct);
     }
 
 
