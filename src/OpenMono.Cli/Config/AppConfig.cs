@@ -47,6 +47,8 @@ public class LlmConfig
     public string Endpoint { get; set; } = "http://localhost:7474";
     public string Model { get; set; } = "";
     public string? ApiKey { get; set; }
+    public string? NativePath { get; set; }
+    public string? ModelPath { get; set; }
     public int ContextSize { get; set; } = 196608;
     public int MaxOutputTokens { get; set; } = 16384;
     public double Temperature { get; set; } = 0.7;
@@ -60,6 +62,8 @@ public class LlmConfig
     {
         if (!string.IsNullOrEmpty(source.Endpoint)) Endpoint = source.Endpoint;
         if (!string.IsNullOrEmpty(source.Model)) Model = source.Model;
+        if (!string.IsNullOrEmpty(source.NativePath)) NativePath = source.NativePath;
+        if (!string.IsNullOrEmpty(source.ModelPath)) ModelPath = source.ModelPath;
         if (source.ContextSize > 0) ContextSize = source.ContextSize;
         if (source.MaxOutputTokens > 0) MaxOutputTokens = source.MaxOutputTokens;
         if (source.Temperature > 0) Temperature = source.Temperature;

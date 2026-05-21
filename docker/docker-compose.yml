@@ -52,6 +52,8 @@ services:
       - OPENMONO_WORKSPACE=/workspace
       - OPENMONO_HOST_WORKSPACE=${WORKSPACE:-.}
       - OPENMONO_API_KEY=${OPENMONO_API_KEY:-${LLAMA_API_KEY:-}}
+    extra_hosts:
+      - "llama-server:host-gateway"
     stdin_open: true
     tty: true
     working_dir: /workspace
