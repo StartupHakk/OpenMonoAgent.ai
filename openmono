@@ -6,7 +6,21 @@ set -eo pipefail
 # Usage: openmono <command>
 # ──────────────────────────────────────────────────────────────────────────────
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve to real script location, handling symlinks
+# Try $0 first (most reliable), fall back to BASH_SOURCE
+OPENMONO_SCRIPT="${0}"
+if [[ ! -f "$OPENMONO_SCRIPT" ]]; then
+    OPENMONO_SCRIPT="${BASH_SOURCE[0]}"
+fi
+# Make it absolute if relative
+if [[ "$OPENMONO_SCRIPT" != /* ]]; then
+    OPENMONO_SCRIPT="$(cd "$(dirname "$OPENMONO_SCRIPT")" && pwd)/$(basename "$OPENMONO_SCRIPT")"
+fi
+# Follow symlinks to real location
+while [[ -L "$OPENMONO_SCRIPT" ]]; do
+    OPENMONO_SCRIPT="$(readlink -f "$OPENMONO_SCRIPT" 2>/dev/null || readlink "$OPENMONO_SCRIPT")"
+done
+REPO_DIR="$(cd "$(dirname "$OPENMONO_SCRIPT")" && pwd)"
 DOCKER_DIR="$REPO_DIR/docker"
 LLAMA_PORT="${LLAMA_PORT:-7474}"
 OPENMONO_VERSION="$(cat "$REPO_DIR/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "unknown")"
@@ -201,16 +215,19 @@ cmd_setup() {
     done
 
     # Source shared logging helpers for role_prompt function
-    _REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     # shellcheck source=scripts/lib/log.sh
-    source "$_REPO_DIR/scripts/lib/log.sh"
+    source "$REPO_DIR/scripts/lib/log.sh"
 
-    # Set install directory early (same default as get-openmono.sh)
-    INSTALL_DIR="${OPENMONO_HOME:-$HOME/openmono.ai}"
+    # Set install directory: explicit env var, or wherever the script is located
+    if [[ -n "${OPENMONO_HOME:-}" ]]; then
+        INSTALL_DIR="$OPENMONO_HOME"
+    else
+        INSTALL_DIR="$REPO_DIR"
+    fi
 
     # Set up PATH before anything else so openmono is accessible during/after setup
     # shellcheck source=/dev/null
-    source "$_REPO_DIR/scripts/lib/shell-integration.sh" 2>/dev/null || true
+    source "$REPO_DIR/scripts/lib/shell-integration.sh" 2>/dev/null || true
     info "Setting up shell integration..."
     if install_to_system_path "$INSTALL_DIR"; then
         ok "Command available system-wide: /usr/local/bin/openmono"
@@ -404,6 +421,9 @@ EOF
         fi
     fi
 
+    # Clear saved setup preferences so next setup starts fresh
+    rm -f "$HOME/.openmono/.setup_prefs"
+
     # Unset all setup-related environment variables so the next 'openmono setup'
     # run in the same shell will start fresh with hardware detection
     unset OPENMONO_GPU OPENMONO_CPU OPENMONO_ROLE OPENMONO_VERBOSE OPENMONO_LOG_DIR \
@@ -518,9 +538,8 @@ cmd_agent() {
     WORKSPACE="${WORKSPACE:-$(pwd)}"
     export WORKSPACE
     cd "$DOCKER_DIR"
-    export LLAMA_PORT
 
-    # Read llm.endpoint / llm.api_key from settings.json
+    # Read endpoint and API key from settings
     local settings="$HOME/.openmono/settings.json"
     local cfg_endpoint cfg_key
     if [[ -f "$settings" ]] && command -v jq &>/dev/null; then
@@ -529,16 +548,15 @@ cmd_agent() {
         [[ -n "$cfg_key" ]] && export OPENMONO_API_KEY="$cfg_key"
     fi
 
-    # Check if endpoint is configured
+    # Endpoint must be configured
     if [[ -z "$cfg_endpoint" ]]; then
         err "No LLM endpoint configured in ~/.openmono/settings.json"
         err "Configure your inference server:"
         err "  openmono config set llm.endpoint http://<server-ip>:<port>"
-        err "  openmono config set llm.api_key  <your-api-key>"
         exit 1
     fi
 
-    # Determine if this is a local or remote endpoint
+    # Determine if endpoint is local or remote
     local is_local=false
     case "$cfg_endpoint" in
         http://localhost:* | http://127.0.0.1:* | http://host.docker.internal:*)
@@ -546,55 +564,40 @@ cmd_agent() {
             ;;
     esac
 
-    # Manage local inference server if endpoint is local
+    # Ensure local inference server is running
     if [[ "$is_local" == "true" ]]; then
         if [[ "$NATIVE_INFERENCE" == "true" ]]; then
-            # macOS Apple Silicon: use native Metal llama-server
+            # macOS: ensure native Metal llama-server is running
             # shellcheck source=/dev/null
             source "$REPO_DIR/scripts/llama-native.sh" 2>/dev/null || true
             native_load_config || exit 1
             native_ensure_running || exit 1
         else
-            # Linux/Docker: use docker-compose
-            local local_health="http://localhost:${LLAMA_PORT}/health"
-            if ! curl -sf "$local_health" &>/dev/null; then
+            # Linux/Docker: ensure docker llama-server is running
+            if ! curl -sf "http://localhost:7474/health" &>/dev/null; then
                 info "llama-server not running — starting it now..."
                 docker compose up -d llama-server
                 info "Waiting for llama-server to be healthy (model load can take 1-2 min)..."
-                local healthy=false
                 for i in $(seq 1 36); do
-                    if curl -sf "$local_health" &>/dev/null; then
-                        healthy=true; break
+                    if curl -sf "http://localhost:7474/health" &>/dev/null; then
+                        ok "llama-server is healthy"
+                        break
                     fi
-                    sleep 5; printf "."
+                    sleep 5
+                    printf "."
                 done
                 echo ""
-                if [ "$healthy" = true ]; then
-                    ok "llama-server is healthy"
-                else
-                    warn "llama-server did not become healthy within 180s — starting agent anyway"
-                    warn "Check: openmono logs"
-                fi
             fi
-        fi
-    else
-        # Remote/LAN endpoint: just health check (non-blocking)
-        if ! curl -sf --max-time 5 "${cfg_endpoint}/health" &>/dev/null 2>&1; then
-            warn "Cannot reach inference server at ${cfg_endpoint}"
-            warn "Agent will start anyway — check your endpoint configuration if prompts fail"
         fi
     fi
 
-    # Set OPENMONO_ENDPOINT for the container (unless it's localhost, which the container can't reach)
-    if [[ "$is_local" != "true" ]]; then
-        export OPENMONO_ENDPOINT="$cfg_endpoint"
-    fi
+    # Pass configured endpoint to container
+    export OPENMONO_ENDPOINT="$cfg_endpoint"
 
     docker compose run --rm \
         --user "$(id -u):$(id -g)" \
         -e HOME=/home/agent \
         -e WORKSPACE="$WORKSPACE" \
-        -e LLAMA_PORT="$LLAMA_PORT" \
         agent "$@"
 }
 
