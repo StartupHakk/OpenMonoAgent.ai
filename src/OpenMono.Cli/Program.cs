@@ -56,9 +56,10 @@ for (var i = 0; i < args.Length; i++)
             Console.WriteLine("  --detail           Show the right-hand detail panel in the TUI");
             Console.WriteLine("  --tui              Force full-screen TUI mode (default for interactive)");
             Console.WriteLine("  --classic          Force classic scrolling terminal mode");
-            Console.WriteLine("  --no-acp           Do not start the ACP agent server alongside the TUI");
+            Console.WriteLine("  --no-acp           Force-disable the ACP agent server (overrides config)");
             Console.WriteLine("  --acp-port <n>     ACP server port (default: 7475 or acpServer.Port in config)");
-            Console.WriteLine("  --acp-only         Run the ACP server only — no TUI (container default)");
+            Console.WriteLine("  --acp-only         Run the ACP server only — no TUI (forces ACP on; container default)");
+            Console.WriteLine("                     Without --acp-only, ACP stays off unless acpServer.enabled = true in config.");
             Console.WriteLine("  --help, -h         Show this help message");
             Console.WriteLine("  --version          Show version");
             Console.WriteLine();
@@ -214,6 +215,12 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
         return;
     }
 
+    // --acp-only forces the side channel on regardless of config, because the
+    // container's whole purpose is to expose the ACP server. In plain TUI mode
+    // the default is opt-out (config.AcpServer.Enabled = false) so users don't
+    // get an unexpected lock file in their workspace.
+    if (acpOnly) acp.Enabled = true;
+
     if (acp.Enabled && !noAcp)
     {
         if (acpPort.HasValue) acp.Port = acpPort.Value;
@@ -225,7 +232,11 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
         // to the current working directory and the bound port; Docker overrides them
         // per `docker run -e HOST_WORKSPACE_PATH=… -e HOST_ACP_PORT=…`.
         var hostWorkspaceExternal = Environment.GetEnvironmentVariable("HOST_WORKSPACE_PATH");
-        var runningInDocker = hostWorkspaceExternal is { Length: > 0 } && Directory.Exists("/workspace");
+        // /.dockerenv is created by Docker in every container it runs (also by Podman in
+        // Docker-compatibility mode). Checking the file is more reliable than the prior
+        // heuristic, which falsely classified Linux hosts that happened to have a
+        // /workspace directory and HOST_WORKSPACE_PATH set in their shell env.
+        var runningInDocker = File.Exists("/.dockerenv");
 
         Environment.SetEnvironmentVariable("HOST_WORKSPACE_PATH",
             hostWorkspaceExternal ?? config.WorkingDirectory);
@@ -247,7 +258,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
         acpServices.AddSingleton<IOutputSink>(renderer);
         acpServices.AddSingleton<IInputReader>(renderer);
         acpServices.AddSingleton<ILiveFeedback>(renderer);
-        acpServices.AddSingleton(acp);
+        // Note: AcpServer.Build registers `acp` itself; no need to add it here.
         acpServices.AddSingleton(new AcpSessionStore(config, acp));
         var lockFileWriter = new AcpLockFileWriter(acp, lockWorkspaceMount);
         acpServices.AddSingleton(lockFileWriter);
@@ -262,9 +273,25 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
 
         acpCts = new CancellationTokenSource();
         acpHost = new AcpHostedService(acp, acpServices, lockFileWriter);
-        await acpHost.StartAsync(acpCts.Token);
-        renderer.WriteInfo($"ACP server listening on http://127.0.0.1:{acp.Port}");
-        renderer.WriteInfo($"Lock file: {lockFileWriter.LockFilePath}");
+        try
+        {
+            await acpHost.StartAsync(acpCts.Token);
+            renderer.WriteInfo($"ACP server listening on http://127.0.0.1:{acp.Port}");
+            renderer.WriteInfo($"Lock file: {lockFileWriter.LockFilePath}");
+        }
+        catch (Exception ex)
+        {
+            // Common cases: port already bound (another openmono running, or a port
+            // collision with another process). Don't kill the TUI over a side-channel —
+            // just drop the ACP server and warn. The extension's discovery flow will
+            // fall back to its default-port probe or to docker auto-spawn.
+            renderer.WriteWarning($"ACP server failed to start: {ex.Message}");
+            renderer.WriteWarning("Continuing without ACP. Pass --no-acp to silence this on subsequent runs.");
+            await acpHost.DisposeAsync();
+            acpHost = null;
+            acpCts.Dispose();
+            acpCts = null;
+        }
     }
 
     if (acpOnly)
@@ -344,6 +371,12 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
 
         if ((now - lastCtrlCExitTime).TotalSeconds <= 1.5)
         {
+            // Best-effort cleanup of the ACP lock file before the hard exit. Blocking
+            // wait is acceptable here — we are about to call Environment.Exit anyway,
+            // and StopAsync removes the lock file synchronously before stopping Kestrel.
+            // ProcessWatchdog.ScheduleHardKill caps the time we can spend.
+            try { acpHost?.StopAsync(CancellationToken.None).GetAwaiter().GetResult(); }
+            catch { /* swallow — about to Exit */ }
             ProcessWatchdog.ScheduleHardKill();
             ansiTui?.SafeExit();
             Environment.Exit(0);

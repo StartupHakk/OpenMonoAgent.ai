@@ -31,6 +31,7 @@ public sealed class AcpLockFileWriter
     /// </summary>
     public AcpLockFileWriter(AcpServerSettings settings, string workspaceMount)
     {
+        ContainerWorkspace = workspaceMount;
         var dir = Path.Combine(workspaceMount, ".openmono");
         _path = Path.Combine(dir, "agent.lock");
 
@@ -56,6 +57,14 @@ public sealed class AcpLockFileWriter
     public string HostWorkspace => _payload.host_workspace;
     public int HostPort => _payload.port;
     public string ContainerId => _payload.container_id;
+
+    /// <summary>
+    /// The path the agent uses internally to read/write workspace files.
+    /// In Docker this is "/workspace" (the bind-mount). For native runs this is the
+    /// host working directory (same as HostWorkspace). Used by GET /api/v1/discovery
+    /// so the extension can verify the agent's view of the workspace.
+    /// </summary>
+    public string ContainerWorkspace { get; }
 
     /// <summary>Write the lock file. Idempotent; safe to call once Kestrel is listening.</summary>
     public void Write()

@@ -2,7 +2,18 @@ namespace OpenMono.Acp;
 
 public sealed class AcpServerSettings
 {
-    public bool Enabled { get; set; } = true;
+    /// <summary>
+    /// Opt-in: the ACP side channel is off by default so plain `openmono` invocations
+    /// don't write <c>.openmono/agent.lock</c> into the user's workspace or bind a
+    /// network port the user didn't ask for. Turn on via:
+    ///   - <c>acpServer.enabled = true</c> in settings.json (host running natively),
+    ///   - the <c>--acp-only</c> flag (container default — forces enable + skips TUI), or
+    ///   - any future <c>--acp</c> equivalent.
+    /// The VS Code extension does not need this to be on — if the agent isn't
+    /// reachable on the workspace's lock file or port 7475, the extension auto-spawns
+    /// its own Docker container instead.
+    /// </summary>
+    public bool Enabled { get; set; } = false;
     public int Port { get; set; } = 7475;
     public int SessionTtlHours { get; set; } = 24;
     public int PendingUserResponseTimeoutMinutes { get; set; } = 10;

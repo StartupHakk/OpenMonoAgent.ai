@@ -35,7 +35,7 @@ public static class AcpEndpoints
             version = "1.0.0",
             agent_id = lockfile.AgentId,
             host_workspace = lockfile.HostWorkspace,
-            container_workspace = "/workspace",
+            container_workspace = lockfile.ContainerWorkspace,
             status = "ready",
             uptime_seconds = uptime,
         });
