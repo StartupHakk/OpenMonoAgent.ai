@@ -10,7 +10,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Load settings.json and set native-specific variables
-_native_load_config() {
+native_load_config() {
     local settings="$HOME/.openmono/settings.json"
     if ! command -v jq &>/dev/null; then
         err "jq is required. Install: brew install jq"; return 1
@@ -23,7 +23,6 @@ _native_load_config() {
     LLAMA_CTX_SIZE=$(jq -r '.inference.ctx_size // 65536' "$settings" 2>/dev/null)
     LLAMA_NATIVE_PORT=$(jq -r '.inference.port // "7474"' "$settings" 2>/dev/null)
     LLAMA_INSTALL_DIR=$(jq -r '.inference.install_dir // empty' "$settings" 2>/dev/null)
-    LLAMA_API_KEY=$(jq -r '.inference.api_key // empty' "$settings" 2>/dev/null)
     LLAMA_MMPROJ_PATH=$(jq -r '.inference.mmproj_path // empty' "$settings" 2>/dev/null)
     LLAMA_INSTALL_DIR="${LLAMA_INSTALL_DIR:-$HOME/openmono.ai}"
     if [[ -z "$MODEL_NAME" ]]; then
@@ -32,8 +31,8 @@ _native_load_config() {
 }
 
 # Start native llama-server in the background with Metal GPU.
-# Requires _native_load_config to have been called first.
-_native_start_llama() {
+# Requires native_load_config to have been called first.
+native_start_llama() {
     if ! command -v llama-server &>/dev/null; then
         err "llama-server not found. Install: brew install llama.cpp"; return 1
     fi
@@ -82,7 +81,7 @@ _native_start_llama() {
 
 # Stop native llama-server by port with safety check (verify it's really llama-server).
 # Args: $1 = port (optional, defaults to LLAMA_PORT)
-_native_stop_llama() {
+native_stop_llama() {
     local port="${1:-${LLAMA_NATIVE_PORT:-7474}}"
 
     # Check if llama-server is actually responding on the port (best indicator that it's really running)
@@ -111,7 +110,7 @@ _native_stop_llama() {
 # ──────────────────────────────────────────────────────────────────────────────
 
 native_cmd_start() {
-    _native_load_config || return 1
+    native_load_config || return 1
     local port="${LLAMA_NATIVE_PORT:-7474}"
 
     # Check if llama-server is already healthy (best indicator)
@@ -120,7 +119,7 @@ native_cmd_start() {
         return 0
     fi
 
-    _native_start_llama || return 1
+    native_start_llama || return 1
 
     info "Waiting for llama-server to be healthy (model load: 1-3 min)..."
     for i in $(seq 1 36); do
@@ -137,17 +136,17 @@ native_cmd_start() {
 }
 
 native_cmd_stop() {
-    _native_load_config || return 1
-    _native_stop_llama "${LLAMA_NATIVE_PORT:-7474}" || return 1
+    native_load_config || return 1
+    native_stop_llama "${LLAMA_NATIVE_PORT:-7474}" || return 1
     ok "llama-server stopped"
 }
 
 native_cmd_restart() {
-    _native_load_config || return 1
+    native_load_config || return 1
     local port="${LLAMA_NATIVE_PORT:-7474}"
-    _native_stop_llama "$port" || true
+    native_stop_llama "$port" || true
     sleep 1
-    _native_start_llama || return 1
+    native_start_llama || return 1
     info "Waiting for llama-server to be healthy..."
     for i in $(seq 1 36); do
         if curl -sf "http://localhost:${port}/health" &>/dev/null; then
@@ -172,7 +171,7 @@ native_cmd_logs() {
 }
 
 native_cmd_status() {
-    _native_load_config || return 1
+    native_load_config || return 1
     local port="${LLAMA_NATIVE_PORT:-7474}"
     echo ""
     echo "╭─ Native Inference (Metal GPU) ────────────────────────────╮"
@@ -221,14 +220,13 @@ native_cmd_status() {
     echo ""
 }
 
-native_cmd_agent() {
-    _native_load_config || return 1
+# Ensure local llama-server is running on Metal. Must call native_load_config first.
+native_ensure_running() {
     local port="${LLAMA_NATIVE_PORT:-7474}"
 
-    # If llama-server is not running, start it
     if ! curl -sf "http://localhost:${port}/health" &>/dev/null; then
         info "llama-server not running — starting it (Metal, model load: 1–3 min)..."
-        _native_start_llama || return 1
+        native_start_llama || return 1
         info "Waiting for llama-server to be healthy..."
         for i in $(seq 1 36); do
             if curl -sf "http://localhost:${port}/health" &>/dev/null; then
@@ -240,14 +238,10 @@ native_cmd_agent() {
         done
         echo ""
     fi
-
-    # Note: agent startup happens in cmd_agent() after calling this function.
-    # This function only ensures llama-server is running; Docker agent startup is
-    # handled back in cmd_agent() with full docker compose setup.
 }
 
 native_cmd_tunnel_rotate_key() {
-    _native_load_config || return 1
+    native_load_config || return 1
     local port="${LLAMA_NATIVE_PORT:-7474}"
 
     # Generate new API key
@@ -272,10 +266,10 @@ native_cmd_tunnel_rotate_key() {
     if [[ -n "$pid" ]]; then
         proc_name=$(ps -p "$pid" -o comm= 2>/dev/null || true)
         if [[ "$proc_name" == *"llama-server"* ]]; then
-            _native_stop_llama "$port" || true
+            native_stop_llama "$port" || true
             sleep 1
             info "Restarting native llama-server with new API key..."
-            _native_start_llama || warn "Restart failed — run manually: openmono start"
+            native_start_llama || warn "Restart failed — run manually: openmono start"
             ok "llama-server restarted (Metal)"
         else
             warn "Port ${port} is in use by '${proc_name}' (PID $pid) — not llama-server"

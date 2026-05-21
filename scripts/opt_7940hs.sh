@@ -76,6 +76,7 @@ install_system_packages() {
     run sudo apt install -y \
         build-essential cmake git clang lld \
         vulkan-tools libvulkan-dev vulkan-validationlayers \
+        mesa-vulkan-drivers \
         glslc glslang-tools libshaderc-dev \
         libomp-dev libssl-dev ccache nvtop cpufrequtils
     ok "System packages installed"
@@ -101,9 +102,23 @@ edit_grub_config() {
     run sudo cp "$GRUB_FILE" "$GRUB_BACKUP"
     detail "Backup created: $GRUB_BACKUP"
 
-    NEW_CMDLINE="amd_iommu=off iommu=pt amdgpu.gttsize=28672 amdttm.pages_limit=7340032 ttm.pages_limit=7340032 amdgpu.ppfeaturemask=0xffffffff"
+    # Define our required performance parameters
+    PERF_PARAMS="amd_iommu=off amdgpu.gttsize=28672 amdttm.pages_limit=7340032 ttm.pages_limit=7340032 amdgpu.ppfeaturemask=0xffffffff"
 
-    run sudo sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT=\"$NEW_CMDLINE\"/" "$GRUB_FILE"
+    # Extract current default line
+    CURRENT_LINE=$(sudo grep "^GRUB_CMDLINE_LINUX_DEFAULT=" "$GRUB_FILE" | sed -e 's/^GRUB_CMDLINE_LINUX_DEFAULT=//' -e 's/"//g')
+
+    # Build new line avoiding duplicates
+    NEW_LINE="$CURRENT_LINE"
+    for param in $PERF_PARAMS; do
+        if [[ ! "$CURRENT_LINE" =~ $param ]]; then
+            NEW_LINE="$NEW_LINE $param"
+        fi
+    done
+    # Trim leading/trailing spaces
+    NEW_LINE=$(echo "$NEW_LINE" | xargs)
+
+    run sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$NEW_LINE\"|" "$GRUB_FILE"
 
     run sudo update-grub
     ok "GRUB configuration updated"
@@ -136,8 +151,7 @@ EOF'
     # iGPU performance level: persist via udev rule (no ROCm required)
     detail "Configuring persistent iGPU performance via udev..."
     run sudo bash -c 'cat > /etc/udev/rules.d/99-amdgpu-perf.rules <<'\''EOF'\''
-SUBSYSTEM=="drm", KERNEL=="card[0-9]*", ATTR{device/power_dpm_force_performance_level}=="*", \\
-    ATTR{device/power_dpm_force_performance_level}="high"
+SUBSYSTEM=="drm", KERNEL=="card[0-9]*", ATTR{device/power_dpm_force_performance_level}=="*", ATTR{device/power_dpm_force_performance_level}="high"
 EOF'
     run sudo udevadm control --reload-rules
     run sudo udevadm trigger

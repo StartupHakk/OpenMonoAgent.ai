@@ -48,13 +48,13 @@ select_model() {
         _MODEL_LABEL="Qwen3.6-35B-A3B (~17.6GB) [Apple Silicon >=48GB — standard]"
         _CTX_SIZE=$CTX_48G
     elif [ "$ram_gb" -ge 32 ]; then
-        # ~12 GB weights + ~6.5 GB KV + ~6 GB OS ≈ 24.5 GB on 32 GB Mac
-        MODEL_NAME="Qwen3.6-27B-UD-IQ3_XXS.gguf"
-        MODEL_URL="https://huggingface.co/unsloth/Qwen3.6-27B-GGUF/resolve/main/Qwen3.6-27B-UD-IQ3_XXS.gguf"
+        # ~5 GB weights + ~1.1 GB KV + ~6 GB OS ≈ 12 GB on 32 GB Mac
+        MODEL_NAME="Qwen3.5-9B-Q4_K_M.gguf"
+        MODEL_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
         MODEL_ACCURACY="lower"
         MODEL_MMPROJ="mmproj-F16.gguf"
-        MODEL_MMPROJ_URL="https://huggingface.co/unsloth/Qwen3.6-27B-GGUF/resolve/main/mmproj-F16.gguf"
-        _MODEL_LABEL="Qwen3.6-27B-UD-IQ3_XXS (~12GB) [Apple Silicon 32GB — lower accuracy]"
+        MODEL_MMPROJ_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/mmproj-F16.gguf"
+        _MODEL_LABEL="Qwen3.5-9B-Q4_K_M (~5GB) [Apple Silicon 32GB]"
         _CTX_SIZE=$CTX_32G
     elif [ "$ram_gb" -ge 16 ]; then
         # ~5 GB weights + ~1.1 GB KV + ~6 GB OS ≈ 12 GB on 16 GB Mac
