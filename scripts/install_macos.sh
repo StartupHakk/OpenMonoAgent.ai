@@ -484,33 +484,32 @@ PYEOF
     fi
 fi
 
-# ── Step 7: Build Docker images ────────────────────────────────────────────────
+# ── Step 7: Build Docker images (skipped for inference) ──────────────────────
 
-next_step "Building Docker images"
-
-cd "$INSTALL_DIR/docker"
-
-# Determine which docker compose command to use (prefer v2 plugin over v1 standalone)
-if docker compose version &>/dev/null 2>&1; then
-    DOCKER_COMPOSE_CMD="docker compose"
-elif command -v docker-compose &>/dev/null; then
-    DOCKER_COMPOSE_CMD="docker-compose"
-else
-    die "No Docker Compose found. Run: openmono setup to install prerequisites."
-fi
-
-info "Stopping any running containers..."
-run $DOCKER_COMPOSE_CMD down || true
-
-# macOS inference runs natively via llama.cpp (Metal) — only the agent image is needed.
 if [ "$OPENMONO_ROLE" != "inference" ]; then
+    next_step "Building Docker images"
+
+    cd "$INSTALL_DIR/docker"
+
+    # Determine which docker compose command to use (prefer v2 plugin over v1 standalone)
+    if docker compose version &>/dev/null 2>&1; then
+        DOCKER_COMPOSE_CMD="docker compose"
+    elif command -v docker-compose &>/dev/null; then
+        DOCKER_COMPOSE_CMD="docker-compose"
+    else
+        die "No Docker Compose found. Run: openmono setup to install prerequisites."
+    fi
+
+    info "Stopping any running containers..."
+    run $DOCKER_COMPOSE_CMD down || true
+
     info "Building agent image..."
     if ! run $DOCKER_COMPOSE_CMD build agent; then
         die "agent build failed"
     fi
-fi
 
-ok "Docker images built"
+    ok "Docker images built"
+fi
 
 # ── Step 8: Start llama-server (inference + full only) ──────────────────────
 
