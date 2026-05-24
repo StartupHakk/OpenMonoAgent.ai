@@ -20,4 +20,23 @@ public sealed class ToolContext
     public Action? BeginResponse { get; init; }
     public Action? EndResponse { get; init; }
     public Action<string>? StreamText { get; init; }
+
+    public int AgentDepth { get; init; } = 0;
+
+    public ToolContext WithAgentDepth(int newDepth) => new()
+    {
+        ToolRegistry     = this.ToolRegistry,
+        Session          = this.Session,
+        Permissions      = this.Permissions,
+        Config           = this.Config,
+        WorkingDirectory = this.WorkingDirectory,
+        WriteOutput      = this.WriteOutput,
+        AskUser          = this.AskUser,
+        FileHistory      = this.FileHistory,
+        Cursors          = this.Cursors,
+        BeginResponse    = this.BeginResponse,
+        EndResponse      = this.EndResponse,
+        StreamText       = this.StreamText,
+        AgentDepth       = newDepth,
+    };
 }

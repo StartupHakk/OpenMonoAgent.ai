@@ -36,6 +36,9 @@ public sealed class ConversationLoop : IDisposable
 
     private const int LargeResultThreshold = 20_000;
 
+    private readonly int _maxIterations;
+    private readonly int _agentDepth;
+
     public ConversationLoop(
         ILlmClient llm,
         ToolRegistry tools,
@@ -51,7 +54,9 @@ public sealed class ConversationLoop : IDisposable
         TurnJournal? journal = null,
         ToolResultCache? cache = null,
         ArtifactStore? artifactStore = null,
-        Checkpointer? checkpointer = null)
+        Checkpointer? checkpointer = null,
+        int maxIterations = 1000,
+        int agentDepth = 0)
     {
         _llm = llm;
         _tools = tools;
@@ -69,6 +74,8 @@ public sealed class ConversationLoop : IDisposable
         _cursorStore = new CursorStore();
         _cache = cache ?? new ToolResultCache();
         _artifactStore = artifactStore ?? ArtifactStore.ForSession(session, config.DataDirectory);
+        _maxIterations = maxIterations;
+        _agentDepth = agentDepth;
     }
 
     public void Dispose()
@@ -133,7 +140,7 @@ public sealed class ConversationLoop : IDisposable
             EnableThinking = thinking,
         };
 
-        var maxIterations = 1000;
+        var maxIterations = _maxIterations;
         for (var i = 0; i < maxIterations; i++)
         {
             ct.ThrowIfCancellationRequested();
@@ -797,5 +804,6 @@ public sealed class ConversationLoop : IDisposable
         BeginResponse = _output.StartAssistantResponse,
         EndResponse = () => _output.EndAssistantResponse(),
         StreamText = _output.StreamText,
+        AgentDepth = _agentDepth,
     };
 }

@@ -1,8 +1,8 @@
-using System.Text;
 using System.Text.Json;
 using OpenMono.Agents;
 using OpenMono.Llm;
 using OpenMono.Permissions;
+using OpenMono.Rendering;
 using OpenMono.Session;
 
 namespace OpenMono.Tools;
@@ -12,6 +12,8 @@ public sealed class AgentTool : ToolBase
     public override string Name => "Agent";
     public override string Description => "Spawn a sub-agent to handle a complex task. The sub-agent has its own conversation context and returns a summary when done.";
     public override bool IsConcurrencySafe => true;
+
+    private static readonly SemaphoreSlim _globalSlot = new(1, 1);
 
     protected override SchemaBuilder DefineSchema() => new SchemaBuilder()
         .AddString("description", "Short description of the task (3-5 words)")
@@ -36,145 +38,69 @@ public sealed class AgentTool : ToolBase
         if (!BuiltInAgents.All.TryGetValue(agentType, out var agentDef))
             return ToolResult.Error($"Unknown agent type: {agentType}. Valid: {string.Join(", ", BuiltInAgents.All.Keys)}");
 
-        context.WriteOutput($"[Agent: {description}] Starting {agentType} sub-agent...");
+        var depth = context.AgentDepth;
+        var maxDepth = context.Config.Agents.MaxNestingDepth;
+        if (depth >= maxDepth)
+            return ToolResult.Error(
+                $"Agent nesting depth limit ({maxDepth}) reached at depth {depth}. " +
+                "Sub-agents cannot spawn further sub-agents beyond this level.");
 
-        var subTools = new ToolRegistry();
-        foreach (var tool in context.ToolRegistry.All)
-        {
-            if (tool.Name == "Agent") continue;
-            if (IsToolAllowed(tool.Name, agentDef.AllowedTools))
-                subTools.Register(tool);
-        }
-
-        var subSession = new SessionState();
-        var systemPrompt = agentDef.SystemPrompt
-            ?? "You are a helpful coding assistant. Complete the task described below.";
-        subSession.AddMessage(new Message { Role = MessageRole.System, Content = systemPrompt });
-        subSession.AddMessage(new Message { Role = MessageRole.User, Content = prompt });
-
-        var resultBuffer = new StringBuilder();
-        var toolDefs = subTools.BuildToolDefinitions();
-        var options = new LlmOptions
-        {
-            Model = context.Config.Llm.Model,
-            Temperature = context.Config.Llm.Temperature,
-            MaxTokens = context.Config.Llm.MaxOutputTokens,
-        };
-
-        var llm = new OpenAiCompatClient(context.Config.Llm);
-        var completedNormally = false;
-
+        context.WriteOutput($"[Agent: {description}] Queuing {agentType} sub-agent (depth {depth})...");
+        await _globalSlot.WaitAsync(ct);
         try
         {
-            for (var turn = 0; turn < agentDef.MaxTurns; turn++)
+            context.WriteOutput($"[Agent: {description}] Starting...");
+
+            var subSession = new SessionState();
+            var systemPrompt = agentDef.SystemPrompt
+                ?? "You are a helpful coding assistant. Complete the task described below.";
+            subSession.AddMessage(new Message { Role = MessageRole.System, Content = systemPrompt });
+
+            var subTools = new ToolRegistry();
+            foreach (var tool in context.ToolRegistry.All)
             {
-                ct.ThrowIfCancellationRequested();
-
-                var textBuffer = new StringBuilder();
-                var toolCalls = new List<ToolCall>();
-                var canStream = context.StreamText is not null;
-                var responseStarted = false;
-
-                await foreach (var chunk in llm.StreamChatAsync(subSession.Messages, toolDefs, options, ct))
-                {
-                    if (chunk.TextDelta is not null)
-                    {
-                        textBuffer.Append(chunk.TextDelta);
-                        if (canStream)
-                        {
-                            if (!responseStarted)
-                            {
-                                context.BeginResponse?.Invoke();
-                                responseStarted = true;
-                            }
-                            context.StreamText!(chunk.TextDelta);
-                        }
-                    }
-                    if (chunk.ToolCallDelta is not null)
-                        toolCalls.Add(chunk.ToolCallDelta);
-                    if (chunk.IsComplete)
-                        break;
-                }
-
-                if (canStream && responseStarted) context.EndResponse?.Invoke();
-                else if (!canStream && textBuffer.Length > 0) context.WriteOutput(textBuffer.ToString());
-
-                subSession.AddMessage(new Message
-                {
-                    Role = MessageRole.Assistant,
-                    Content = textBuffer.Length > 0 ? textBuffer.ToString() : null,
-                    ToolCalls = toolCalls.Count > 0 ? toolCalls : null,
-                });
-
-                if (toolCalls.Count == 0)
-                {
-                    resultBuffer.Append(textBuffer);
-                    completedNormally = true;
-                    break;
-                }
-
-                var toolSummary = string.Join(", ", toolCalls
-                    .GroupBy(c => c.Name)
-                    .Select(g => g.Count() > 1 ? $"{g.Key} ×{g.Count()}" : g.Key));
-                context.WriteOutput($"  [Agent: {description}] → {toolSummary}");
-
-                foreach (var call in toolCalls)
-                {
-                    var tool = subTools.Resolve(call.Name);
-                    if (tool is null)
-                    {
-                        context.WriteOutput($"  [Agent: {description}] ✗ unknown tool: {call.Name}");
-                        subSession.AddMessage(new Message
-                        {
-                            Role = MessageRole.Tool,
-                            ToolCallId = call.Id,
-                            Content = $"Unknown tool: {call.Name}",
-                        });
-                        continue;
-                    }
-
-                    JsonElement toolInput;
-                    try { toolInput = JsonDocument.Parse(call.Arguments).RootElement; }
-                    catch (JsonException) { toolInput = JsonDocument.Parse("{}").RootElement; }
-
-                    var permLevel = tool.RequiredPermission(toolInput);
-                    var decision = await context.Permissions.CheckAsync(tool.Name, toolInput, permLevel, ct);
-
-                    ToolResult toolResult;
-                    if (!decision.Allowed)
-                    {
-                        context.WriteOutput($"  [Agent: {description}] ✗ {call.Name}: permission denied");
-                        toolResult = ToolResult.Error($"Permission denied: {decision.Reason}");
-                    }
-                    else
-                    {
-                        try { toolResult = await tool.ExecuteAsync(toolInput, context, ct); }
-                        catch (Exception ex) { toolResult = ToolResult.Error(ex.Message); }
-                    }
-
-                    subSession.AddMessage(new Message
-                    {
-                        Role = MessageRole.Tool,
-                        ToolCallId = call.Id,
-                        ToolName = call.Name,
-                        Content = toolResult.Content,
-                    });
-                }
+                if (tool.Name == "Agent") continue;
+                if (IsToolAllowed(tool.Name, agentDef.AllowedTools))
+                    subTools.Register(tool);
             }
+
+            var sink = new SubAgentOutputSink(description, context.WriteOutput);
+            var inputReader = new NullInputReader();
+            var llm = new OpenAiCompatClient(context.Config.Llm);
+
+            try
+            {
+                using var childLoop = new ConversationLoop(
+                    llm:           llm,
+                    tools:         subTools,
+                    permissions:   context.Permissions,
+                    output:        sink,
+                    input:         inputReader,
+                    liveFeedback:  null,
+                    config:        context.Config,
+                    session:       subSession,
+                    maxIterations: agentDef.MaxTurns,
+                    agentDepth:    depth + 1);
+
+                await childLoop.RunTurnAsync(prompt, ct);
+            }
+            finally
+            {
+                llm.Dispose();
+            }
+
+            var result = sink.CapturedText.Trim();
+            if (string.IsNullOrEmpty(result))
+                result = "Sub-agent completed but produced no text output. Check tool results above.";
+
+            return ToolResult.Success(
+                $"[Sub-agent '{description}' ({agentType}) completed]\n\n{result}");
         }
         finally
         {
-            llm.Dispose();
+            _globalSlot.Release();
+            context.WriteOutput($"[Agent: {description}] Done.");
         }
-
-        var result = resultBuffer.Length > 0
-            ? resultBuffer.ToString()
-            : "Sub-agent completed but produced no text output. Check tool results above.";
-
-        if (!completedNormally)
-            result = $"[Warning: Sub-agent hit its turn limit ({agentDef.MaxTurns} turns) and may be incomplete. Partial result:]\n\n{result}";
-
-        return ToolResult.Success($"[Sub-agent '{description}' ({agentType}) completed]\n\n{result}");
     }
 
     private static bool IsToolAllowed(string toolName, string[] allowedTools)
