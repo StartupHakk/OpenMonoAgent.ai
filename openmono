@@ -165,6 +165,9 @@ cmd_help() {
     echo "  WORKSPACE=/my/repo openmono agent # Run agent against a specific repo"
     echo "  openmono graph /path/to/project   # Index a project for code search"
     echo ""
+    echo "Hybrid MoE mode (GPU + CPU offload):"
+    printf "  %-14s %s\n" "hybrid"  "Configure Qwen3.6-35B-A3B with --n-cpu-moe + TurboQuant (see setup-hybrid.sh)"
+    echo ""
     echo "Dual-box walkthrough: see setup/readme.md"
     echo ""
 }
@@ -1036,6 +1039,7 @@ case "$COMMAND" in
     graphify)       cmd_graphify "$@" ;;
     config)         cmd_config "$@" ;;    
     tunnel)         cmd_tunnel "$@" ;;
+    hybrid)         bash "$REPO_DIR/setup-hybrid.sh" "$@" ;;
     version|--version|-V) cmd_version ;;
     help|--help|-h) cmd_help ;;
     *)

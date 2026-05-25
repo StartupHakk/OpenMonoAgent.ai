@@ -70,7 +70,35 @@ Token generation is memory-bandwidth bound — **RAM channel count matters as mu
 
 > Halving RAM channels halves throughput. Always fill both DIMM slots.
 
-### What the speeds feel like
+### Hybrid GPU/CPU — Qwen3.6-35B-A3B with MoE expert offload
+
+For systems with limited VRAM (8–16 GB) but ample system RAM (32+ GB), the MoE model can run with **inactive experts in system RAM** and non-expert layers (attention, embeddings) on GPU using `--n-cpu-moe`. Combined with TurboQuant KV cache compression, this fits the full 192K context even on 8 GB GPUs.
+
+| Hardware | VRAM | RAM | KV cache | tok/s |
+|----------|------|-----|----------|-------|
+| RTX 2080 Super | 8 GB | 46 GB | turbo3 (~3.5 bpv) | ~15–25 |
+| RTX 3070 Ti | 8 GB | 32 GB | q8_0 | ~27 |
+| RTX 3060 | 12 GB | 64 GB | turbo3 | ~12–18 |
+
+**Memory budget breakdown (8 GB VRAM + 46 GB RAM):**
+
+| Component | Location | Size |
+|-----------|----------|------|
+| Attention weights (10 layers) | VRAM | ~2.5 GB |
+| Embeddings, norms, LM head | VRAM | ~1.5 GB |
+| Shared MoE expert | VRAM | ~50 MB |
+| KV cache @192K, turbo3 | VRAM | ~0.8 GB |
+| Activation buffers + overhead | VRAM | ~1–2 GB |
+| **Total VRAM** | | **~5.8–6.8 GB** |
+| Routed experts (256) | System RAM | ~18 GB |
+
+This configuration is set up via the `hybrid` command:
+
+```bash
+openmono hybrid
+```
+
+See [`setup-hybrid.sh`](../setup-hybrid.sh) and [`docker/Dockerfile.turboquant`](../docker/Dockerfile.turboquant) for details.
 
 | Speed | Experience |
 |-------|------------|
