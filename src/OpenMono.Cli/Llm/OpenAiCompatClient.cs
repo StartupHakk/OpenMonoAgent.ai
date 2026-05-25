@@ -13,6 +13,10 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
     private readonly HttpClient _http;
     private readonly string _endpoint;
     private const int MaxRetries = 3;
+
+    private static SemaphoreSlim? _requestGate;
+    private static int _gateCapacity;
+    private static readonly object _gateInitLock = new();
     private static readonly TimeSpan[] RetryDelays =
     [
         TimeSpan.FromSeconds(1),
@@ -38,6 +42,24 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
         _endpoint = config.Endpoint.TrimEnd('/');
         _model = config.Model;
         _http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        EnsureRequestGate(config.MaxConcurrentRequests);
+    }
+
+    private static SemaphoreSlim EnsureRequestGate(int requested)
+    {
+        var capacity = Math.Max(1, requested);
+        if (_requestGate is { } existing && _gateCapacity == capacity)
+            return existing;
+        lock (_gateInitLock)
+        {
+            if (_requestGate is null || _gateCapacity != capacity)
+            {
+                _requestGate?.Dispose();
+                _requestGate = new SemaphoreSlim(capacity, capacity);
+                _gateCapacity = capacity;
+            }
+            return _requestGate;
+        }
     }
 
     public async IAsyncEnumerable<StreamChunk> StreamChatAsync(
@@ -46,6 +68,10 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
         LlmOptions options,
         [EnumeratorCancellation] CancellationToken ct)
     {
+        var gate = _requestGate!;
+        await gate.WaitAsync(ct);
+        try
+        {
         HttpResponseMessage? response = null;
         var lastException = default(Exception);
 
@@ -307,6 +333,11 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                         yield return new StreamChunk { Usage = usage };
                 }
             }
+        }
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 

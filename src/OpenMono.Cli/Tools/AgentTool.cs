@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using OpenMono.Agents;
 using OpenMono.Llm;
@@ -13,7 +14,28 @@ public sealed class AgentTool : ToolBase
     public override string Description => "Spawn a sub-agent to handle a complex task. The sub-agent has its own conversation context and returns a summary when done.";
     public override bool IsConcurrencySafe => true;
 
-    private static readonly SemaphoreSlim _globalSlot = new(1, 1);
+    private static SemaphoreSlim? _slot;
+    private static int _slotCapacity;
+    private static int _queued;
+    private static readonly object _slotInitLock = new();
+    private static readonly ConditionalWeakTable<SessionState, StrongBox<int>> _perParent = new();
+
+    private static SemaphoreSlim EnsureSlot(int requested)
+    {
+        var capacity = Math.Max(1, requested);
+        if (_slot is { } existing && _slotCapacity == capacity)
+            return existing;
+        lock (_slotInitLock)
+        {
+            if (_slot is null || _slotCapacity != capacity)
+            {
+                _slot?.Dispose();
+                _slot = new SemaphoreSlim(capacity, capacity);
+                _slotCapacity = capacity;
+            }
+            return _slot;
+        }
+    }
 
     protected override SchemaBuilder DefineSchema() => new SchemaBuilder()
         .AddString("description", "Short description of the task (3-5 words)")
@@ -39,14 +61,41 @@ public sealed class AgentTool : ToolBase
             return ToolResult.Error($"Unknown agent type: {agentType}. Valid: {string.Join(", ", BuiltInAgents.All.Keys)}");
 
         var depth = context.AgentDepth;
-        var maxDepth = context.Config.Agents.MaxNestingDepth;
-        if (depth >= maxDepth)
+        var agentsCfg = context.Config.Agents;
+        if (depth >= agentsCfg.MaxNestingDepth)
             return ToolResult.Error(
-                $"Agent nesting depth limit ({maxDepth}) reached at depth {depth}. " +
+                $"Agent nesting depth limit ({agentsCfg.MaxNestingDepth}) reached at depth {depth}. " +
                 "Sub-agents cannot spawn further sub-agents beyond this level.");
 
-        context.WriteOutput($"[Agent: {description}] Queuing {agentType} sub-agent (depth {depth})...");
-        await _globalSlot.WaitAsync(ct);
+        var perParent = _perParent.GetValue(context.Session, _ => new StrongBox<int>(0));
+        if (Volatile.Read(ref perParent.Value) >= agentsCfg.MaxConcurrentPerParent)
+            return ToolResult.Error(
+                $"Per-parent sub-agent fan-out limit ({agentsCfg.MaxConcurrentPerParent}) reached. " +
+                "Wait for an in-flight sub-agent from this conversation to finish before spawning another.");
+
+        var newQueued = Interlocked.Increment(ref _queued);
+        if (newQueued > agentsCfg.MaxQueuedAgents)
+        {
+            Interlocked.Decrement(ref _queued);
+            return ToolResult.Error(
+                $"Sub-agent queue is full ({agentsCfg.MaxQueuedAgents}). " +
+                "Too many sub-agents are already waiting; try again after some complete.");
+        }
+
+        Interlocked.Increment(ref perParent.Value);
+        var slot = EnsureSlot(agentsCfg.MaxConcurrentAgents);
+        context.WriteOutput($"[Agent: {description}] Queuing {agentType} sub-agent (depth {depth}, queued {newQueued}/{agentsCfg.MaxQueuedAgents})...");
+        try
+        {
+            await slot.WaitAsync(ct);
+        }
+        catch
+        {
+            Interlocked.Decrement(ref _queued);
+            Interlocked.Decrement(ref perParent.Value);
+            throw;
+        }
+        Interlocked.Decrement(ref _queued);
         try
         {
             context.WriteOutput($"[Agent: {description}] Starting...");
@@ -98,7 +147,8 @@ public sealed class AgentTool : ToolBase
         }
         finally
         {
-            _globalSlot.Release();
+            slot.Release();
+            Interlocked.Decrement(ref perParent.Value);
             context.WriteOutput($"[Agent: {description}] Done.");
         }
     }

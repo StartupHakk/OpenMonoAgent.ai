@@ -50,6 +50,7 @@ public class LlmConfig
     public string? ApiKey { get; set; }
     public int ContextSize { get; set; } = 196608;
     public int MaxOutputTokens { get; set; } = 16384;
+    public int MaxConcurrentRequests { get; set; } = 2;
     public double Temperature { get; set; } = 0.7;
     public double TopP { get; set; } = 0.8;
     public int TopK { get; set; } = 20;
@@ -113,4 +114,6 @@ public sealed class AgentConfig
 {
     public int MaxConcurrentAgents { get; set; } = 1;
     public int MaxNestingDepth { get; set; } = 3;
+    public int MaxQueuedAgents { get; set; } = 4;
+    public int MaxConcurrentPerParent { get; set; } = 2;
 }
