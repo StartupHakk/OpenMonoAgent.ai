@@ -43,7 +43,7 @@ select_model() {
         MODEL_NAME="Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
         MODEL_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
         MODEL_ACCURACY="standard"
-        MODEL_MMPROJ="mmproj-F16.gguf"
+        MODEL_MMPROJ="mmproj-qwen3.6-35B-A3B-F16.gguf"
         MODEL_MMPROJ_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/mmproj-F16.gguf"
         _MODEL_LABEL="Qwen3.6-35B-A3B (~17.6GB) [Apple Silicon >=48GB — standard]"
         _CTX_SIZE=$CTX_48G
@@ -52,7 +52,7 @@ select_model() {
         MODEL_NAME="Qwen3.5-9B-Q4_K_M.gguf"
         MODEL_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
         MODEL_ACCURACY="lower"
-        MODEL_MMPROJ="mmproj-F16.gguf"
+        MODEL_MMPROJ="mmproj-qwen3.5-9B-F16.gguf"
         MODEL_MMPROJ_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/mmproj-F16.gguf"
         _MODEL_LABEL="Qwen3.5-9B-Q4_K_M (~5GB) [Apple Silicon 32GB]"
         _CTX_SIZE=$CTX_32G
@@ -61,7 +61,7 @@ select_model() {
         MODEL_NAME="Qwen3.5-9B-Q4_K_M.gguf"
         MODEL_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
         MODEL_ACCURACY="lower"
-        MODEL_MMPROJ="mmproj-F16.gguf"
+        MODEL_MMPROJ="mmproj-qwen3.5-9B-F16.gguf"
         MODEL_MMPROJ_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/mmproj-F16.gguf"
         _MODEL_LABEL="Qwen3.5-9B-Q4_K_M (~5GB) [Apple Silicon 16GB — lower accuracy]"
         _CTX_SIZE=$CTX_16G
@@ -553,7 +553,7 @@ case "$OPENMONO_ROLE" in
         echo "  mode              : Metal GPU (native llama.cpp)"
         echo "  model             : ${MODEL_NAME:-}"
         if [ -n "${MODEL_MMPROJ:-}" ]; then
-            echo "  vision            : enabled (mmproj-F16.gguf)"
+            echo "  vision            : enabled (${MODEL_MMPROJ})"
         fi
         ;;
     inference)
@@ -561,7 +561,7 @@ case "$OPENMONO_ROLE" in
         echo "  mode              : Metal GPU (native llama.cpp)"
         echo "  model             : ${MODEL_NAME:-}"
         if [ -n "${MODEL_MMPROJ:-}" ]; then
-            echo "  vision            : enabled (mmproj-F16.gguf)"
+            echo "  vision            : enabled (${MODEL_MMPROJ})"
         fi
         ;;
     agent)
@@ -584,7 +584,7 @@ if [ "${OPENMONO_ROLE}" != "agent" ] && [ -n "${MODEL_MMPROJ:-}" ]; then
     printf "     @diagram.png explain this diagram\n"
     printf "\n"
     printf "  ${DIM}To disable: delete the mmproj file and re-run openmono setup${NC}\n"
-    printf "     rm ~/openmono.ai/models/mmproj-F16.gguf${NC}\n"
+    printf "     rm ~/openmono.ai/models/${MODEL_MMPROJ}${NC}\n"
     echo ""
 fi
 
