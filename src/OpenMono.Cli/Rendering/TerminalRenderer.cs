@@ -13,6 +13,7 @@ public sealed class TerminalRenderer : IRenderer
     private Task? _thinkingTask;
     private bool _thinkingActive;
     private int _thinkingChars;
+    private string _waitingLabel = "Thinking";
     private readonly Stopwatch _streamStopwatch = new();
     private int _streamTokenCount;
     private bool _streamAtLineStart;
@@ -107,8 +108,11 @@ public sealed class TerminalRenderer : IRenderer
         _console.WriteLine();
     }
 
-    public void ShowWaitingIndicator()
+    public void ShowWaitingIndicator(string? label = null)
     {
+        _waitingLabel = string.IsNullOrEmpty(label) ? "Thinking" : label;
+        if (_thinkingCts is not null) return;
+
         _thinkingCts = new CancellationTokenSource();
         var ct = _thinkingCts.Token;
         _thinkingTask = Task.Run(async () =>
@@ -118,7 +122,7 @@ public sealed class TerminalRenderer : IRenderer
             while (!ct.IsCancellationRequested)
             {
                 var dots = new string('.', sequence[idx % sequence.Length]);
-                Console.Write($"\r  \u001b[2;36m⠿ Thinking{dots}\u001b[0m\u001b[K");
+                Console.Write($"\r  \u001b[2;36m⠿ {_waitingLabel}{dots}\u001b[0m\u001b[K");
                 Console.Out.Flush();
                 idx++;
                 try { await Task.Delay(200, ct); }
@@ -135,6 +139,7 @@ public sealed class TerminalRenderer : IRenderer
             _thinkingCts.Dispose();
             _thinkingCts = null;
             _thinkingTask = null;
+            _waitingLabel = "Thinking";
             Console.Write("\r\u001b[K");
             Console.Out.Flush();
         }

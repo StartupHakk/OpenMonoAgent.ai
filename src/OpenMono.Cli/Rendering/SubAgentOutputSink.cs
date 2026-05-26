@@ -3,9 +3,13 @@ using OpenMono.Session;
 
 namespace OpenMono.Rendering;
 
-internal sealed class SubAgentOutputSink(string agentDescription, Action<string> parentWriteOutput) : IOutputSink
+internal sealed class SubAgentOutputSink(
+    string agentDescription,
+    Action<string> parentWriteOutput,
+    IOutputSink? parentSink = null) : IOutputSink
 {
     private readonly StringBuilder _buffer = new();
+    private readonly string _labelPrefix = $"Agent: {agentDescription}";
 
     public string CapturedText => _buffer.ToString();
 
@@ -16,21 +20,26 @@ internal sealed class SubAgentOutputSink(string agentDescription, Action<string>
     public void EndAssistantResponse(TurnMetrics? metrics = null) { }
 
     public void WriteToolStart(string toolName, string args)
-        => parentWriteOutput($"  [Agent: {agentDescription}] → {toolName}");
-    public void WriteToolSuccess(string toolName) { }
+    {
+        parentWriteOutput($"  [{_labelPrefix}] → {toolName}");
+        parentSink?.ShowWaitingIndicator($"{_labelPrefix} · {toolName}");
+    }
+    public void WriteToolSuccess(string toolName)
+        => parentWriteOutput($"  [{_labelPrefix}] ✓ {toolName}");
     public void WriteToolError(string toolName, string error)
-        => parentWriteOutput($"  [Agent: {agentDescription}] ✗ {toolName}: {error}");
+        => parentWriteOutput($"  [{_labelPrefix}] ✗ {toolName}: {error}");
     public void WriteToolDenied(string toolName, string reason)
-        => parentWriteOutput($"  [Agent: {agentDescription}] ✗ {toolName}: permission denied");
+        => parentWriteOutput($"  [{_labelPrefix}] ⊘ {toolName}: permission denied");
 
-    public void WriteWarning(string message) => parentWriteOutput($"  [Agent: {agentDescription}] ⚠ {message}");
-    public void WriteError(string message) => parentWriteOutput($"  [Agent: {agentDescription}] ✗ {message}");
-    public void WriteInfo(string message) => parentWriteOutput($"  [Agent: {agentDescription}] {message}");
+    public void WriteWarning(string message) => parentWriteOutput($"  [{_labelPrefix}] ⚠ {message}");
+    public void WriteError(string message) => parentWriteOutput($"  [{_labelPrefix}] ✗ {message}");
+    public void WriteInfo(string message) => parentWriteOutput($"  [{_labelPrefix}] {message}");
 
     public void AppendThinking(string text) { }
     public void CollapseThinking(int charCount) { }
-    public void ShowWaitingIndicator() { }
-    public void ClearWaitingIndicator() { }
+    public void ShowWaitingIndicator(string? label = null)
+        => parentSink?.ShowWaitingIndicator(string.IsNullOrEmpty(label) ? $"{_labelPrefix} · thinking" : $"{_labelPrefix} · {label}");
+    public void ClearWaitingIndicator() => parentSink?.ClearWaitingIndicator();
     public void WriteWelcome(string model, string endpoint) { }
     public void WriteMarkdown(string markdown) => _buffer.Append(markdown);
     public void WriteDebug(string message) { }

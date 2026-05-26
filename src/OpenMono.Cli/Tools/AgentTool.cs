@@ -113,7 +113,7 @@ public sealed class AgentTool : ToolBase
                     subTools.Register(tool);
             }
 
-            var sink = new SubAgentOutputSink(description, context.WriteOutput);
+            var sink = new SubAgentOutputSink(description, context.WriteOutput, context.Output);
             var inputReader = new NullInputReader();
             var llm = new OpenAiCompatClient(context.Config.Llm) { ApiKey = context.Config.Llm.ApiKey };
 
@@ -149,6 +149,7 @@ public sealed class AgentTool : ToolBase
         {
             slot.Release();
             Interlocked.Decrement(ref perParent.Value);
+            context.Output?.ClearWaitingIndicator();
             context.WriteOutput($"[Agent: {description}] Done.");
         }
     }

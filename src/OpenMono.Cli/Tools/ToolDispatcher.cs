@@ -299,6 +299,7 @@ public sealed class ToolDispatcher : IDisposable
         AskUser = (question, ct) => _renderer.AskUserAsync(question, ct),
         FileHistory = _session.Meta.FileHistory,
         Cursors = _cursorStore,
+        Output = _renderer,
     };
 
     public void Dispose()

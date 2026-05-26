@@ -804,6 +804,7 @@ public sealed class ConversationLoop : IDisposable
         BeginResponse = _output.StartAssistantResponse,
         EndResponse = () => _output.EndAssistantResponse(),
         StreamText = _output.StreamText,
+        Output = _output,
         AgentDepth = _agentDepth,
     };
 }

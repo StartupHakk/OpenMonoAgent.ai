@@ -85,7 +85,7 @@ public sealed class AnsiTuiRenderer : IRenderer
     public void EndAssistantResponse(TurnMetrics? metrics = null) => _painter.EndAssistantResponse(metrics);
     public void AppendThinking(string text) => _painter.AppendThinking(text);
     public void CollapseThinking(int n)     => _painter.CollapseThinking(n);
-    public void ShowWaitingIndicator()      => _painter.ShowWaitingIndicator();
+    public void ShowWaitingIndicator(string? label = null) => _painter.ShowWaitingIndicator(label);
     public void ClearWaitingIndicator()     => _painter.ClearWaitingIndicator();
 
     private static readonly HashSet<string> _silentTools =

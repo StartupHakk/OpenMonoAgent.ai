@@ -20,7 +20,7 @@ public interface IOutputSink
 
     void AppendThinking(string text);
     void CollapseThinking(int charCount);
-    void ShowWaitingIndicator();
+    void ShowWaitingIndicator(string? label = null);
     void ClearWaitingIndicator();
 
     void WriteWelcome(string model, string endpoint);

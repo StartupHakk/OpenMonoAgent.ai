@@ -71,6 +71,7 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
     private int _sideW;
 
     private string _thinking = "";
+    private string _waitingLabel = "Thinking";
     private int _thinkingFrame;
     private System.Threading.Timer? _thinkingTimer;
     private readonly StringBuilder _thinkingBuf = new();
@@ -593,9 +594,10 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         PaintConvThrottled(force: true);
     }
 
-    internal void ShowWaitingIndicator()
+    internal void ShowWaitingIndicator(string? label = null)
     {
-        if (_thinking.Length == 0)
+        _waitingLabel = string.IsNullOrEmpty(label) ? "Thinking" : label;
+        if (_thinking != "Waiting")
         {
             _thinking = "Waiting";
             _thinkingFrame = 0;
@@ -606,14 +608,17 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
                 if (_paintActive)
                     _paintChannel.Writer.TryWrite(new PaintRequest(PaintKind.Conv));
             }, null, dueTime: 280, period: 280);
-            PaintConvThrottled(force: true);
         }
+        PaintConvThrottled(force: true);
     }
 
     internal void ClearWaitingIndicator()
     {
         if (_thinking == "Waiting")
+        {
+            _waitingLabel = "Thinking";
             ClearThinking();
+        }
     }
 
     internal void ClearStreaming()
@@ -1086,7 +1091,8 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
             var frame   = System.Threading.Volatile.Read(ref _thinkingFrame);
             var spinner = SpinnerFrames[frame % SpinnerFrames.Length];
             var dots    = DotsFrames[frame % DotsFrames.Length];
-            lines.Add($"  {Fbb}{spinner} {IT}{Fk}Thinking{dots}");
+            var label   = _thinking == "Waiting" ? _waitingLabel : "Thinking";
+            lines.Add($"  {Fbb}{spinner} {IT}{Fk}{label}{dots}");
             string snapshot;
             lock (_thinkingBufLock) { snapshot = _thinkingBuf.ToString(); }
             if (snapshot.Length > 0)
