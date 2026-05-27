@@ -159,6 +159,15 @@ check_prerequisites() {
     command -v curl &>/dev/null || missing+=("curl")
     command -v cmake &>/dev/null || missing+=("cmake")
 
+    _is_installed() {
+        local pkg="$1"
+        if command -v dnf &>/dev/null; then
+            rpm -q "$pkg" &>/dev/null
+        else
+            dpkg -s "$pkg" &>/dev/null 2>&1
+        fi
+    }
+
     # Docker Compose (plugin or standalone)
     if ! docker compose version &>/dev/null 2>&1 && ! docker-compose version &>/dev/null 2>&1; then
         missing+=("docker-compose")
@@ -192,7 +201,7 @@ check_prerequisites() {
         if ! command -v nvidia-smi &>/dev/null; then
             warnings+=("NVIDIA GPU detected but drivers not installed")
         fi
-        if ! dpkg -s nvidia-container-toolkit &>/dev/null 2>&1; then
+        if ! _is_installed nvidia-container-toolkit; then
             warnings+=("nvidia-container-toolkit not installed (required for GPU Docker)")
         fi
     fi

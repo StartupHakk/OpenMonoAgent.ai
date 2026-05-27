@@ -94,13 +94,22 @@ fi
 
 # ── Step 3: Update package index ──────────────────────────────────────────────
 
-step 3 $TOTAL_STEPS "Updating apt package index"
+step 3 $TOTAL_STEPS "Updating package index"
 
-info "Running apt-get update..."
-if ! run $SUDO apt-get update -qq; then
-    die "Failed to update apt package index"
+if command -v dnf &>/dev/null; then
+    info "Running dnf check-update..."
+    # dnf check-update returns 100 if updates are available, 0 if not, 1 on error.
+    run $SUDO dnf check-update || [ $? -eq 100 ] || die "Failed to check for updates"
+    ok "Package index updated"
+elif command -v apt-get &>/dev/null; then
+    info "Running apt-get update..."
+    if ! run $SUDO apt-get update -qq; then
+        die "Failed to update apt package index"
+    fi
+    ok "Package index updated"
+else
+    warn "No known package manager found (apt/dnf) — skipping index update"
 fi
-ok "Package index updated"
 
 # ── Step 4: Core tools (git, curl, cmake, build-essential, python3-pip) ──────
 
@@ -114,8 +123,14 @@ install_pkg() {
         detail "$(command -v "$check_cmd")"
     else
         info "Installing $pkg..."
-        if ! run $SUDO apt-get install -y -qq "$pkg"; then
-            die "Failed to install $pkg"
+        if command -v dnf &>/dev/null; then
+            if ! run $SUDO dnf install -y -q "$pkg"; then
+                die "Failed to install $pkg"
+            fi
+        else
+            if ! run $SUDO apt-get install -y -qq "$pkg"; then
+                die "Failed to install $pkg"
+            fi
         fi
         ok "$pkg installed"
     fi
@@ -127,35 +142,61 @@ install_pkg jq jq
 install_pkg cmake cmake
 install_pkg pciutils lspci
 
-if dpkg -s build-essential &>/dev/null 2>&1; then
-    ok "build-essential already installed"
+_is_installed() {
+    local pkg="$1"
+    if command -v dnf &>/dev/null; then
+        rpm -q "$pkg" &>/dev/null
+    else
+        dpkg -s "$pkg" &>/dev/null 2>&1
+    fi
+}
+
+if _is_installed build-essential || { command -v gcc &>/dev/null && command -v make &>/dev/null; }; then
+    ok "Build tools already installed"
 else
-    info "Installing build-essential..."
-    run $SUDO apt-get install -y -qq build-essential || die "Failed to install build-essential"
-    ok "build-essential installed"
+    info "Installing build tools..."
+    if command -v dnf &>/dev/null; then
+        # dnf5 (Fedora 41+) removed `groupinstall`; `install @group` works on dnf4 and dnf5.
+        run $SUDO dnf install -y -q @development-tools || die "Failed to install development tools"
+    else
+        run $SUDO apt-get install -y -qq build-essential || die "Failed to install build-essential"
+    fi
+    ok "Build tools installed"
 fi
 
 if command -v pip3 &>/dev/null; then
     ok "python3-pip already installed"
 else
     info "Installing python3-pip..."
-    run $SUDO apt-get install -y -qq python3-pip || die "Failed to install python3-pip"
+    if command -v dnf &>/dev/null; then
+        run $SUDO dnf install -y -q python3-pip || die "Failed to install python3-pip"
+    else
+        run $SUDO apt-get install -y -qq python3-pip || die "Failed to install python3-pip"
+    fi
     ok "python3-pip installed"
 fi
 
-if dpkg -s libopenblas-dev &>/dev/null 2>&1; then
-    ok "libopenblas-dev already installed"
+if _is_installed libopenblas-dev || _is_installed openblas-devel; then
+    ok "OpenBLAS development files already installed"
 else
-    info "Installing libopenblas-dev..."
-    run $SUDO apt-get install -y -qq libopenblas-dev pkg-config || die "Failed to install libopenblas-dev"
-    ok "libopenblas-dev installed"
+    info "Installing OpenBLAS development files..."
+    if command -v dnf &>/dev/null; then
+        run $SUDO dnf install -y -q openblas-devel || die "Failed to install openblas-devel"
+    else
+        run $SUDO apt-get install -y -qq libopenblas-dev pkg-config || die "Failed to install libopenblas-dev"
+    fi
+    ok "OpenBLAS development files installed"
 fi
 
 if command -v rg &>/dev/null; then
     ok "ripgrep already installed"
 else
     info "Installing ripgrep..."
-    run $SUDO apt-get install -y -qq ripgrep || die "Failed to install ripgrep"
+    if command -v dnf &>/dev/null; then
+        run $SUDO dnf install -y -q ripgrep || die "Failed to install ripgrep"
+    else
+        run $SUDO apt-get install -y -qq ripgrep || die "Failed to install ripgrep"
+    fi
     ok "ripgrep installed"
 fi
 
@@ -296,24 +337,28 @@ else
         ok "NVIDIA drivers already installed"
         detail "$(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader | head -1)"
     else
-        info "Installing NVIDIA drivers (version: $DRIVER_VERSION)..."
+        info "Installing NVIDIA drivers..."
         warn "This may require a reboot before GPU is usable."
-        run $SUDO apt-get install -y -qq ubuntu-drivers-common || warn "ubuntu-drivers-common install had warnings"
-
-        # Install nvidia-driver with configured version
-        if ! run $SUDO apt-get install -y -qq "nvidia-driver-${DRIVER_VERSION}"; then
-            warn "nvidia-driver-${DRIVER_VERSION} install had warnings"
-        fi
-
-        # Try nvidia-utils with configured version, fallback to 580-server if unavailable
-        if apt-cache show "nvidia-utils-${DRIVER_VERSION}" &>/dev/null 2>&1; then
-            run $SUDO apt-get install -y -qq "nvidia-utils-${DRIVER_VERSION}" || warn "nvidia-utils-${DRIVER_VERSION} install had warnings"
+        if command -v dnf &>/dev/null; then
+            run $SUDO dnf install -y -q akmod-nvidia xorg-x11-drv-nvidia-cuda || die "Failed to install NVIDIA drivers"
         else
-            warn "nvidia-utils-${DRIVER_VERSION} not available, falling back to nvidia-utils-580-server"
-            run $SUDO apt-get install -y -qq nvidia-utils-580-server || warn "nvidia-utils-580-server install had warnings"
-        fi
+            run $SUDO apt-get install -y -qq ubuntu-drivers-common || warn "ubuntu-drivers-common install had warnings"
 
-        run $SUDO ubuntu-drivers autoinstall || warn "Driver install had warnings — check log"
+            # Install nvidia-driver with configured version
+            if ! run $SUDO apt-get install -y -qq "nvidia-driver-${DRIVER_VERSION}"; then
+                warn "nvidia-driver-${DRIVER_VERSION} install had warnings"
+            fi
+
+            # Try nvidia-utils with configured version, fallback to 580-server if unavailable
+            if apt-cache show "nvidia-utils-${DRIVER_VERSION}" &>/dev/null 2>&1; then
+                run $SUDO apt-get install -y -qq "nvidia-utils-${DRIVER_VERSION}" || warn "nvidia-utils-${DRIVER_VERSION} install had warnings"
+            else
+                warn "nvidia-utils-${DRIVER_VERSION} not available, falling back to nvidia-utils-580-server"
+                run $SUDO apt-get install -y -qq nvidia-utils-580-server || warn "nvidia-utils-580-server install had warnings"
+            fi
+
+            run $SUDO ubuntu-drivers autoinstall || warn "Driver install had warnings — check log"
+        fi
         ok "NVIDIA drivers installed"
         NVIDIA_REBOOT_PENDING=true
     fi
@@ -323,19 +368,28 @@ else
         ok "CUDA toolkit already installed"
         detail "$(nvcc --version | grep release)"
     else
-        info "Installing nvidia-cuda-toolkit..."
-        run $SUDO apt-get install -y -qq nvidia-cuda-toolkit || warn "CUDA toolkit install had warnings (not critical — Docker image includes CUDA)"
+        info "Installing CUDA toolkit..."
+        if command -v dnf &>/dev/null; then
+            run $SUDO dnf install -y -q xorg-x11-drv-nvidia-cuda || warn "CUDA toolkit install had warnings"
+        else
+            run $SUDO apt-get install -y -qq nvidia-cuda-toolkit || warn "CUDA toolkit install had warnings (not critical — Docker image includes CUDA)"
+        fi
     fi
 
     # nvidia-container-toolkit (required for Docker GPU passthrough)
-    if dpkg -s nvidia-container-toolkit &>/dev/null 2>&1; then
+    if _is_installed nvidia-container-toolkit; then
         ok "nvidia-container-toolkit already installed"
     else
         info "Installing nvidia-container-toolkit..."
-        run bash -c 'curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | '"$SUDO"' gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg'
-        run bash -c 'curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed "s#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g" | '"$SUDO"' tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null'
-        run $SUDO apt-get update -qq
-        run $SUDO apt-get install -y -qq nvidia-container-toolkit || die "Failed to install nvidia-container-toolkit"
+        if command -v dnf &>/dev/null; then
+            run bash -c 'curl -s -L https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | '"$SUDO"' tee /etc/yum.repos.d/nvidia-container-toolkit.repo'
+            run $SUDO dnf install -y -q nvidia-container-toolkit || die "Failed to install nvidia-container-toolkit"
+        else
+            run bash -c 'curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | '"$SUDO"' gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg'
+            run bash -c 'curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed "s#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g" | '"$SUDO"' tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null'
+            run $SUDO apt-get update -qq
+            run $SUDO apt-get install -y -qq nvidia-container-toolkit || die "Failed to install nvidia-container-toolkit"
+        fi
         ok "nvidia-container-toolkit installed"
     fi
 fi
@@ -384,7 +438,11 @@ if command -v docker &>/dev/null; then
 
         if [[ "$_reply" =~ ^[Yy] ]]; then
             info "Removing Docker Desktop WSL shim..."
-            run $SUDO apt-get remove -y docker-desktop 2>/dev/null || true
+            if command -v dnf &>/dev/null; then
+                run $SUDO dnf remove -y docker-desktop 2>/dev/null || true
+            else
+                run $SUDO apt-get remove -y docker-desktop 2>/dev/null || true
+            fi
             # Whether or not docker-desktop was an apt package, the shim may
             # exist as a dangling symlink under /usr/bin or /usr/local/bin.
             # Remove defensively so the docker-ce install can claim the path.
@@ -399,7 +457,11 @@ if command -v docker &>/dev/null; then
             err "  a) Docker Desktop → Settings → Resources → WSL Integration"
             err "     → toggle this distro ON → Apply & Restart, then:"
             err "       exec bash && openmono setup"
-            err "  b) Or: sudo apt-get remove -y docker-desktop && openmono setup"
+            if command -v dnf &>/dev/null; then
+                err "  b) Or: sudo dnf remove -y docker-desktop && openmono setup"
+            else
+                err "  b) Or: sudo apt-get remove -y docker-desktop && openmono setup"
+            fi
             die "Docker not functional."
         fi
     elif ! echo "$_docker_probe" | grep -q "Client:"; then
@@ -415,22 +477,33 @@ if command -v docker &>/dev/null; then
 fi
 
 if [ "$INSTALL_DOCKER_CE" = true ] || ! command -v docker &>/dev/null; then
-    info "Adding Docker's official apt repository..."
-    run $SUDO apt-get install -y -qq ca-certificates gnupg
-    run $SUDO install -m 0755 -d /etc/apt/keyrings
-    if [ ! -f /etc/apt/keyrings/docker.gpg ]; then
-        run bash -c 'curl -fsSL https://download.docker.com/linux/ubuntu/gpg | '"$SUDO"' gpg --dearmor -o /etc/apt/keyrings/docker.gpg'
-        run $SUDO chmod a+r /etc/apt/keyrings/docker.gpg
+    info "Installing Docker..."
+    if command -v dnf &>/dev/null; then
+        # Drop the Docker CE repo file directly. dnf5 (Fedora 41+) replaced
+        # `config-manager --add-repo <url>` with the `addrepo` subcommand, so we
+        # fetch the .repo file ourselves — works on dnf4 and dnf5 alike, and
+        # mirrors the nvidia-container-toolkit repo handling above.
+        run bash -c 'curl -fsSL https://download.docker.com/linux/fedora/docker-ce.repo | '"$SUDO"' tee /etc/yum.repos.d/docker-ce.repo >/dev/null'
+        run $SUDO dnf install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
+            || die "Docker install failed"
+    else
+        info "Adding Docker's official apt repository..."
+        run $SUDO apt-get install -y -qq ca-certificates gnupg
+        run $SUDO install -m 0755 -d /etc/apt/keyrings
+        if [ ! -f /etc/apt/keyrings/docker.gpg ]; then
+            run bash -c 'curl -fsSL https://download.docker.com/linux/ubuntu/gpg | '"$SUDO"' gpg --dearmor -o /etc/apt/keyrings/docker.gpg'
+            run $SUDO chmod a+r /etc/apt/keyrings/docker.gpg
+        fi
+
+        ARCH="$(dpkg --print-architecture)"
+        CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+        run bash -c "echo 'deb [arch=$ARCH signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $CODENAME stable' | $SUDO tee /etc/apt/sources.list.d/docker.list >/dev/null"
+
+        info "Installing Docker packages..."
+        run $SUDO apt-get update -qq
+        run $SUDO apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
+            || die "Docker install failed"
     fi
-
-    ARCH="$(dpkg --print-architecture)"
-    CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
-    run bash -c "echo 'deb [arch=$ARCH signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $CODENAME stable' | $SUDO tee /etc/apt/sources.list.d/docker.list >/dev/null"
-
-    info "Installing Docker packages..."
-    run $SUDO apt-get update -qq
-    run $SUDO apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
-        || die "Docker install failed"
     run $SUDO groupadd docker 2>/dev/null || true
     run $SUDO usermod -aG docker "$USER" || true
     ok "Docker installed"
@@ -465,31 +538,35 @@ if docker compose version &>/dev/null 2>&1; then
 else
     info "Docker Compose plugin missing — installing..."
 
-    # If Docker was already installed (so we took the "already installed"
-    # branch above), the Docker CE apt repo may not be configured. Add it
-    # now so apt can find docker-compose-plugin.
-    if [ ! -f /etc/apt/sources.list.d/docker.list ]; then
-        info "Configuring Docker's apt repository first..."
-        run $SUDO apt-get install -y -qq ca-certificates gnupg
-        run $SUDO install -m 0755 -d /etc/apt/keyrings
-        if [ ! -f /etc/apt/keyrings/docker.gpg ]; then
-            run bash -c 'curl -fsSL https://download.docker.com/linux/ubuntu/gpg | '"$SUDO"' gpg --dearmor -o /etc/apt/keyrings/docker.gpg'
-            run $SUDO chmod a+r /etc/apt/keyrings/docker.gpg
-        fi
-        ARCH="$(dpkg --print-architecture)"
-        CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
-        run bash -c "echo 'deb [arch=$ARCH signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $CODENAME stable' | $SUDO tee /etc/apt/sources.list.d/docker.list >/dev/null"
-        run $SUDO apt-get update -qq
-    fi
-
-    if run $SUDO apt-get install -y -qq docker-compose-plugin; then
-        ok "Docker Compose plugin installed"
-        detail "$(docker compose version --short 2>/dev/null || echo 'plugin')"
+    if command -v dnf &>/dev/null; then
+         run $SUDO dnf install -y -q docker-compose-plugin || die "Failed to install docker-compose-plugin"
     else
-        warn "apt couldn't install docker-compose-plugin."
-        warn "If you're on Docker Desktop (WSL / Mac), enable Compose via the"
-        warn "Docker Desktop settings, or update Docker Desktop to a version"
-        warn "that bundles the Compose v2 plugin, then re-run this installer."
+        # If Docker was already installed (so we took the "already installed"
+        # branch above), the Docker CE apt repo may not be configured. Add it
+        # now so apt can find docker-compose-plugin.
+        if [ ! -f /etc/apt/sources.list.d/docker.list ]; then
+            info "Configuring Docker's apt repository first..."
+            run $SUDO apt-get install -y -qq ca-certificates gnupg
+            run $SUDO install -m 0755 -d /etc/apt/keyrings
+            if [ ! -f /etc/apt/keyrings/docker.gpg ]; then
+                run bash -c 'curl -fsSL https://download.docker.com/linux/ubuntu/gpg | '"$SUDO"' gpg --dearmor -o /etc/apt/keyrings/docker.gpg'
+                run $SUDO chmod a+r /etc/apt/keyrings/docker.gpg
+            fi
+            ARCH="$(dpkg --print-architecture)"
+            CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+            run bash -c "echo 'deb [arch=$ARCH signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $CODENAME stable' | $SUDO tee /etc/apt/sources.list.d/docker.list >/dev/null"
+            run $SUDO apt-get update -qq
+        fi
+
+        if run $SUDO apt-get install -y -qq docker-compose-plugin; then
+            ok "Docker Compose plugin installed"
+            detail "$(docker compose version --short 2>/dev/null || echo 'plugin')"
+        else
+            warn "apt couldn't install docker-compose-plugin."
+            warn "If you're on Docker Desktop (WSL / Mac), enable Compose via the"
+            warn "Docker Desktop settings, or update Docker Desktop to a version"
+            warn "that bundles the Compose v2 plugin, then re-run this installer."
+        fi
     fi
 fi
 
