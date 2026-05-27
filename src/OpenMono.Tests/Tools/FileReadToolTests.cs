@@ -44,7 +44,7 @@ public class FileReadToolTests : IDisposable
         var result = await _tool.ExecuteAsync(input, _context, CancellationToken.None);
 
         result.IsError.Should().BeTrue();
-        result.Content.Should().Contain("not found");
+        result.Content.Should().Contain("outside the workspace");
     }
 
     [Fact]

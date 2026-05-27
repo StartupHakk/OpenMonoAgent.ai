@@ -13,6 +13,10 @@ public static class ConfigLoader
         var cwd = workingDirectory ?? Directory.GetCurrentDirectory();
         config.WorkingDirectory = cwd;
 
+        var dataDir = Environment.GetEnvironmentVariable("OPENMONO_DATA_DIR");
+        if (!string.IsNullOrEmpty(dataDir))
+            config.DataDirectory = dataDir;
+
         config.ModelPresets["qwen"] = new ModelPresetSettings
         {
             Temperature = 0.7,
@@ -130,10 +134,6 @@ public static class ConfigLoader
         var hostWorkspace = Environment.GetEnvironmentVariable("OPENMONO_HOST_WORKSPACE");
         if (!string.IsNullOrEmpty(hostWorkspace))
             config.HostWorkingDirectory = hostWorkspace;
-
-        var dataDir = Environment.GetEnvironmentVariable("OPENMONO_DATA_DIR");
-        if (!string.IsNullOrEmpty(dataDir))
-            config.DataDirectory = dataDir;
 
         var contextSize = Environment.GetEnvironmentVariable("OPENMONO_CONTEXT_SIZE");
         if (!string.IsNullOrEmpty(contextSize) && int.TryParse(contextSize, out var ctxVal) && ctxVal > 0)
