@@ -22,7 +22,7 @@ public sealed class AcpEventSinkTests
             new StreamChunk { IsComplete = true, Usage = new UsageInfo { PromptTokens = 5, CompletionTokens = 3 } },
         ]));
 
-        Func<Task> act = () => loop.RunTurnAsync("hello", CancellationToken.None);
+        Func<Task> act = () => loop.RunTurnAsync("hello", null, CancellationToken.None);
         await act.Should().NotThrowAsync();
 
         session.Messages.Should().Contain(m => m.Role == MessageRole.Assistant && m.Content == "hi");
@@ -39,7 +39,7 @@ public sealed class AcpEventSinkTests
             new StreamChunk { IsComplete = true, Usage = new UsageInfo { PromptTokens = 10, CompletionTokens = 5 } },
         ]));
 
-        await loop.RunTurnAsync("hi", CancellationToken.None);
+        await loop.RunTurnAsync("hi", null, CancellationToken.None);
 
         sink.TextDeltas.Should().Equal("Hel", "lo, ", "world!");
     }
@@ -55,7 +55,7 @@ public sealed class AcpEventSinkTests
             new StreamChunk { IsComplete = true, Usage = new UsageInfo { PromptTokens = 8, CompletionTokens = 4 } },
         ]));
 
-        await loop.RunTurnAsync("explain", CancellationToken.None);
+        await loop.RunTurnAsync("explain", null, CancellationToken.None);
 
         sink.ThinkingDeltas.Should().Equal("Reasoning...", "more...");
     }
@@ -73,7 +73,7 @@ public sealed class AcpEventSinkTests
             new StreamChunk { IsComplete = true, Usage = new UsageInfo { PromptTokens = 42, CompletionTokens = 7 } },
         ]), session);
 
-        await loop.RunTurnAsync("hi", CancellationToken.None);
+        await loop.RunTurnAsync("hi", null, CancellationToken.None);
 
         sink.UsageEvents.Should().HaveCount(1);
         sink.UsageEvents[0].input.Should().Be(42);
@@ -101,7 +101,7 @@ public sealed class AcpEventSinkTests
             }),
             tools: tools);
 
-        await loop.RunTurnAsync("invoke", CancellationToken.None);
+        await loop.RunTurnAsync("invoke", null, CancellationToken.None);
 
         sink.ToolPreviews.Should().HaveCount(1);
         sink.ToolPreviews[0].callId.Should().Be("call_42");
@@ -129,7 +129,7 @@ public sealed class AcpEventSinkTests
             }),
             tools: tools);
 
-        await loop.RunTurnAsync("invoke", CancellationToken.None);
+        await loop.RunTurnAsync("invoke", null, CancellationToken.None);
 
         sink.ToolStarts.Should().ContainSingle();
         sink.ToolStarts[0].callId.Should().Be("call_99");
@@ -163,7 +163,7 @@ public sealed class AcpEventSinkTests
             }),
             tools: tools);
 
-        await loop.RunTurnAsync("invoke", CancellationToken.None);
+        await loop.RunTurnAsync("invoke", null, CancellationToken.None);
 
         sink.ToolEnds.Should().ContainSingle();
         sink.ToolEnds[0].ok.Should().BeFalse();

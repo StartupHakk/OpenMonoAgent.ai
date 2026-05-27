@@ -119,7 +119,7 @@ public class SmokeTests
         var permissions = new PermissionEngine(config, renderer, renderer);
         var loop = new ConversationLoop(client, tools, permissions, renderer, renderer, renderer, config, session);
 
-        await loop.RunTurnAsync("Say hello in one word.", CancellationToken.None);
+        await loop.RunTurnAsync("Say hello in one word.", null, CancellationToken.None);
 
         session.Messages.Count.Should().BeGreaterThanOrEqualTo(3);
         session.Messages.Last().Role.Should().Be(MessageRole.Assistant);
