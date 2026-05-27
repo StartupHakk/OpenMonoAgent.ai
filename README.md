@@ -188,10 +188,17 @@ Attach images in chat with `@screenshot.png` or ask the agent to read any image 
 | GPU 24 GB+ | Qwen3.6-27B-Q4_K_M | Full | ~45–70 tok/s |
 | GPU 16 GB | Qwen3.6-27B-UD-IQ3_XXS | Lower | ~20–42 tok/s (4060 Ti → 4080) |
 | GPU 12 GB | Qwen3.5-9B-Q4_K_M | Lower | ~38–40 tok/s (RTX 3060) |
+| GPU 8–16 GB + 32+ GB RAM | Qwen3.6-35B-A3B + `--n-cpu-moe` + TurboQuant | Full | ~15–27 tok/s |
 | CPU 24 GB RAM | Qwen3.6-35B-A3B-UD-Q4_K_XL | Full | ~17–20 tok/s |
 
 > [!NOTE]
 > The installer detects your hardware and selects the right model automatically — no config needed. 12 GB and 16 GB GPU cards are supported but run lower accuracy models. For best results, use a 24 GB card. Requires Ubuntu 26.04 LTS (recommended) or 25.10.
+>
+> **Hybrid MoE mode** (the GPU + RAM row above) combines the Qwen3.6-35B-A3B MoE model with `--n-cpu-moe` to keep inactive experts in system RAM and non-expert layers on GPU, while TurboQuant compresses the KV cache to fit large context windows in limited VRAM. Set up with:
+> ```bash
+> openmono hybrid
+> ```
+> See [`setup-hybrid.sh`](setup-hybrid.sh) and [`docker/Dockerfile.turboquant`](docker/Dockerfile.turboquant).
 
 ## Architecture
 

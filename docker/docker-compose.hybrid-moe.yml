@@ -1,0 +1,61 @@
+# Hybrid MoE + TurboQuant configuration for Qwen3.6-35B-A3B.
+#
+# Keeps non-expert layers (attention, embeddings) on GPU while offloading
+# inactive MoE expert weights to system RAM via --n-cpu-moe. KV cache is
+# compressed with TurboQuant turbo3 for maximum context within VRAM.
+#
+# Usage:
+#   cp docker/docker-compose.hybrid-moe.yml docker/docker-compose.override.yml
+#   docker compose up -d llama-server
+#
+# Requires the TurboQuant+ Docker image (build with):
+#   docker build -f docker/Dockerfile.turboquant -t openmono-llama-turboquant .
+#
+# Model file must be placed in models/ directory:
+#   models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+
+services:
+  llama-server:
+    image: openmono-llama-turboquant
+    container_name: llama-server-hybrid
+    command: >
+      --model /models/${MODEL_NAME:-Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf}
+      --alias ${MODEL_ALIAS:-qwen3.6-35b-a3b}
+      --host 0.0.0.0
+      --port 7474
+      --ctx-size ${CTX_SIZE:-196608}
+      --threads 8
+      --threads-batch 8
+      --batch-size 2048
+      --ubatch-size 1024
+      --flash-attn on
+      --n-gpu-layers 99
+      --n-cpu-moe
+      --cache-type-k ${CACHE_K:-turbo3}
+      --cache-type-v ${CACHE_V:-turbo3}
+      --parallel 1
+      --jinja
+      --reasoning off
+      --metrics
+      ${LLAMA_API_KEY:+--api-key ${LLAMA_API_KEY}}
+    volumes:
+      - ../models:/models:ro
+    ports:
+      - "${LLAMA_PORT:-7474}:7474"
+    restart: unless-stopped
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7474/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s

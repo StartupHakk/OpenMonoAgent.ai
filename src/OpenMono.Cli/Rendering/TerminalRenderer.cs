@@ -331,6 +331,8 @@ public sealed class TerminalRenderer : IRenderer
         });
     }
 
+    public void WriteToolContent(string toolName, string filePath, string content) { }
+
     public void WriteToolDiff(string diff) { }
 
     public void WriteTodos(IReadOnlyList<Session.TodoItem> todos)

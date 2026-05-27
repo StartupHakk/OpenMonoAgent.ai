@@ -17,11 +17,19 @@ public class ConfigLoaderTests : IDisposable
     [Fact]
     public void Load_WithDefaults_ReturnsDefaultConfig()
     {
-        var config = ConfigLoader.Load(_tempDir);
+        Environment.SetEnvironmentVariable("OPENMONO_DATA_DIR", _tempDir);
+        try
+        {
+            var config = ConfigLoader.Load(_tempDir);
 
-        config.Llm.Endpoint.Should().Be("http://localhost:7474");
-        config.Llm.Model.Should().Be("");
-        config.Llm.ContextSize.Should().Be(196608);
+            config.Llm.Endpoint.Should().Be("http://localhost:7474");
+            config.Llm.Model.Should().Be("");
+            config.Llm.ContextSize.Should().Be(196608);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OPENMONO_DATA_DIR", null);
+        }
     }
 
     [Fact]

@@ -106,7 +106,7 @@ public sealed class AcpEndpointsTests : IAsyncLifetime
         root.GetProperty("version").GetString().Should().Be("1.0.0");
         root.GetProperty("agent_id").GetString().Should().Be("agt_endpoint_test");
         root.GetProperty("host_workspace").GetString().Should().Be(_tempDir);
-        root.GetProperty("container_workspace").GetString().Should().Be("/workspace");
+        root.GetProperty("container_workspace").GetString().Should().Be(_tempDir);
         root.GetProperty("status").GetString().Should().Be("ready");
         root.GetProperty("uptime_seconds").GetInt32().Should().BeGreaterThanOrEqualTo(0);
     }

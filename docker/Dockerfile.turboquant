@@ -1,0 +1,55 @@
+# Build:  docker build -f docker/Dockerfile.turboquant -t openmono-llama-turboquant .
+# Tag:    docker tag openmono-llama-turboquant ghcr.io/shrekdino/openmono/llama-turboquant:latest
+#
+# TurboQuant+ llama.cpp — CUDA build with turbo3/turbo4 KV cache compression.
+# Upstream: https://github.com/TheTom/llama-cpp-turboquant (feature/turboquant-kv-cache)
+
+ARG CUDA_VERSION=13.2.1
+ARG UBUNTU_VERSION=24.04
+ARG BUILD_IMAGE=nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION}
+ARG RUNTIME_IMAGE=nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION}
+
+FROM ${BUILD_IMAGE} AS build
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+RUN git clone --depth 1 --branch feature/turboquant-kv-cache \
+    https://github.com/TheTom/llama-cpp-turboquant.git .
+
+RUN cmake -B build \
+    -DGGML_CUDA=ON \
+    -DCUDA_DOCKER_ARCH=all \
+    -DGGML_NATIVE=OFF \
+    -DGGML_CUDA_FORCE_CUBLAS=ON \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined \
+    && cmake --build build --config Release -j$(nproc) --target llama-server
+
+FROM ${RUNTIME_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /build/build/bin/llama-server /usr/local/bin/
+COPY --from=build /build/build/bin/*.so* /usr/local/lib/
+RUN ldconfig
+
+EXPOSE 7474
+HEALTHCHECK --interval=30s --timeout=10s --retries=5 --start-period=120s \
+    CMD curl -sf http://localhost:7474/health || exit 1
+
+ENTRYPOINT ["llama-server"]
