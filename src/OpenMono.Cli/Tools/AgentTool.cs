@@ -101,6 +101,7 @@ public sealed class AgentTool : ToolBase
             context.WriteOutput($"[Agent: {description}] Starting...");
 
             var subSession = new SessionState();
+            subSession.Meta.TokenTracker = new TokenTracker();
             var systemPrompt = agentDef.SystemPrompt
                 ?? "You are a helpful coding assistant. Complete the task described below.";
             subSession.AddMessage(new Message { Role = MessageRole.System, Content = systemPrompt });
