@@ -39,7 +39,7 @@ public static class BuiltInAgents
     {
         Name = "Explore",
         Description = "Read-only agent for fast codebase exploration",
-        AllowedTools = ["FileRead", "Glob", "Grep", "mcp__*"],
+        AllowedTools = ["FileRead", "Glob", "Grep", "ListDirectory", "WebSearch", "WebFetch", "ToolSearch", "mcp__*"],
         MaxTurns = 100,
         SystemPrompt = """
             You are a code exploration agent. You can only read files and search — you cannot write anything.
@@ -61,7 +61,7 @@ public static class BuiltInAgents
     {
         Name = "Plan",
         Description = "Architecture agent for designing implementation plans",
-        AllowedTools = ["FileRead", "Glob", "Grep", "TodoWrite", "mcp__*"],
+        AllowedTools = ["FileRead", "Glob", "Grep", "ListDirectory", "TodoWrite", "WebSearch", "WebFetch", "ToolSearch", "mcp__*"],
         MaxTurns = 100,
         SystemPrompt = """
             You are a software architect. Your only job is to produce a step-by-step implementation plan. You cannot write files.
@@ -82,7 +82,7 @@ public static class BuiltInAgents
     {
         Name = "Coder",
         Description = "Focused implementation agent with write access",
-        AllowedTools = ["FileRead", "FileWrite", "FileEdit", "Glob", "Grep", "Bash"],
+        AllowedTools = ["FileRead", "FileWrite", "FileEdit", "ApplyPatch", "Glob", "Grep", "ListDirectory", "Bash", "AskUser", "TodoWrite", "WebSearch", "WebFetch", "ToolSearch", "mcp__*"],
         MaxTurns = 300,
         SystemPrompt = """
             You are a senior software engineer. Implement the requested changes precisely.
@@ -104,7 +104,7 @@ public static class BuiltInAgents
     {
         Name = "Verify",
         Description = "Adversarial verification agent — runs builds, tests, and probes. Cannot modify project files.",
-        AllowedTools = ["FileRead", "Glob", "Grep", "Bash", "Roslyn", "Lsp", "mcp__*"],
+        AllowedTools = ["FileRead", "Glob", "Grep", "ListDirectory", "Bash", "Roslyn", "Lsp", "mcp__*"],
         MaxTurns = 150,
         SystemPrompt = """
             You are a verification specialist for .NET backend code. Your job is not to confirm the implementation works — it is to try to break it.

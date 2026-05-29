@@ -238,7 +238,7 @@ public sealed class ConversationLoop : IDisposable
                     toolCalls.Add(call);
 
                     var tool = _tools.Resolve(call.Name);
-                    if (tool is not null && tool.IsConcurrencySafe && tool.IsReadOnly)
+                    if (tool is not null && tool.IsConcurrencySafe)
                     {
                         _output.WriteDebug($"[P2.4] Starting {call.Name} while streaming...");
                         inFlightTasks[call.Id] = Task.Run(
@@ -498,7 +498,7 @@ public sealed class ConversationLoop : IDisposable
         ToolContext context,
         CancellationToken ct)
     {
-        var readOnly = new List<(int Index, ToolCall Call, ITool Tool)>();
+        var parallel = new List<(int Index, ToolCall Call, ITool Tool)>();
         var writeable = new List<(int Index, ToolCall Call, ITool Tool)>();
 
         for (var i = 0; i < toolCalls.Count; i++)
@@ -511,17 +511,17 @@ public sealed class ConversationLoop : IDisposable
                 continue;
             }
 
-            if (tool.IsConcurrencySafe && tool.IsReadOnly)
-                readOnly.Add((i, call, tool));
+            if (tool.IsConcurrencySafe)
+                parallel.Add((i, call, tool));
             else
                 writeable.Add((i, call, tool));
         }
 
         var results = new ToolResult[toolCalls.Count];
 
-        if (readOnly.Count > 0)
+        if (parallel.Count > 0)
         {
-            await Task.WhenAll(readOnly.Select(async item =>
+            await Task.WhenAll(parallel.Select(async item =>
             {
                 var result = await ExecuteSingleToolAsync(item.Call, item.Tool, context, ct);
                 results[item.Index] = result;
@@ -550,7 +550,7 @@ public sealed class ConversationLoop : IDisposable
         CancellationToken ct)
     {
         var results = new ToolResult[toolCalls.Count];
-        var readOnlyPending = new List<(int Index, ToolCall Call, ITool Tool)>();
+        var parallelPending = new List<(int Index, ToolCall Call, ITool Tool)>();
         var writeable = new List<(int Index, ToolCall Call, ITool Tool)>();
 
         for (var i = 0; i < toolCalls.Count; i++)
@@ -564,12 +564,12 @@ public sealed class ConversationLoop : IDisposable
                 continue;
             }
 
-            if (tool.IsConcurrencySafe && tool.IsReadOnly)
+            if (tool.IsConcurrencySafe)
             {
 
                 if (!inFlightTasks.ContainsKey(call.Id))
                 {
-                    readOnlyPending.Add((i, call, tool));
+                    parallelPending.Add((i, call, tool));
                 }
             }
             else
@@ -578,7 +578,7 @@ public sealed class ConversationLoop : IDisposable
             }
         }
 
-        foreach (var item in readOnlyPending)
+        foreach (var item in parallelPending)
         {
             inFlightTasks[item.Call.Id] = Task.Run(
                 () => ExecuteSingleToolAsync(item.Call, item.Tool, context, siblingAbortCts.Token),
