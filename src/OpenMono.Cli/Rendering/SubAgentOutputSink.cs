@@ -35,11 +35,18 @@ internal sealed class SubAgentOutputSink(
     public void WriteError(string message) => parentWriteOutput($"  [{_labelPrefix}] ✗ {message}");
     public void WriteInfo(string message) => parentWriteOutput($"  [{_labelPrefix}] {message}");
 
-    public void AppendThinking(string text) { }
-    public void CollapseThinking(int charCount) { }
-    public void ShowWaitingIndicator(string? label = null)
-        => parentSink?.ShowWaitingIndicator(string.IsNullOrEmpty(label) ? $"{_labelPrefix} · thinking" : $"{_labelPrefix} · {label}");
-    public void ClearWaitingIndicator() => parentSink?.ClearWaitingIndicator();
+    public void AppendThinking(string text) => AppendThinking(text, null);
+    public void AppendThinking(string text, string? agentLabel)
+        => parentSink?.AppendThinking(text, agentLabel ?? _labelPrefix);
+    public void CollapseThinking(int charCount) => CollapseThinking(charCount, null);
+    public void CollapseThinking(int charCount, string? agentLabel)
+        => parentSink?.CollapseThinking(charCount, agentLabel ?? _labelPrefix);
+    public void ShowWaitingIndicator(string? label = null) => ShowWaitingIndicator(label, null);
+    public void ShowWaitingIndicator(string? label, string? agentLabel)
+        => parentSink?.ShowWaitingIndicator(label, agentLabel ?? _labelPrefix);
+    public void ClearWaitingIndicator() => ClearWaitingIndicator(null);
+    public void ClearWaitingIndicator(string? agentLabel)
+        => parentSink?.ClearWaitingIndicator(agentLabel ?? _labelPrefix);
     public void WriteWelcome(string model, string endpoint) { }
     public void WriteMarkdown(string markdown) => _buffer.Append(markdown);
     public void WriteDebug(string message) { }
