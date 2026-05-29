@@ -61,6 +61,7 @@ public static class ConfigLoader
             if (overrides is null) return;
 
             config.Llm.MergeFrom(overrides.Llm);
+            config.Agents.MergeFrom(overrides.Agents);
 
             foreach (var (tool, rules) in overrides.Permissions.Tools)
             {

@@ -68,21 +68,25 @@ public sealed class AgentTool : ToolBase
                 "Sub-agents cannot spawn further sub-agents beyond this level.");
 
         var perParent = _perParent.GetValue(context.Session, _ => new StrongBox<int>(0));
-        if (Volatile.Read(ref perParent.Value) >= agentsCfg.MaxConcurrentPerParent)
+        var newPerParent = Interlocked.Increment(ref perParent.Value);
+        if (newPerParent > agentsCfg.MaxConcurrentPerParent)
+        {
+            Interlocked.Decrement(ref perParent.Value);
             return ToolResult.Error(
                 $"Per-parent sub-agent fan-out limit ({agentsCfg.MaxConcurrentPerParent}) reached. " +
                 "Wait for an in-flight sub-agent from this conversation to finish before spawning another.");
+        }
 
         var newQueued = Interlocked.Increment(ref _queued);
         if (newQueued > agentsCfg.MaxQueuedAgents)
         {
             Interlocked.Decrement(ref _queued);
+            Interlocked.Decrement(ref perParent.Value);
             return ToolResult.Error(
                 $"Sub-agent queue is full ({agentsCfg.MaxQueuedAgents}). " +
                 "Too many sub-agents are already waiting; try again after some complete.");
         }
 
-        Interlocked.Increment(ref perParent.Value);
         var slot = EnsureSlot(agentsCfg.MaxConcurrentAgents);
         context.WriteOutput($"[Agent: {description}] Queuing {agentType} sub-agent (depth {depth}, queued {newQueued}/{agentsCfg.MaxQueuedAgents})...");
         try

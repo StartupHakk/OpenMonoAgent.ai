@@ -76,8 +76,8 @@ public sealed class ToolDispatcher : IDisposable
         var context = BuildToolContext();
         var results = new ToolResult[toolCalls.Count];
 
-        var readOnlyItems = new List<(ToolCall Call, ITool Tool, int Index)>();
-        var writeItems = new List<(ToolCall Call, ITool Tool, int Index)>();
+        var parallelItems = new List<(ToolCall Call, ITool Tool, int Index)>();
+        var sequentialItems = new List<(ToolCall Call, ITool Tool, int Index)>();
 
         for (var i = 0; i < toolCalls.Count; i++)
         {
@@ -90,15 +90,15 @@ public sealed class ToolDispatcher : IDisposable
                 continue;
             }
 
-            if (tool.IsReadOnly && tool.IsConcurrencySafe)
-                readOnlyItems.Add((call, tool, i));
+            if (tool.IsConcurrencySafe)
+                parallelItems.Add((call, tool, i));
             else
-                writeItems.Add((call, tool, i));
+                sequentialItems.Add((call, tool, i));
         }
 
-        if (readOnlyItems.Count > 0)
+        if (parallelItems.Count > 0)
         {
-            var tasks = readOnlyItems.Select(async item =>
+            var tasks = parallelItems.Select(async item =>
             {
                 try
                 {
@@ -112,7 +112,7 @@ public sealed class ToolDispatcher : IDisposable
             await Task.WhenAll(tasks);
         }
 
-        foreach (var item in writeItems)
+        foreach (var item in sequentialItems)
         {
             try
             {
