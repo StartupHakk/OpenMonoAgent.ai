@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace OpenMono.Session;
 
 public sealed class TokenTracker
@@ -8,7 +10,7 @@ public sealed class TokenTracker
     public int ApiCalls { get; private set; }
     public int MaxPromptTokens { get; private set; }
     public int AvgPromptTokens => ApiCalls > 0 ? TotalPromptTokens / ApiCalls : 0;
-    public Dictionary<string, int> ToolUsageCounts { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public ConcurrentDictionary<string, int> ToolUsageCounts { get; } = new(StringComparer.OrdinalIgnoreCase);
     public int FilesModified { get; set; }
     public int FilesCreated { get; set; }
 
@@ -28,8 +30,7 @@ public sealed class TokenTracker
 
     public void RecordToolUse(string toolName)
     {
-        ToolUsageCounts.TryGetValue(toolName, out var count);
-        ToolUsageCounts[toolName] = count + 1;
+        ToolUsageCounts.AddOrUpdate(toolName, 1, (_, count) => count + 1);
     }
 
     public string GetSummary(DateTime sessionStart)
