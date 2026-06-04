@@ -14,7 +14,6 @@ public sealed class ArtifactStore : IDisposable
     private readonly int _largeOutputThreshold;
     private readonly ConcurrentDictionary<string, ArtifactMetadata> _artifacts = new();
     private bool _disposed;
-    private readonly bool _fallbackToTemp;
 
     public ArtifactStore(string sessionId, string dataDirectory, int? largeOutputThreshold = null)
     {
@@ -24,7 +23,6 @@ public sealed class ArtifactStore : IDisposable
         try
         {
             Directory.CreateDirectory(_artifactDirectory);
-            _fallbackToTemp = false;
         }
         catch (UnauthorizedAccessException)
         {
@@ -32,7 +30,6 @@ public sealed class ArtifactStore : IDisposable
             // when ~/.openmono is mounted from the host but owned by root or
             // another user). Fall back to a temp directory so the agent can
             // still function — artifacts just won't persist across sessions.
-            _fallbackToTemp = true;
             _artifactDirectory = Path.Combine(
                 Path.GetTempPath(), "openmono", "artifacts", sessionId);
             Directory.CreateDirectory(_artifactDirectory);
@@ -41,7 +38,6 @@ public sealed class ArtifactStore : IDisposable
         {
             // Covers "Permission denied" on Linux when the mount point is
             // owned by a different UID (e.g. Docker bind-mount created by root).
-            _fallbackToTemp = true;
             _artifactDirectory = Path.Combine(
                 Path.GetTempPath(), "openmono", "artifacts", sessionId);
             Directory.CreateDirectory(_artifactDirectory);
