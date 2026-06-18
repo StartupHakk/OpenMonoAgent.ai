@@ -58,6 +58,7 @@ public sealed class PlaybookExecutor : IDisposable
         PlaybookDefinition playbook,
         Dictionary<string, object> parameters,
         PlaybookState? resumeFrom,
+        string sessionId,
         CancellationToken ct)
     {
 
@@ -68,7 +69,7 @@ public sealed class PlaybookExecutor : IDisposable
         var state = resumeFrom ?? new PlaybookState
         {
             PlaybookName = playbook.Name,
-            SessionId = Guid.NewGuid().ToString("N")[..8],
+            SessionId = sessionId,
             Parameters = parameters,
         };
 

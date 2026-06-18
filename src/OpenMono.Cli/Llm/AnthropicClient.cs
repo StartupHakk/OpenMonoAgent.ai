@@ -21,12 +21,25 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
     public Action<string>? OnDebug { get; set; }
 
     public AnthropicClient(ProviderConfig config)
+        : this(config, CreateDefaultHttpClient(config))
+    {
+    }
+
+    // Test seam: inject a pre-built HttpClient (e.g. over a stub handler) to exercise SSE parsing.
+    internal AnthropicClient(ProviderConfig config, HttpClient http)
     {
         _endpoint = (config.Endpoint ?? "https://api.anthropic.com").TrimEnd('/');
         _apiKey = config.ApiKey ?? Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY") ?? "";
-        _http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-        _http.DefaultRequestHeaders.Add("x-api-key", _apiKey);
-        _http.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01");
+        _http = http;
+    }
+
+    private static HttpClient CreateDefaultHttpClient(ProviderConfig config)
+    {
+        var apiKey = config.ApiKey ?? Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY") ?? "";
+        var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        http.DefaultRequestHeaders.Add("x-api-key", apiKey);
+        http.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01");
+        return http;
     }
 
     public async IAsyncEnumerable<StreamChunk> StreamChatAsync(
@@ -108,6 +121,21 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
 
                     switch (type)
                     {
+                        case "message_start":
+                            if (root.TryGetProperty("message", out var startMsg) &&
+                                startMsg.TryGetProperty("usage", out var startUsage) &&
+                                startUsage.TryGetProperty("input_tokens", out var inputTokens))
+                            {
+                                var promptTokens = inputTokens.GetInt32();
+                                OnDebug?.Invoke($"[SSE] usage: prompt={promptTokens}");
+                                Log.Debug($"SSE usage: prompt={promptTokens}");
+                                yield return new StreamChunk
+                                {
+                                    Usage = new UsageInfo { PromptTokens = promptTokens }
+                                };
+                            }
+                            break;
+
                         case "content_block_start":
                             if (root.TryGetProperty("content_block", out var block) &&
                                 block.TryGetProperty("type", out var blockType) &&
@@ -159,6 +187,18 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
                             break;
 
                         case "message_delta":
+                            if (root.TryGetProperty("delta", out var msgDelta) &&
+                                msgDelta.TryGetProperty("stop_reason", out var stopReasonEl) &&
+                                stopReasonEl.ValueKind == JsonValueKind.String)
+                            {
+                                var stopReason = stopReasonEl.GetString();
+                                if (stopReason is "max_tokens" or "refusal")
+                                {
+                                    OnDebug?.Invoke($"[LLM] stop_reason={stopReason}");
+                                    Log.Warn($"Anthropic stop_reason={stopReason} — response may be truncated or refused");
+                                }
+                            }
+
                             if (root.TryGetProperty("usage", out var usage))
                             {
                                 var completionTokens = usage.TryGetProperty("output_tokens", out var ot) ? ot.GetInt32() : 0;

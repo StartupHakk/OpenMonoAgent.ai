@@ -50,7 +50,7 @@ public sealed class PlaybookTool : ToolBase
                 context.Config.DataDirectory, name, context.Session.Id, ct);
         }
 
-        var result = await _executor.ExecuteAsync(playbook, parameters, state, ct);
+        var result = await _executor.ExecuteAsync(playbook, parameters, state, context.Session.Id, ct);
         return ToolResult.Success(result);
     }
 
