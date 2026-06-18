@@ -176,12 +176,22 @@ public sealed class LocalToolExecutor : IToolExecutor
 
         try
         {
-            await _hookRunner.RunPreToolUseHooksAsync(call.Name, call.Arguments, ct);
+            var hookDecision = await _hookRunner.RunPreToolUseHooksAsync(call.Name, call.Arguments, ct);
+            if (!hookDecision.Allowed)
+            {
+                var hookReason = hookDecision.Reason ?? "Blocked by a PreToolUse hook";
+                Log.Info($"Tool blocked by PreToolUse hook: {call.Name} — {hookReason}");
+                result = ToolResult.PermissionDenied(
+                    $"{call.Name} was blocked by a PreToolUse hook: {hookReason}. " +
+                    "Do not retry; address the hook's requirement or ask the user how to proceed.");
+            }
+            else
+            {
+                Log.Debug($"Tool executing: {call.Name}");
+                result = await tool.ExecuteAsync(input, ctx, execCt);
 
-            Log.Debug($"Tool executing: {call.Name}");
-            result = await tool.ExecuteAsync(input, ctx, execCt);
-
-            await _hookRunner.RunPostToolUseHooksAsync(call.Name, result.Content, ct);
+                await _hookRunner.RunPostToolUseHooksAsync(call.Name, result.Content, ct);
+            }
 
             if (result.Class == ResultClass.Success && result.ModelPreview.Length > _artifactStore.LargeOutputThreshold)
             {

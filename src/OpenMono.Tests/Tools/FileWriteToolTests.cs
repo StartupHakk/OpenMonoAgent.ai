@@ -6,6 +6,7 @@ using OpenMono.Permissions;
 using OpenMono.Rendering;
 using OpenMono.Session;
 using OpenMono.Tools;
+using OpenMono.Utils;
 
 namespace OpenMono.Tests.Tools;
 
@@ -80,6 +81,34 @@ public class FileWriteToolTests : IDisposable
         _tool.RequiredPermission(input).Should().Be(PermissionLevel.Ask);
     }
 
+    [Fact]
+    public async Task WriteContainingSecret_IsBlockedByDefault()
+    {
+        var filePath = Path.Combine(_tempDir, "creds.txt");
+        var input = JsonDocument.Parse(
+            $$"""{"file_path": "{{filePath}}", "content": "aws_key = AKIAIOSFODNN7EXAMPLE"}""").RootElement;
+
+        var result = await _tool.ExecuteAsync(input, _context, CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        File.Exists(filePath).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task WriteContainingSecret_WarnPolicy_WritesWithWarning()
+    {
+        var ctx = CreateContextWithPolicy(_tempDir, _history, SecretWritePolicy.Warn);
+        var filePath = Path.Combine(_tempDir, "creds-warn.txt");
+        var input = JsonDocument.Parse(
+            $$"""{"file_path": "{{filePath}}", "content": "AKIAIOSFODNN7EXAMPLE"}""").RootElement;
+
+        var result = await _tool.ExecuteAsync(input, ctx, CancellationToken.None);
+
+        result.IsError.Should().BeFalse();
+        File.Exists(filePath).Should().BeTrue();
+        result.Content.Should().Contain("Potential secret");
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempDir))
@@ -92,6 +121,18 @@ public class FileWriteToolTests : IDisposable
         Session = new SessionState(),
         Permissions = new PermissionEngine(new AppConfig(), new TerminalRenderer(), new TerminalRenderer()),
         Config = new AppConfig { WorkingDirectory = workDir },
+        WorkingDirectory = workDir,
+        WriteOutput = _ => { },
+        AskUser = (_, _) => Task.FromResult(""),
+        FileHistory = history,
+    };
+
+    private static ToolContext CreateContextWithPolicy(string workDir, FileHistory history, SecretWritePolicy policy) => new()
+    {
+        ToolRegistry = new ToolRegistry(),
+        Session = new SessionState(),
+        Permissions = new PermissionEngine(new AppConfig(), new TerminalRenderer(), new TerminalRenderer()),
+        Config = new AppConfig { WorkingDirectory = workDir, SecretWrites = policy },
         WorkingDirectory = workDir,
         WriteOutput = _ => { },
         AskUser = (_, _) => Task.FromResult(""),

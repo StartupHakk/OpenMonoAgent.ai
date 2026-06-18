@@ -32,6 +32,37 @@ public class AnthropicClientTests
             "input_tokens from message_start must be surfaced so compaction does not fall back to a crude estimate");
     }
 
+    [Fact]
+    public async Task StreamChatAsync_SerializesImageContentBlocksForVision()
+    {
+        const string sse = "data: {\"type\":\"message_stop\"}\n\n";
+        string? capturedBody = null;
+        using var http = new HttpClient(new CapturingHandler(sse, b => capturedBody = b));
+        using var client = new AnthropicClient(new ProviderConfig { Name = "anthropic", ApiKey = "test" }, http);
+
+        var messages = new List<Message>
+        {
+            new()
+            {
+                Role = MessageRole.User,
+                ContentParts = new List<ContentPart>
+                {
+                    new TextPart("what is in this image?"),
+                    new ImagePart("data:image/png;base64,QUJD"),
+                },
+            },
+        };
+
+        await foreach (var _ in client.StreamChatAsync(messages, null, new LlmOptions { Model = "claude" }, CancellationToken.None))
+        {
+        }
+
+        // The image must be sent as a structured content block, not dropped.
+        capturedBody.Should().NotBeNull();
+        capturedBody!.Should().Contain("base64");
+        capturedBody.Should().Contain("QUJD");
+    }
+
     private sealed class StubHandler : HttpMessageHandler
     {
         private readonly string _body;
@@ -42,5 +73,21 @@ public class AnthropicClientTests
             {
                 Content = new StringContent(_body, Encoding.UTF8, "text/event-stream"),
             });
+    }
+
+    private sealed class CapturingHandler : HttpMessageHandler
+    {
+        private readonly string _body;
+        private readonly Action<string> _onRequest;
+        public CapturingHandler(string body, Action<string> onRequest) { _body = body; _onRequest = onRequest; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            _onRequest(request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken));
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(_body, Encoding.UTF8, "text/event-stream"),
+            };
+        }
     }
 }

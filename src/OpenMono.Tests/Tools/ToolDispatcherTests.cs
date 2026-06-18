@@ -49,6 +49,27 @@ public class ToolDispatcherTests : IDisposable
         probe.Peak.Should().BeLessThanOrEqualTo(2);
     }
 
+    [Fact]
+    public async Task PreToolUseHook_ExitingWithCode2_BlocksTheTool()
+    {
+        var tool = new FlagTool();
+        var config = new AppConfig { WorkingDirectory = _tempDir, DataDirectory = _tempDir };
+        config.Hooks.PreToolUse.Add(new HookDefinition { Run = "exit 2" });
+
+        var registry = new ToolRegistry();
+        registry.Register(tool);
+        var renderer = new TerminalRenderer();
+        var permissions = new PermissionEngine(config, renderer, renderer);
+        using var dispatcher = new ToolDispatcher(registry, permissions, renderer, config, new SessionState());
+
+        var results = await dispatcher.ExecuteToolCallsAsync(
+            new List<ToolCall> { new() { Id = "1", Name = tool.Name, Arguments = "{}" } },
+            CancellationToken.None);
+
+        results[0].IsError.Should().BeTrue();
+        tool.Executed.Should().BeFalse("a PreToolUse hook exiting 2 must block the tool, not just warn");
+    }
+
     private ToolDispatcher MakeDispatcher(int maxReadOnly, params ITool[] tools)
     {
         var registry = new ToolRegistry();
@@ -109,6 +130,24 @@ public class ToolDispatcherTests : IDisposable
             try { await Task.Delay(100, ct); }
             finally { _probe.Exit(); }
             return ToolResult.Success("ok");
+        }
+    }
+
+    private sealed class FlagTool : ToolBase
+    {
+        public bool Executed { get; private set; }
+        public override string Name => "FlagTool";
+        public override string Description => "test";
+        public override bool IsReadOnly => true;
+        public override bool IsConcurrencySafe => true;
+        public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;
+
+        protected override SchemaBuilder DefineSchema() => new();
+
+        protected override Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
+        {
+            Executed = true;
+            return Task.FromResult(ToolResult.Success("ran"));
         }
     }
 

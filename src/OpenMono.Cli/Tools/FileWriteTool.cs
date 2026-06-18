@@ -41,11 +41,10 @@ public sealed class FileWriteTool : ToolBase
             var existed = File.Exists(resolvedPath);
             var oldContent = existed ? await File.ReadAllTextAsync(resolvedPath, ct) : null;
 
-            var secrets = SecretScanner.Scan(content);
-            var secretWarning = secrets.Count > 0
-                ? $"\n⚠ Potential secret(s) detected: {string.Join(", ", secrets.Select(SecretScanner.RuleIdToLabel))}. " +
-                  "Verify this file should contain credentials before committing."
-                : string.Empty;
+            var guard = SecretScanner.Guard(content, context.Config.SecretWrites);
+            if (guard.Blocked)
+                return ToolResult.PermissionDenied(guard.Message);
+            content = guard.Content;
 
             context.FileHistory?.RecordBefore(resolvedPath, Name, context.Session.Messages.Count);
 
@@ -58,7 +57,7 @@ public sealed class FileWriteTool : ToolBase
             var diff = oldContent is null
                 ? InlineDiff.FromNewFile(content, resolvedPath)
                 : InlineDiff.FromOverwrite(oldContent, content, resolvedPath);
-            return ToolResult.Success($"{verb} {resolvedPath} ({lineCount} lines){secretWarning}")
+            return ToolResult.Success($"{verb} {resolvedPath} ({lineCount} lines){guard.Message}")
                 .WithDiff(diff);
         }
         catch (UnauthorizedAccessException)

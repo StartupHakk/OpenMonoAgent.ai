@@ -244,6 +244,11 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
             .Where(m => m.Role != MessageRole.System)
             .Select<Message, object>(m => m.Role switch
             {
+                MessageRole.User when m.ContentParts is { Count: > 0 } => (object)new
+                {
+                    role = "user",
+                    content = m.ContentParts.Select(MapContentBlock).ToArray()
+                },
                 MessageRole.User => new { role = "user", content = m.Content },
                 MessageRole.Assistant when m.ToolCalls is { Count: > 0 } => new
                 {
@@ -265,6 +270,19 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
                     .ToArray()
                 },
                 MessageRole.Assistant => new { role = "assistant", content = m.Content },
+                MessageRole.Tool when m.ContentParts is { Count: > 0 } => (object)new
+                {
+                    role = "user",
+                    content = new object[]
+                    {
+                        new
+                        {
+                            type = "tool_result",
+                            tool_use_id = m.ToolCallId,
+                            content = m.ContentParts.Select(MapContentBlock).ToArray()
+                        }
+                    }
+                },
                 MessageRole.Tool => (object)new
                 {
                     role = "user",
@@ -306,6 +324,30 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
         }
 
         return body;
+    }
+
+    private static object MapContentBlock(ContentPart part) => part switch
+    {
+        TextPart t => new { type = "text", text = t.Text },
+        ImagePart i => MapImageBlock(i),
+        _ => new { type = "text", text = "" },
+    };
+
+    private static object MapImageBlock(ImagePart img)
+    {
+        const string dataPrefix = "data:";
+        if (img.Url.StartsWith(dataPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            // data:image/png;base64,XXXX  ->  { source: { type: base64, media_type, data } }
+            var comma = img.Url.IndexOf(',');
+            var meta = comma >= 0 ? img.Url[dataPrefix.Length..comma] : "";
+            var data = comma >= 0 ? img.Url[(comma + 1)..] : "";
+            var mediaType = meta.Split(';')[0];
+            if (string.IsNullOrEmpty(mediaType)) mediaType = "image/png";
+            return new { type = "image", source = new { type = "base64", media_type = mediaType, data } };
+        }
+
+        return new { type = "image", source = new { type = "url", url = img.Url } };
     }
 
     public void Dispose() => _http.Dispose();
