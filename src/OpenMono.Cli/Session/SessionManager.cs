@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using OpenMono.Config;
 
@@ -22,26 +23,25 @@ public sealed class SessionManager
         var fileName = $"{session.StartedAt:yyyy-MM-dd}_{session.Id}.jsonl";
         var filePath = Path.Combine(_sessionDir, fileName);
 
-        await using var writer = new StreamWriter(filePath, append: false);
-
         var header = new SessionHeader
         {
             SessionId = session.Id,
             StartedAt = session.StartedAt,
             WorkingDirectory = _workingDirectory,
+            Model = session.Model,
         };
-        await writer.WriteLineAsync(JsonSerializer.Serialize(header, JsonOptions.Default).AsMemory(), ct);
 
+        var sb = new StringBuilder();
+        sb.Append(JsonSerializer.Serialize(header, JsonOptions.Default)).Append('\n');
         foreach (var msg in session.Messages)
-        {
-            var json = JsonSerializer.Serialize(msg, JsonOptions.Default);
-            await writer.WriteLineAsync(json.AsMemory(), ct);
-        }
+            sb.Append(JsonSerializer.Serialize(msg, JsonOptions.Default)).Append('\n');
+
+        await WriteAllTextAtomicAsync(filePath, sb.ToString(), ct);
 
         if (session.Checkpoints.Count > 0)
         {
             var cpPath = Path.Combine(_sessionDir, $"{session.StartedAt:yyyy-MM-dd}_{session.Id}.checkpoints.json");
-            await File.WriteAllTextAsync(cpPath,
+            await WriteAllTextAtomicAsync(cpPath,
                 JsonSerializer.Serialize(session.Checkpoints, JsonOptions.Indented), ct);
         }
 
@@ -60,6 +60,7 @@ public sealed class SessionManager
                 SessionId = session.Id,
                 StartedAt = session.StartedAt,
                 WorkingDirectory = _workingDirectory,
+                Model = session.Model,
             };
             await File.AppendAllTextAsync(filePath, JsonSerializer.Serialize(header, JsonOptions.Default) + "\n", ct);
         }
@@ -78,12 +79,21 @@ public sealed class SessionManager
         var files = Directory.GetFiles(_sessionDir, $"*_{sessionId}.jsonl");
         if (files.Length == 0) return null;
 
-        var session = new SessionState();
         var lines = await File.ReadAllLinesAsync(files[0], ct);
+
+        // Recover the session's identity from the header line so a resumed session
+        // keeps its original id/startedAt and continues appending to the SAME file
+        // (rather than forking a new file under a fresh GUID — see plan G4).
+        var headerLine = lines.FirstOrDefault(l => l.Contains("\"session_id\""));
+        SessionHeader? header = headerLine is not null
+            ? JsonSerializer.Deserialize<SessionHeader>(headerLine, JsonOptions.Default)
+            : null;
+        var session = header is not null
+            ? new SessionState { Id = header.SessionId, StartedAt = header.StartedAt, Model = header.Model }
+            : new SessionState { Id = sessionId };
 
         foreach (var line in lines.Where(l => !string.IsNullOrWhiteSpace(l)))
         {
-
             if (line.Contains("\"session_id\"")) continue;
 
             var msg = JsonSerializer.Deserialize<Message>(line, JsonOptions.Default);
@@ -132,16 +142,22 @@ public sealed class SessionManager
         }
 
         var existing = sessions.FindIndex(s => s.Id == session.Id);
+        var firstUser = session.Messages.FirstOrDefault(m => m.Role == MessageRole.User)?.Content;
         var summary = new SessionSummary
         {
             Id = session.Id,
             StartedAt = session.StartedAt,
+            LastActivityAt = session.Messages.Count > 0
+                ? session.Messages[^1].Timestamp
+                : session.StartedAt,
             TurnCount = session.TurnCount,
             TotalTokens = session.TotalTokensUsed,
             WorkingDirectory = _workingDirectory,
-            FirstMessage = session.Messages
-                .FirstOrDefault(m => m.Role == MessageRole.User)?.Content?[..Math.Min(100,
-                    session.Messages.FirstOrDefault(m => m.Role == MessageRole.User)?.Content?.Length ?? 0)] ?? "",
+            FirstMessage = firstUser is { } c ? c[..Math.Min(100, c.Length)] : "",
+            Title = SessionDigest.DeriveTitle(session.Messages),
+            Model = session.Model ?? "",
+            MessageCount = session.Messages.Count,
+            LatestSummary = SessionDigest.DeriveLatestSummary(session.Checkpoints),
         };
 
         if (existing >= 0)
@@ -149,8 +165,19 @@ public sealed class SessionManager
         else
             sessions.Add(summary);
 
-        await File.WriteAllTextAsync(indexPath,
+        await WriteAllTextAtomicAsync(indexPath,
             JsonSerializer.Serialize(sessions, JsonOptions.Indented), ct);
+    }
+
+    /// <summary>
+    /// Writes to a temp sibling file then atomically renames it over the target, so a
+    /// reader (or a crash) never observes a half-written session/index/checkpoint file.
+    /// </summary>
+    private static async Task WriteAllTextAtomicAsync(string path, string content, CancellationToken ct)
+    {
+        var tmp = path + ".tmp";
+        await File.WriteAllTextAsync(tmp, content, ct);
+        File.Move(tmp, path, overwrite: true);
     }
 }
 
@@ -158,10 +185,15 @@ public sealed record SessionSummary
 {
     public required string Id { get; init; }
     public required DateTime StartedAt { get; init; }
+    public DateTime LastActivityAt { get; init; }
     public int TurnCount { get; init; }
     public int TotalTokens { get; init; }
     public string WorkingDirectory { get; init; } = "";
     public string FirstMessage { get; init; } = "";
+    public string Title { get; init; } = "";
+    public string Model { get; init; } = "";
+    public int MessageCount { get; init; }
+    public string? LatestSummary { get; init; }
 }
 
 public sealed record SessionHeader
@@ -169,4 +201,5 @@ public sealed record SessionHeader
     public required string SessionId { get; init; }
     public required DateTime StartedAt { get; init; }
     public required string WorkingDirectory { get; init; }
+    public string? Model { get; init; }
 }
