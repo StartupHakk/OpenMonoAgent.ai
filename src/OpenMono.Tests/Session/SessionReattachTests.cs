@@ -45,6 +45,21 @@ public class SessionReattachTests
     }
 
     [Fact]
+    public void Apply_KeepsLoadedSystemPrompt_WhenLiveHasNone()
+    {
+        var live = new SessionState(); // no system message yet
+
+        var loaded = new SessionState { Id = "sess_x", StartedAt = DateTime.UtcNow };
+        loaded.AddMessage(new Message { Role = MessageRole.System, Content = "LOADED system" });
+        loaded.AddMessage(new Message { Role = MessageRole.User, Content = "hi" });
+
+        SessionReattach.Apply(live, loaded);
+
+        live.Messages.Should().Contain(m => m.Role == MessageRole.System && m.Content == "LOADED system");
+        live.Messages.Should().Contain(m => m.Content == "hi");
+    }
+
+    [Fact]
     public void Apply_RepairsDanglingToolCalls_FromInterruptedSession()
     {
         var live = new SessionState();

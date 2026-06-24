@@ -12,15 +12,21 @@ public static class SessionReattach
 {
     public static void Apply(SessionState live, SessionState loaded)
     {
-        var currentSystem = live.Messages.FirstOrDefault(m => m.Role == MessageRole.System);
+        // Prefer the current build's system prompt(s); if the live session has none
+        // (e.g. /resume issued before the prompt was seeded), fall back to the loaded
+        // session's own system prompt so the resumed conversation is never left without one.
+        var liveSystems = live.Messages.Where(m => m.Role == MessageRole.System).ToList();
+        var systemMessages = liveSystems.Count > 0
+            ? liveSystems
+            : loaded.Messages.Where(m => m.Role == MessageRole.System).ToList();
 
         live.Id = loaded.Id;
         live.StartedAt = loaded.StartedAt;
         live.Model = loaded.Model;
 
         live.Messages.Clear();
-        if (currentSystem is not null)
-            live.Messages.Add(currentSystem);
+        foreach (var sys in systemMessages)
+            live.Messages.Add(sys);
         foreach (var msg in loaded.Messages.Where(m => m.Role != MessageRole.System))
             live.Messages.Add(msg);
 

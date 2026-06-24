@@ -162,8 +162,10 @@ public sealed class AcpSessionStore : IDisposable
             {
                 var json = File.ReadAllText(file);
                 var blob = JsonSerializer.Deserialize<LegacyBlob>(json, LegacyJsonOpts);
-                if (blob is null || string.IsNullOrEmpty(blob.Id))
+                if (blob is null || !IsValidId(blob.Id))
                 {
+                    // Reject empty/malformed ids so we never migrate a session that
+                    // TryGet (which enforces IsValidId) could never retrieve.
                     Quarantine(file);
                     continue;
                 }

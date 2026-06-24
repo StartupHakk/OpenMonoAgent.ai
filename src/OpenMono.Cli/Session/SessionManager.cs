@@ -92,20 +92,34 @@ public sealed class SessionManager
         {
             if (line.Contains("\"session_id\"")) continue;
 
-            var msg = JsonSerializer.Deserialize<Message>(line, JsonOptions.Default);
-            if (msg is not null) session.AddMessage(msg);
+            try
+            {
+                var msg = JsonSerializer.Deserialize<Message>(line, JsonOptions.Default);
+                if (msg is not null) session.AddMessage(msg);
+            }
+            catch (JsonException)
+            {
+                // Skip a corrupt/truncated message line rather than failing the whole load.
+            }
         }
 
         var cpPath = files[0].Replace(".jsonl", ".checkpoints.json");
         if (File.Exists(cpPath))
         {
-            var cpJson = await File.ReadAllTextAsync(cpPath, ct);
-            var checkpoints = JsonSerializer.Deserialize<List<CheckpointEntry>>(cpJson, JsonOptions.Default) ?? [];
-            foreach (var cp in checkpoints)
-                session.Checkpoints.Add(cp);
+            try
+            {
+                var cpJson = await File.ReadAllTextAsync(cpPath, ct);
+                var checkpoints = JsonSerializer.Deserialize<List<CheckpointEntry>>(cpJson, JsonOptions.Default) ?? [];
+                foreach (var cp in checkpoints)
+                    session.Checkpoints.Add(cp);
 
-            if (session.Checkpoints.Count > 0)
-                session.CheckpointCutoffIndex = session.Checkpoints[^1].CutoffMessageIndex;
+                if (session.Checkpoints.Count > 0)
+                    session.CheckpointCutoffIndex = session.Checkpoints[^1].CutoffMessageIndex;
+            }
+            catch (JsonException)
+            {
+                // Corrupt checkpoint sidecar — resume without checkpoints (non-critical metadata).
+            }
         }
 
         return session;
@@ -137,11 +151,23 @@ public sealed class SessionManager
         var indexPath = Path.Combine(_sessionDir, "index.json");
         if (!File.Exists(indexPath)) return [];
 
-        var json = await File.ReadAllTextAsync(indexPath, ct);
-        var sessions = JsonSerializer.Deserialize<List<SessionSummary>>(json, JsonOptions.Default) ?? [];
+        List<SessionSummary> sessions;
+        try
+        {
+            var json = await File.ReadAllTextAsync(indexPath, ct);
+            sessions = JsonSerializer.Deserialize<List<SessionSummary>>(json, JsonOptions.Default) ?? [];
+        }
+        catch (JsonException)
+        {
+            // Corrupt or torn index — return an empty list; it self-heals on the next save.
+            return [];
+        }
 
         return sessions
             .Where(s => s.WorkingDirectory == _workingDirectory)
+            // Skip orphaned index entries whose session file no longer exists, so the
+            // resume picker never offers a row that 404s on click.
+            .Where(s => Directory.GetFiles(_sessionDir, $"*_{s.Id}.jsonl").Length > 0)
             .OrderByDescending(s => s.LastActivityAt)
             .ThenByDescending(s => s.StartedAt)
             .Take(limit)

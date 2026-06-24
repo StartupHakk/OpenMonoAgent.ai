@@ -227,6 +227,78 @@ public class SessionManagerTests : IDisposable
         Directory.GetFiles(Path.Combine(_tempDir, "sessions"), $"*_{session.Id}*").Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task LoadAsync_SkipsCorruptMessageLines()
+    {
+        var sessionsDir = Path.Combine(_tempDir, "sessions");
+        Directory.CreateDirectory(sessionsDir);
+        const string id = "deadbeef1234";
+        var path = Path.Combine(sessionsDir, $"2026-01-01_{id}.jsonl");
+        var lines = new[]
+        {
+            "{\"session_id\":\"" + id + "\",\"started_at\":\"2026-01-01T00:00:00Z\",\"working_directory\":\"\"}",
+            "{\"role\":\"user\",\"content\":\"hello\"}",
+            "{ this is not valid json",
+            "{\"role\":\"assistant\",\"content\":\"hi\"}",
+        };
+        await File.WriteAllTextAsync(path, string.Join("\n", lines) + "\n");
+
+        var loaded = await _manager.LoadAsync(id, CancellationToken.None);
+
+        loaded.Should().NotBeNull();
+        loaded!.Messages.Should().HaveCount(2);
+        loaded.Messages[0].Content.Should().Be("hello");
+        loaded.Messages[1].Content.Should().Be("hi");
+    }
+
+    [Fact]
+    public async Task LoadAsync_IgnoresCorruptCheckpointsSidecar()
+    {
+        var session = SessionManager.CreateSession();
+        session.AddMessage(new Message { Role = MessageRole.User, Content = "x" });
+        await _manager.SaveAsync(session, CancellationToken.None);
+
+        var jsonl = Directory.GetFiles(Path.Combine(_tempDir, "sessions"), $"*_{session.Id}.jsonl")[0];
+        await File.WriteAllTextAsync(jsonl.Replace(".jsonl", ".checkpoints.json"), "{ broken");
+
+        var loaded = await _manager.LoadAsync(session.Id, CancellationToken.None);
+
+        loaded.Should().NotBeNull();
+        loaded!.Messages.Should().HaveCount(1);
+        loaded.Checkpoints.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ListSessionsAsync_ReturnsEmpty_OnCorruptIndex()
+    {
+        var sessionsDir = Path.Combine(_tempDir, "sessions");
+        Directory.CreateDirectory(sessionsDir);
+        await File.WriteAllTextAsync(Path.Combine(sessionsDir, "index.json"), "{ not valid json");
+
+        var list = await _manager.ListSessionsAsync(10, CancellationToken.None);
+
+        list.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ListSessionsAsync_SkipsOrphanedIndexEntries()
+    {
+        var a = SessionManager.CreateSession();
+        a.AddMessage(new Message { Role = MessageRole.User, Content = "a" });
+        await _manager.SaveAsync(a, CancellationToken.None);
+        var b = SessionManager.CreateSession();
+        b.AddMessage(new Message { Role = MessageRole.User, Content = "b" });
+        await _manager.SaveAsync(b, CancellationToken.None);
+
+        // Delete b's jsonl directly, leaving its index entry orphaned.
+        foreach (var f in Directory.GetFiles(Path.Combine(_tempDir, "sessions"), $"*_{b.Id}.jsonl"))
+            File.Delete(f);
+
+        var list = await _manager.ListSessionsAsync(10, CancellationToken.None);
+
+        list.Select(s => s.Id).Should().Contain(a.Id).And.NotContain(b.Id);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempDir))

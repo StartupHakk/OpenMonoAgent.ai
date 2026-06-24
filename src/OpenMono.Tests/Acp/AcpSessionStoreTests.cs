@@ -310,6 +310,20 @@ public sealed class AcpSessionStoreTests : IDisposable
     }
 
     [Fact]
+    public void Migration_quarantines_blob_with_invalid_id()
+    {
+        Directory.CreateDirectory(_legacyDir);
+        var p = Path.Combine(_legacyDir, "sess_badid.json");
+        File.WriteAllText(p, "{\"Id\":\"sess_zzz!!!\",\"StartedAt\":\"2026-01-01T00:00:00Z\",\"Messages\":[]}");
+
+        using var store = new AcpSessionStore(_cfg, _settings, startReaper: false);
+
+        File.Exists(p).Should().BeFalse("a blob with an invalid id must be quarantined, not migrated");
+        File.Exists(p + ".corrupt").Should().BeTrue();
+        Directory.GetFiles(_sessionsDir, "*.jsonl").Should().BeEmpty("nothing should be migrated for an invalid id");
+    }
+
+    [Fact]
     public void Migration_skips_corrupt_files_without_throwing()
     {
         Directory.CreateDirectory(_legacyDir);
