@@ -190,20 +190,20 @@ public sealed class AcpTurnRunner : IAcpEventSink
     {
         var id = payload.GetProperty("id").GetString()
             ?? throw new InvalidOperationException("user_input_response missing `id`");
-        var value = payload.TryGetProperty("value", out var vEl) ? vEl.GetString() ?? "" : "";
+        var value = payload.TryGetProperty("value", out var vEl) ? vEl.GetString() : null;
 
         var ctx = _acpSession.LookupPauseContext(id)
             ?? throw new InvalidOperationException($"user_input_response for unknown or already-resolved pause id: {id}");
         if (ctx.Kind != PendingResponseKind.UserInput)
             throw new InvalidOperationException($"pause {id} is not a UserInput pause (was {ctx.Kind})");
 
-        if (!_acpSession.TryResolvePause(id, new AcpUserInputResponse(value)))
+        var resolvedValue = value ?? "";
+        if (!_acpSession.TryResolvePause(id, new AcpUserInputResponse(resolvedValue)))
             throw new InvalidOperationException($"failed to resolve pause id: {id}");
 
-        _acpSession.RememberUserInput(ctx.ContextKey, value);
+        _acpSession.RememberUserInput(ctx.ContextKey, resolvedValue);
 
-
-        AppendSyntheticToolMessages(value);
+        AppendSyntheticToolMessages(resolvedValue);
 
         await DriveLoopAsync(ct);
     }
@@ -229,6 +229,61 @@ public sealed class AcpTurnRunner : IAcpEventSink
         _acpSession.Messages.Add(new Message { Role = MessageRole.User, Content = instruction });
         _acpSession.TurnCount++;
         await DriveLoopAsync(ct);
+    }
+
+    public async Task ResumeWithToggleModeAsync(JsonElement payload, CancellationToken ct)
+    {
+        var id = payload.GetProperty("id").GetString()
+            ?? throw new InvalidOperationException("toggle_mode_response missing `id`");
+        var decision = payload.TryGetProperty("decision", out var dEl) ? dEl.GetString() : null;
+        var allow = string.Equals(decision, "approve", StringComparison.Ordinal);
+
+        var ctx = _acpSession.LookupPauseContext(id)
+            ?? throw new InvalidOperationException($"toggle_mode_response for unknown or already-resolved pause id: {id}");
+        if (ctx.Kind != PendingResponseKind.ToggleMode)
+            throw new InvalidOperationException($"pause {id} is not a ToggleMode pause (was {ctx.Kind})");
+
+        if (!_acpSession.TryResolvePause(id, new AcpPermissionResponse(allow)))
+            throw new InvalidOperationException($"failed to resolve pause id: {id}");
+
+        // Remember the decision so the tool doesn't re-prompt if resumed
+        _acpSession.RememberPermission(ctx.ContextKey, allow);
+
+        if (!allow)
+        {
+            // User declined to switch mode
+            Log.Info($"[OMA_MODE] toggle_mode_request denied by user");
+            await _writer.WriteEventAsync("done", new { });
+            return;
+        }
+
+        // User approved mode switch: flip to Build and re-execute the pending tool call
+        _acpSession.PlanMode = false;
+        await OnModeChangedAsync("build");
+        Log.Info($"[OMA_MODE] User approved mode switch to BUILD for playbook");
+
+        var sessionState = BuildSessionState();
+        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction);
+        try
+        {
+            await loop.ResolvePendingToolCallsAsync(true, ct);
+            await loop.ContinueTurnAsync(ct);
+            SyncBackToAcpSession(sessionState);
+            await _writer.WriteEventAsync("done", new { });
+        }
+        catch (PendingUserResponseException)
+        {
+            SyncBackToAcpSession(sessionState);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            SyncBackToAcpSession(sessionState);
+        }
+        catch (Exception e)
+        {
+            SyncBackToAcpSession(sessionState);
+            await _writer.WriteEventAsync("error", new { message = e.Message });
+        }
     }
 
     public void AbortPendingPauses()

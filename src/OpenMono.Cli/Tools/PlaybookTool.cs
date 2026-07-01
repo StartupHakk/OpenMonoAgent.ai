@@ -49,18 +49,36 @@ public sealed class PlaybookTool : ToolBase
         // Check if playbook needs non-read-only tools and we're in Plan mode
         if (context.Session.Meta.PlanMode && PlaybookRequiresWriteTools(playbook, context))
         {
-            // Ask user if they want to switch to Build mode
-            var userResponse = await context.AskUser(
-                $"The playbook '{playbook.Name}' requires Build mode (write tools). Switch to Build mode? [yes/no]",
-                ct);
-
-            if (userResponse?.Equals("yes", StringComparison.OrdinalIgnoreCase) != true)
+            // Use ACP interaction (RequestToggleModeAsync) if available, otherwise fall back to AskUser
+            if (context.Interaction is not null)
             {
-                return ToolResult.Error($"Playbook '{name}' requires Build mode. User declined to switch.");
-            }
+                var approved = await context.Interaction.RequestToggleModeAsync(
+                    $"Playbook '{playbook.Name}' requires Build mode (write tools)",
+                    ct);
 
-            // Switch to Build mode
-            context.Session.Meta.PlanMode = false;
+                if (!approved)
+                {
+                    return ToolResult.Error($"Playbook '{name}' requires Build mode. User declined to switch.");
+                }
+
+                // Switch to Build mode (will be re-executed by ResumeWithToggleModeAsync)
+                context.Session.Meta.PlanMode = false;
+            }
+            else
+            {
+                // TUI fallback: ask user synchronously
+                var userResponse = await context.AskUser(
+                    $"The playbook '{playbook.Name}' requires Build mode (write tools). Switch to Build mode? [yes/no]",
+                    ct);
+
+                if (userResponse?.Equals("yes", StringComparison.OrdinalIgnoreCase) != true)
+                {
+                    return ToolResult.Error($"Playbook '{name}' requires Build mode. User declined to switch.");
+                }
+
+                // Switch to Build mode
+                context.Session.Meta.PlanMode = false;
+            }
         }
 
         var parameters = ParseArguments(arguments, playbook);

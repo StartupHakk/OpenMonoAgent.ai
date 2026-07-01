@@ -33,6 +33,7 @@ public sealed class ConversationLoop : IDisposable
     private readonly ToolResultCache _cache;
     private readonly ArtifactStore _artifactStore;
     private readonly IAcpEventSink? _sink;
+    private readonly IAcpUserInteraction? _interaction;
     private readonly IToolExecutor _executor;
     private readonly IReadOnlyList<ITool>? _toolSubset;
 
@@ -98,8 +99,7 @@ public sealed class ConversationLoop : IDisposable
         _cache = cache ?? new ToolResultCache();
         _artifactStore = artifactStore ?? ArtifactStore.ForSession(session, config.DataDirectory);
         _sink = sink;
-
-
+        _interaction = interaction;
 
 
 
@@ -932,6 +932,7 @@ public sealed class ConversationLoop : IDisposable
         },
         OnDebug = msg => { _output.WriteDebug(msg); Log.Debug(msg); },
         Output = _output,
+        Interaction = _interaction,
         AgentDepth = _agentDepth,
     };
 }

@@ -58,6 +58,25 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
         throw new PendingUserResponseException(id, PendingResponseKind.Permission);
     }
 
+    public async Task<bool> RequestToggleModeAsync(string reason, CancellationToken ct)
+    {
+        var contextKey = "toggle_mode:" + reason;
+
+        if (_session.TryGetRememberedPermission(contextKey) is bool cached)
+            return cached;
+
+        var id = "mode_" + Guid.NewGuid().ToString("N")[..12];
+        _session.RegisterPause(id, PendingResponseKind.ToggleMode, contextKey);
+
+        await _writer.WriteEventAsync("toggle_mode_request", new
+        {
+            id,
+            reason,
+        });
+
+        throw new PendingUserResponseException(id, PendingResponseKind.ToggleMode);
+    }
+
     public async Task<string?> RequestUserInputAsync(string question, CancellationToken ct)
     {
 

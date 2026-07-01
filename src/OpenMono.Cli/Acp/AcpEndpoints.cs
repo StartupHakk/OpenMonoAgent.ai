@@ -155,6 +155,12 @@ public static class AcpEndpoints
                     var runner = runners.Create(session, new SseWriter(ctx.Response.Body, ctx.RequestAborted));
                     await runner.ResumeWithPlanDecisionAsync(pdEl.GetString() ?? "keep", ctx.RequestAborted);
                 }
+                else if (root.TryGetProperty("toggle_mode", out var tmEl))
+                {
+                    StartSseResponse(ctx);
+                    var runner = runners.Create(session, new SseWriter(ctx.Response.Body, ctx.RequestAborted));
+                    await runner.ResumeWithToggleModeAsync(tmEl, ctx.RequestAborted);
+                }
                 else if (root.TryGetProperty("mode", out var modeEl))
                 {
                     var mode = modeEl.GetString() ?? "";

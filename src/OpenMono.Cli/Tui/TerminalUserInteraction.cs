@@ -27,6 +27,12 @@ public sealed class TerminalUserInteraction : IAcpUserInteraction
         return response is PermissionResponse.Allow or PermissionResponse.AllowAll;
     }
 
+    public async Task<bool> RequestToggleModeAsync(string reason, CancellationToken ct)
+    {
+        var answer = await _input.AskUserAsync($"Switch to Build mode? {reason}", ct);
+        return answer?.Equals("yes", StringComparison.OrdinalIgnoreCase) == true;
+    }
+
     public async Task<string?> RequestUserInputAsync(string question, CancellationToken ct)
     {
         var answer = await _input.AskUserAsync(question, ct);
