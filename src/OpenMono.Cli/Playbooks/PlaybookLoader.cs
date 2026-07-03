@@ -6,6 +6,7 @@ namespace OpenMono.Playbooks;
 public sealed class PlaybookLoader
 {
     private readonly List<string> _searchPaths;
+    private readonly Dictionary<string, bool> _pathScope = []; // true = global, false = workspace
     private static readonly IDeserializer YamlDeserializer = new DeserializerBuilder()
         .WithNamingConvention(HyphenatedNamingConvention.Instance)
         .IgnoreUnmatchedProperties()
@@ -13,9 +14,23 @@ public sealed class PlaybookLoader
 
     public PlaybookLoader(IEnumerable<string> searchPaths)
     {
-        _searchPaths = searchPaths
-            .Select(p => p.Replace("~", Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)))
-            .ToList();
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var globalBase = Path.Combine(userProfile, ".openmono");
+
+        foreach (var p in searchPaths)
+        {
+            var resolved = p.Replace("~", userProfile);
+            _pathScope.Add(resolved, IsGlobalPath(resolved, globalBase));
+        }
+
+        _searchPaths = _pathScope.Keys.ToList();
+    }
+
+    private static bool IsGlobalPath(string resolvedPath, string globalBase)
+    {
+        var normalizedResolved = Path.GetFullPath(resolvedPath);
+        var normalizedGlobal = Path.GetFullPath(globalBase);
+        return normalizedResolved.StartsWith(normalizedGlobal, StringComparison.Ordinal);
     }
 
     public IReadOnlyList<PlaybookDefinition> LoadAll()
@@ -24,22 +39,40 @@ public sealed class PlaybookLoader
 
         foreach (var basePath in _searchPaths)
         {
-            if (!Directory.Exists(basePath)) continue;
+            if (!Directory.Exists(basePath))
+            {
+                Utils.Log.Debug($"Playbook path does not exist: {basePath}");
+                continue;
+            }
 
-            foreach (var dir in Directory.GetDirectories(basePath))
+            Utils.Log.Debug($"Searching for playbooks in: {basePath}");
+            var dirs = Directory.GetDirectories(basePath);
+            Utils.Log.Debug($"Found {dirs.Length} directories in {basePath}");
+
+            foreach (var dir in dirs)
             {
                 var playbookFile = Path.Combine(dir, "PLAYBOOK.md");
-                if (!File.Exists(playbookFile)) continue;
+                if (!File.Exists(playbookFile))
+                {
+                    Utils.Log.Debug($"No PLAYBOOK.md in {dir}");
+                    continue;
+                }
 
-                var playbook = ParsePlaybook(playbookFile, dir);
-                if (playbook is not null) playbooks.Add(playbook);
+                var scope = _pathScope.TryGetValue(basePath, out var isGlobal) ? (isGlobal ? "global" : "workspace") : "workspace";
+                var playbook = ParsePlaybook(playbookFile, dir, scope);
+                if (playbook is not null)
+                {
+                    Utils.Log.Debug($"Loaded playbook: {playbook.Name} (scope: {scope})");
+                    playbooks.Add(playbook);
+                }
             }
         }
 
+        Utils.Log.Info($"PlaybookLoader: loaded {playbooks.Count} playbooks from {_searchPaths.Count} paths");
         return playbooks;
     }
 
-    private static PlaybookDefinition? ParsePlaybook(string filePath, string baseDir)
+    private static PlaybookDefinition? ParsePlaybook(string filePath, string baseDir, string scope)
     {
         try
         {
@@ -48,29 +81,35 @@ public sealed class PlaybookLoader
 
             if (parts.Length < 3)
             {
-
-                return new PlaybookDefinition
-                {
-                    Name = Path.GetFileName(baseDir),
-                    Description = content[..Math.Min(250, content.Length)],
-                    BasePath = baseDir,
-                    RoleDescription = content,
-                };
+                Utils.Log.Warn($"Playbook at '{baseDir}' has no YAML frontmatter (missing '---' delimiters) — cannot declare required 'allowed-tools'. Skipping load. Add YAML frontmatter with at least 'name' and 'allowed-tools'.");
+                return null;
             }
 
             var frontmatter = YamlDeserializer.Deserialize<Dictionary<string, object>>(parts[1]);
             var body = parts[2].Trim();
+            var name = GetString(frontmatter, "name") ?? Path.GetFileName(baseDir);
+
+            var hasAllowedTools = frontmatter.TryGetValue("allowed-tools", out var allowedToolsRaw)
+                && allowedToolsRaw is List<object> allowedToolsList
+                && allowedToolsList.Count > 0;
+
+            if (!hasAllowedTools)
+            {
+                Utils.Log.Warn($"Playbook '{name}' is missing required 'allowed-tools' declaration in PLAYBOOK.md frontmatter — skipping load.");
+                return null;
+            }
 
             return new PlaybookDefinition
             {
-                Name = GetString(frontmatter, "name") ?? Path.GetFileName(baseDir),
+                Name = name,
                 Version = GetString(frontmatter, "version") ?? "1.0.0",
                 Description = GetString(frontmatter, "description") ?? body[..Math.Min(250, body.Length)],
                 Trigger = ParseEnum<TriggerMode>(GetString(frontmatter, "trigger"), TriggerMode.Manual),
                 TriggerPatterns = GetStringList(frontmatter, "trigger-patterns"),
                 UserInvocable = GetBool(frontmatter, "user-invocable", true),
+                Scope = scope,
                 ArgumentHint = GetString(frontmatter, "argument-hint"),
-                AllowedTools = GetStringList(frontmatter, "allowed-tools") is { Length: > 0 } tools ? tools : ["*"],
+                AllowedTools = GetStringList(frontmatter, "allowed-tools"),
                 ContextMode = ParseEnum<ContextMode>(GetString(frontmatter, "context-mode"), ContextMode.Selective),
                 MaxContextTokens = GetInt(frontmatter, "max-context-tokens", 3000),
                 Tags = GetStringList(frontmatter, "tags"),
@@ -168,6 +207,7 @@ public sealed class PlaybookLoader
                 Type = ParseEnum<ParameterType>(ObjStr(pd, "type"), ParameterType.String),
                 Required = pd.TryGetValue("required", out var req) && req is bool b && b,
                 Default = pd.TryGetValue("default", out var def) ? def : null,
+                Description = ObjStr(pd, "description"),
                 Hint = ObjStr(pd, "hint"),
                 Enum = ObjStrList(pd, "enum") is { Length: > 0 } e ? e : null,
                 Min = pd.TryGetValue("min", out var mn) && double.TryParse(mn?.ToString(), out var minV) ? minV : null,

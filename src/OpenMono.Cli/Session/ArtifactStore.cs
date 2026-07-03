@@ -26,18 +26,12 @@ public sealed class ArtifactStore : IDisposable
         }
         catch (UnauthorizedAccessException)
         {
-            // The configured data directory isn't writable (common in Docker
-            // when ~/.openmono is mounted from the host but owned by root or
-            // another user). Fall back to a temp directory so the agent can
-            // still function — artifacts just won't persist across sessions.
             _artifactDirectory = Path.Combine(
                 Path.GetTempPath(), "openmono", "artifacts", sessionId);
             Directory.CreateDirectory(_artifactDirectory);
         }
         catch (IOException)
         {
-            // Covers "Permission denied" on Linux when the mount point is
-            // owned by a different UID (e.g. Docker bind-mount created by root).
             _artifactDirectory = Path.Combine(
                 Path.GetTempPath(), "openmono", "artifacts", sessionId);
             Directory.CreateDirectory(_artifactDirectory);
@@ -70,8 +64,6 @@ public sealed class ArtifactStore : IDisposable
         }
         catch (UnauthorizedAccessException)
         {
-            // Artifact store directory became unwritable mid-session; return
-            // the original result without persisting — the agent still works.
             return result;
         }
         catch (IOException)

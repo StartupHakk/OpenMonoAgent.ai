@@ -76,6 +76,58 @@ public class ApplyPatchToolTests : IDisposable
         _tool.RequiredPermission(input).Should().Be(PermissionLevel.Ask);
     }
 
+    [Fact]
+    public async Task FailedHunk_DoesNotPartiallyWriteFile()
+    {
+        var filePath = Path.Combine(_tempDir, "partial.txt");
+        const string original = "a\nb\nc\nd\ne\n";
+        File.WriteAllText(filePath, original);
+
+        // Hunk 1 (lines 1-2) applies cleanly: b -> B.
+        // Hunk 2 (lines 4-5) has a context line "X" that does NOT match "d" in the file.
+        var patch =
+            "--- a/partial.txt\n" +
+            "+++ b/partial.txt\n" +
+            "@@ -1,2 +1,2 @@\n" +
+            " a\n" +
+            "-b\n" +
+            "+B\n" +
+            "@@ -4,2 +4,2 @@\n" +
+            " X\n" +
+            "-e\n" +
+            "+E\n";
+        var escaped = patch.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n");
+        var input = JsonDocument.Parse($$"""{"patch": "{{escaped}}"}""").RootElement;
+
+        var result = await _tool.ExecuteAsync(input, _context, CancellationToken.None);
+
+        // A patch that cannot apply fully must leave the file untouched, not write hunk 1's change.
+        (await File.ReadAllTextAsync(filePath)).Should().Be(original);
+        result.IsError.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Patch_ProtectedFile_IsDenied()
+    {
+        var filePath = Path.Combine(_tempDir, ".env");
+        const string original = "SECRET=real\n";
+        File.WriteAllText(filePath, original);
+
+        var patch =
+            "--- a/.env\n" +
+            "+++ b/.env\n" +
+            "@@ -1,1 +1,1 @@\n" +
+            "-SECRET=real\n" +
+            "+SECRET=hacked\n";
+        var escaped = patch.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n");
+        var input = JsonDocument.Parse($$"""{"patch": "{{escaped}}"}""").RootElement;
+
+        var result = await _tool.ExecuteAsync(input, _context, CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        (await File.ReadAllTextAsync(filePath)).Should().Be(original);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempDir))

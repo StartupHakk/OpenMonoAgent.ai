@@ -1,5 +1,6 @@
 using OpenMono.Commands;
 using OpenMono.Permissions;
+using OpenMono.Playbooks;
 
 namespace OpenMono.Rendering;
 
@@ -16,4 +17,7 @@ internal sealed class NullInputReader : IInputReader
 
     public Task<PermissionResponse> AskPermissionAsync(string toolName, string summary, CancellationToken ct) =>
         Task.FromResult(PermissionResponse.Deny);
+
+    public Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct) =>
+        Task.FromResult(false);
 }

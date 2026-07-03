@@ -12,13 +12,14 @@ public sealed class GlobTool : ToolBase
     public override bool IsConcurrencySafe => true;
     public override bool IsReadOnly => true;
     public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;
+    public override TimeSpan? Timeout => TimeSpan.FromSeconds(120);
 
     protected override SchemaBuilder DefineSchema() => new SchemaBuilder()
         .AddString("pattern", "Glob pattern (e.g. **/*.cs, src/**/*.json)")
         .AddString("path", "Directory to search in (default: working directory)")
         .Require("pattern");
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
     {
         var searchPath = input.TryGetProperty("path", out var p) ? p.GetString() : ".";
         if (string.IsNullOrEmpty(searchPath))

@@ -432,6 +432,74 @@ Or set `OPENMONO_VISION_ENABLED=0` to prevent the CLI from sending images withou
 
 ---
 
+## VS Code & Cursor extension
+
+The same agent that runs in the terminal is available as a sidebar chat panel in VS Code (1.85+) and Cursor.
+
+### Install the extension
+
+```bash
+code --install-extension StartupHakk.openmono-agent
+```
+
+Or install a `.vsix` release directly:
+
+```bash
+code --install-extension openmono-agent-0.6.1.vsix
+```
+
+The extension is also on the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=StartupHakk.openmono-agent) (search `StartupHakk.openmono-agent`).
+
+> [!IMPORTANT]
+> The extension is the UI and workspace tool executor — it does **not** run the model. You still need the local OpenMono agent running on your machine (or a dual-box inference server). The extension connects to it over HTTP/SSE using ACP on port `7475`.
+
+### Start the agent in ACP mode
+
+Instead of `openmono agent` (which opens the TUI), use `--acp-only` to expose an ACP server that the extension connects to:
+
+```bash
+cd your-project/
+openmono agent --acp-only --acp-port 7475
+```
+
+The extension auto-connects at `localhost:7475`. Open the **OpenMono Agent** panel in the VS Code sidebar, then use the commands:
+
+| Command | What it does |
+|---------|-------------|
+| Start Agent for Workspace | Connects to the running agent |
+| Stop Agent | Disconnects |
+| Clear Session | Clears the current chat session |
+| Resume Session | Resumes a previous session |
+| Select Workspace Folder | Changes the workspace root |
+
+> [!TIP]
+> The extension can also auto-spawn the agent in a Docker container — this is optional. If you prefer to control the agent process yourself, always start with `--acp-only`.
+
+---
+
+## Web search & scraping
+
+Web search and scraping are opt-in services that run alongside the inference server. Install them with:
+
+```bash
+openmono setup search    # SearXNG + Caddy gateway
+openmono setup scraper   # Scrapling + Camoufox + gateway
+openmono setup gateway   # Caddy gateway only (if you already have searxng/scrapling)
+```
+
+Once installed, the `WebSearch` and `WebFetch` tools route through the local gateway automatically — no config needed. Enable flags are written to `docker/.env`:
+
+| Variable | Effect |
+|----------|--------|
+| `WEB_SEARCH_ENABLED=true` | Routes `WebSearch` through SearXNG |
+| `WEB_SCRAPE_ENABLED=true` | Routes `WebFetch` through Scrapling |
+
+Both fall back gracefully (DuckDuckGo / direct fetch) when the gateway is unavailable.
+
+→ [Architecture: web services](ARCHITECTURE.md#inference-side-web-services-caddy-gateway)
+
+---
+
 ## Slash commands
 
 | Command | What it does |

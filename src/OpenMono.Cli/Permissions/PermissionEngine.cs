@@ -34,6 +34,7 @@ public sealed class PermissionEngine
     private readonly HashSet<string> _sessionDenyCapTypes = [];
 
     private readonly List<(string CapType, string Pattern, bool Allow)> _sessionCapRules = [];
+    private readonly Stack<(string RunId, HashSet<string> Tools)> _playbookScopes = [];
 
     public PermissionEngine(AppConfig config, IOutputSink output, IInputReader input, bool nonInteractive = false)
     {
@@ -43,12 +44,6 @@ public sealed class PermissionEngine
         _nonInteractive = nonInteractive;
     }
 
-    /// <summary>
-    /// Builds a permission engine for a sub-agent. The child cannot prompt the user
-    /// (sub-agents run on background threads with no console of their own), so any
-    /// uncovered capability is auto-denied. It inherits a snapshot of the parent's
-    /// session approvals so anything the user already allowed for the session still works.
-    /// </summary>
     public PermissionEngine CreateChildEngine(IOutputSink output, IInputReader input)
     {
         var child = new PermissionEngine(_config, output, input, nonInteractive: true);
@@ -57,14 +52,37 @@ public sealed class PermissionEngine
         child._sessionAllowCapTypes.UnionWith(_sessionAllowCapTypes);
         child._sessionDenyCapTypes.UnionWith(_sessionDenyCapTypes);
         child._sessionCapRules.AddRange(_sessionCapRules);
+        foreach (var scope in _playbookScopes.Reverse())
+            child._playbookScopes.Push(scope);
         return child;
     }
+
+    public void PushPlaybookScope(string runId, IEnumerable<string> toolNames)
+    {
+        _playbookScopes.Push((runId, new HashSet<string>(toolNames, StringComparer.OrdinalIgnoreCase)));
+    }
+
+    public void PopPlaybookScope(string runId)
+    {
+        if (_playbookScopes.Count == 0 || _playbookScopes.Peek().RunId != runId)
+            throw new InvalidOperationException(
+                $"PopPlaybookScope('{runId}') does not match top of stack " +
+                $"({(_playbookScopes.Count == 0 ? "empty" : _playbookScopes.Peek().RunId)}). " +
+                "Scopes must be popped in LIFO order — check for a missing try/finally.");
+        _playbookScopes.Pop();
+    }
+
+    private bool IsPreApprovedByPlaybookScope(string toolName) =>
+        _playbookScopes.Any(scope => scope.Tools.Contains(toolName) || scope.Tools.Contains("*"));
 
     public async Task<CapabilityDecision> CheckCapabilitiesAsync(
         string toolName, IReadOnlyList<Capability> capabilities, CancellationToken ct)
     {
 
         if (capabilities.Count == 0)
+            return new(true, null, capabilities);
+
+        if (IsPreApprovedByPlaybookScope(toolName))
             return new(true, null, capabilities);
 
         if (_sessionAllowAll.Contains(toolName))
@@ -126,6 +144,12 @@ public sealed class PermissionEngine
                     return await PromptUserAsync(toolName, input, ct);
                 return new(false, $"Denied by permission rule for {toolName}");
             }
+        }
+
+        if (IsPreApprovedByPlaybookScope(toolName))
+        {
+            TrackAllow();
+            return new(true);
         }
 
         if (_sessionAllowAll.Contains(toolName))
@@ -282,6 +306,13 @@ public sealed class PermissionEngine
                 "Allow this capability in the main session first, then re-run the sub-agent.",
                 allCaps);
 
+        if (uncoveredCaps.Count == 1)
+        {
+            var approved = await uncoveredCaps[0].PromptUserAsync(_input, toolName, ct);
+            return approved ? new(true, null, allCaps) : new(false, PermissionDeniedOnce, allCaps);
+        }
+
+        // Multiple capabilities: use generic batch prompt
         var summary = $"{toolName} requires:\n" +
                       string.Join("\n", uncoveredCaps.Select(c => $"  - {c.Summary}"));
 

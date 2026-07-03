@@ -1,51 +1,42 @@
 using System.Collections.Concurrent;
-using System.Text.Json.Serialization;
 using OpenMono.Session;
 
 namespace OpenMono.Acp;
 
-
-
-
-
-
 public sealed class AcpSession
 {
-    public required string Id { get; init; }
-    public required DateTime StartedAt { get; init; }
+    public required SessionState State { get; init; }
+
     public DateTime LastActivityAt { get; set; }
-    public required string Model { get; init; }
-    public int TurnCount { get; set; }
-    // Default to plan mode (read-only). The extension UI also defaults to "plan", but it
-    // only transmits the mode on an explicit toggle — so without this default a fresh
-    // session would silently run in build mode (writes allowed) while the UI showed "plan".
-    public bool PlanMode { get; set; } = true;
 
-    // True after the user chose "Auto implement" for a plan — write/exec tools run without
-    // per-edit prompts. Mirrored into SessionState.Meta each turn (see AcpTurnRunner).
-    public bool AutoApproveWrites { get; set; }
-    public List<TodoItem> Todos { get; init; } = new();
-    public List<Message> Messages { get; init; } = new();
+    public string Id => State.Id;
+    public DateTime StartedAt => State.StartedAt;
+    public string Model => State.Model ?? "";
+    public List<TodoItem> Todos => State.Todos;
+    public List<Message> Messages => State.Messages;
 
+    public int TurnCount
+    {
+        get => State.TurnCount;
+        set => State.TurnCount = value;
+    }
 
-    [JsonIgnore]
+    public bool PlanMode
+    {
+        get => State.Meta.PlanMode;
+        set => State.Meta.PlanMode = value;
+    }
+
+    public bool AutoApproveWrites
+    {
+        get => State.Meta.AutoApproveWrites;
+        set => State.Meta.AutoApproveWrites = value;
+    }
+
     public SemaphoreSlim TurnLock { get; } = new(1, 1);
 
-
-
-
-
-
-
-
-
-    [JsonIgnore]
     private readonly ConcurrentDictionary<string, PendingPause> _pending = new();
-
-    [JsonIgnore]
     private readonly ConcurrentDictionary<string, bool> _rememberedPermissions = new();
-
-    [JsonIgnore]
     private readonly ConcurrentDictionary<string, string> _rememberedUserInputs = new();
 
     public TaskCompletionSource<AcpPauseResponse> RegisterPause(
@@ -63,7 +54,6 @@ public sealed class AcpSession
     public (PendingResponseKind Kind, string ContextKey)? LookupPauseContext(string id)
         => _pending.TryGetValue(id, out var pp) ? (pp.Kind, pp.ContextKey) : null;
 
-    [JsonIgnore]
     public IReadOnlyCollection<string> PendingIds => _pending.Keys.ToArray();
 
     public void CancelAllPending()
@@ -71,12 +61,6 @@ public sealed class AcpSession
         foreach (var kv in _pending) kv.Value.Tcs.TrySetCanceled();
         _pending.Clear();
     }
-
-
-
-
-
-
 
     public void RememberPermission(string contextKey, bool allow)
         => _rememberedPermissions[contextKey] = allow;
@@ -101,11 +85,6 @@ public sealed class AcpSession
         string ContextKey,
         TaskCompletionSource<AcpPauseResponse> Tcs);
 }
-
-
-
-
-
 
 public abstract record AcpPauseResponse;
 

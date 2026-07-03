@@ -1,8 +1,17 @@
 using System.Text.Json;
+using OpenMono.Config;
+using OpenMono.Memory;
+using OpenMono.Playbooks;
 using OpenMono.Session;
 using OpenMono.Utils;
 
 namespace OpenMono.Acp;
+
+internal record SystemPromptContext(
+    AppConfig Config,
+    PlaybookRegistry? PlaybookRegistry = null,
+    MemoryStore? MemoryStore = null,
+    string? CachedPrompt = null);
 
 
 
@@ -31,25 +40,30 @@ public sealed class AcpTurnRunner : IAcpEventSink
     private readonly ConversationLoopFactory _loopFactory;
     private readonly AcpServerSettings _settings;
     private readonly IAcpUserInteraction _interaction;
+    private readonly PlaybookRegistry? _playbookRegistry;
+    private readonly MemoryStore? _memoryStore;
+    private string? _cachedSystemPrompt;
 
     public AcpTurnRunner(
         AcpSession session,
         SseWriter writer,
         ConversationLoopFactory loopFactory,
-        AcpServerSettings settings)
+        AcpServerSettings settings,
+        PlaybookRegistry? playbookRegistry = null,
+        MemoryStore? memoryStore = null)
     {
         _acpSession = session;
         _writer = writer;
         _loopFactory = loopFactory;
         _settings = settings;
+        _playbookRegistry = playbookRegistry;
+        _memoryStore = memoryStore;
         _interaction = new AcpUserInteractionForwarder(session, writer, settings.PendingUserResponseTimeout);
 
         // Log system prompt availability on first turn for this session
         if (session.TurnCount == 0)
         {
-            var promptLength = SystemPrompt.Base.Length;
-            var promptPreview = SystemPrompt.Base.Substring(0, Math.Min(80, SystemPrompt.Base.Length)).Replace("\n", " ");
-            Log.Info($"[OMA_INIT] ACP session {session.Id} initialized. System prompt available: {promptLength} chars. Preview: {promptPreview}...");
+            Log.Info($"[OMA_INIT] ACP session {session.Id} initialized. PlaybookRegistry available: {(playbookRegistry?.All.Count ?? 0)} playbooks. MemoryStore available: {(memoryStore is not null)}");
         }
     }
 
@@ -60,11 +74,22 @@ public sealed class AcpTurnRunner : IAcpEventSink
         // Ensure system prompt is set on first message
         if (_acpSession.Messages.Count == 0 || _acpSession.Messages[0].Role != MessageRole.System)
         {
-            Log.Info($"[OMA_SYSTEMPROMPT] Session {_acpSession.Id}: Adding system prompt ({SystemPrompt.Base.Length} chars). Messages before: {_acpSession.Messages.Count}");
+            // Build the full system prompt with playbooks, memory, and git context
+            if (_cachedSystemPrompt == null)
+            {
+                Log.Info($"[OMA_SYSTEMPROMPT] Building full system prompt for session {_acpSession.Id}");
+                _cachedSystemPrompt = await SystemPrompt.BuildAsync(
+                    _loopFactory.Config,
+                    _memoryStore,
+                    _playbookRegistry);
+                Log.Info($"[OMA_SYSTEMPROMPT] System prompt built: {_cachedSystemPrompt.Length} chars, {(_playbookRegistry?.All.Count ?? 0)} playbooks included");
+            }
+
+            Log.Info($"[OMA_SYSTEMPROMPT] Session {_acpSession.Id}: Adding system prompt ({_cachedSystemPrompt.Length} chars). Messages before: {_acpSession.Messages.Count}");
             _acpSession.Messages.Insert(0, new Message
             {
                 Role = MessageRole.System,
-                Content = SystemPrompt.Base
+                Content = _cachedSystemPrompt
             });
             Log.Info($"[OMA_SYSTEMPROMPT] System prompt added. Messages after: {_acpSession.Messages.Count}. First message is System: {_acpSession.Messages[0].Role == MessageRole.System}");
         }
@@ -127,7 +152,9 @@ public sealed class AcpTurnRunner : IAcpEventSink
         // feed the REAL result back to the model. This replaces the old "re-issue the tool
         // call" handshake, which never executed the tool (file unwritten) and let the model
         // hallucinate success from a bare "permission granted" message.
-        var sessionState = BuildSessionState();
+        // Operates directly on the persistent session state (no copy/sync needed).
+        var sessionState = _acpSession.State;
+        sessionState.Meta.TokenTracker ??= new TokenTracker();
         using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction);
         try
         {
@@ -143,20 +170,16 @@ public sealed class AcpTurnRunner : IAcpEventSink
             }
 
             await loop.ContinueTurnAsync(ct);
-            SyncBackToAcpSession(sessionState);
             await _writer.WriteEventAsync("done", new { });
         }
         catch (PendingUserResponseException)
         {
-            SyncBackToAcpSession(sessionState);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            SyncBackToAcpSession(sessionState);
         }
         catch (Exception e)
         {
-            SyncBackToAcpSession(sessionState);
             await _writer.WriteEventAsync("error", new { message = e.Message });
         }
     }
@@ -165,20 +188,20 @@ public sealed class AcpTurnRunner : IAcpEventSink
     {
         var id = payload.GetProperty("id").GetString()
             ?? throw new InvalidOperationException("user_input_response missing `id`");
-        var value = payload.TryGetProperty("value", out var vEl) ? vEl.GetString() ?? "" : "";
+        var value = payload.TryGetProperty("value", out var vEl) ? vEl.GetString() : null;
 
         var ctx = _acpSession.LookupPauseContext(id)
             ?? throw new InvalidOperationException($"user_input_response for unknown or already-resolved pause id: {id}");
         if (ctx.Kind != PendingResponseKind.UserInput)
             throw new InvalidOperationException($"pause {id} is not a UserInput pause (was {ctx.Kind})");
 
-        if (!_acpSession.TryResolvePause(id, new AcpUserInputResponse(value)))
+        var resolvedValue = value ?? "";
+        if (!_acpSession.TryResolvePause(id, new AcpUserInputResponse(resolvedValue)))
             throw new InvalidOperationException($"failed to resolve pause id: {id}");
 
-        _acpSession.RememberUserInput(ctx.ContextKey, value);
+        _acpSession.RememberUserInput(ctx.ContextKey, resolvedValue);
 
-
-        AppendSyntheticToolMessages(value);
+        AppendSyntheticToolMessages(resolvedValue);
 
         await DriveLoopAsync(ct);
     }
@@ -206,6 +229,135 @@ public sealed class AcpTurnRunner : IAcpEventSink
         await DriveLoopAsync(ct);
     }
 
+    public async Task ResumeWithToggleModeAsync(JsonElement payload, CancellationToken ct)
+    {
+        var id = payload.GetProperty("id").GetString()
+            ?? throw new InvalidOperationException("toggle_mode_response missing `id`");
+        var decision = payload.TryGetProperty("decision", out var dEl) ? dEl.GetString() : null;
+        var allow = string.Equals(decision, "approve", StringComparison.Ordinal);
+
+        var ctx = _acpSession.LookupPauseContext(id)
+            ?? throw new InvalidOperationException($"toggle_mode_response for unknown or already-resolved pause id: {id}");
+        if (ctx.Kind != PendingResponseKind.ToggleMode)
+            throw new InvalidOperationException($"pause {id} is not a ToggleMode pause (was {ctx.Kind})");
+
+        if (!_acpSession.TryResolvePause(id, new AcpPermissionResponse(allow)))
+            throw new InvalidOperationException($"failed to resolve pause id: {id}");
+
+        // Remember the decision so the tool doesn't re-prompt if resumed
+        _acpSession.RememberPermission(ctx.ContextKey, allow);
+
+        if (!allow)
+        {
+            // User declined to switch mode
+            Log.Info($"[OMA_MODE] toggle_mode_request denied by user");
+            await _writer.WriteEventAsync("done", new { });
+            return;
+        }
+
+        // User approved mode switch: flip to Build and re-execute the pending tool call
+        _acpSession.PlanMode = false;
+        await OnModeChangedAsync("build");
+        Log.Info($"[OMA_MODE] User approved mode switch to BUILD for playbook");
+
+        var sessionState = BuildSessionState();
+        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction);
+        try
+        {
+            await loop.ResolvePendingToolCallsAsync(true, ct);
+            await loop.ContinueTurnAsync(ct);
+            SyncBackToAcpSession(sessionState);
+            await _writer.WriteEventAsync("done", new { });
+        }
+        catch (PendingUserResponseException)
+        {
+            SyncBackToAcpSession(sessionState);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            SyncBackToAcpSession(sessionState);
+        }
+        catch (Exception e)
+        {
+            SyncBackToAcpSession(sessionState);
+            await _writer.WriteEventAsync("error", new { message = e.Message });
+        }
+    }
+
+    public async Task ResumeWithPlaybookApprovalAsync(JsonElement payload, CancellationToken ct)
+    {
+        var id = payload.GetProperty("id").GetString()
+            ?? throw new InvalidOperationException("playbook_permission_response missing `id`");
+        var decision = payload.TryGetProperty("decision", out var dEl) ? dEl.GetString() : null;
+        var allow = string.Equals(decision, "allow", StringComparison.Ordinal);
+
+        Log.Info($"[OMA_PLAYBOOK] ResumeWithPlaybookApprovalAsync: received approval id={id} decision={decision}");
+
+        var ctx = _acpSession.LookupPauseContext(id);
+        if (ctx is null)
+        {
+            Log.Error($"[OMA_PLAYBOOK] ResumeWithPlaybookApprovalAsync: pause not found id={id}");
+            throw new InvalidOperationException($"playbook_permission_response for unknown or already-resolved pause id: {id}");
+        }
+
+        if (ctx.Value.Kind != PendingResponseKind.PlaybookApproval)
+        {
+            Log.Error($"[OMA_PLAYBOOK] ResumeWithPlaybookApprovalAsync: wrong pause kind id={id} kind={ctx.Value.Kind}");
+            throw new InvalidOperationException($"pause {id} is not a PlaybookApproval pause (was {ctx.Value.Kind})");
+        }
+
+        // Resolve the pause — the awaiting RequestPlaybookApprovalAsync will return with this decision
+        Log.Info($"[OMA_PLAYBOOK] ResumeWithPlaybookApprovalAsync: resolving pause id={id}");
+        var resolved = _acpSession.TryResolvePause(id, new AcpPermissionResponse(allow));
+        Log.Info($"[OMA_PLAYBOOK] ResumeWithPlaybookApprovalAsync: pause resolved result={resolved} id={id}");
+
+        if (!resolved)
+            throw new InvalidOperationException($"failed to resolve pause id: {id}");
+
+        // Cache the approval decision so RequestPlaybookApprovalAsync finds it
+        // when the pending PlaybookTool is re-executed
+        _acpSession.RememberPermission(ctx.Value.ContextKey, allow);
+
+        // Execute the pending PlaybookTool with the approval decision.
+        // Same pattern as FileWrite: find the pending tool call, execute it,
+        // capture the result. The tool call gets ONE card with status updates:
+        // pause icon → cog → check.
+        var sessionState = BuildSessionState();
+        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction);
+        try
+        {
+            try
+            {
+                await loop.ResolvePendingToolCallsAsync(allow, ct);
+            }
+            catch (PendingUserResponseException)
+            {
+                // Playbook triggered a nested pause (e.g., FileWrite permission)
+                // Keep SSE stream open for the nested pause
+                SyncBackToAcpSession(sessionState);
+                throw;
+            }
+
+            // Continue the turn: agent processes the playbook result
+            await loop.ContinueTurnAsync(ct);
+            SyncBackToAcpSession(sessionState);
+            await _writer.WriteEventAsync("done", new { });
+        }
+        catch (PendingUserResponseException)
+        {
+            SyncBackToAcpSession(sessionState);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            SyncBackToAcpSession(sessionState);
+        }
+        catch (Exception e)
+        {
+            SyncBackToAcpSession(sessionState);
+            await _writer.WriteEventAsync("error", new { message = e.Message });
+        }
+    }
+
     public void AbortPendingPauses()
     {
         _acpSession.CancelAllPending();
@@ -215,33 +367,24 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
     private async Task DriveLoopAsync(CancellationToken ct)
     {
-        var sessionState = BuildSessionState();
+        var sessionState = _acpSession.State;
+        sessionState.Meta.TokenTracker ??= new TokenTracker();
+
         using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction);
 
         try
         {
-
-
-
             await loop.ContinueTurnAsync(ct);
-            SyncBackToAcpSession(sessionState);
             await _writer.WriteEventAsync("done", new { });
         }
         catch (PendingUserResponseException)
         {
-
-
-
-            SyncBackToAcpSession(sessionState);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-
-            SyncBackToAcpSession(sessionState);
         }
         catch (Exception e)
         {
-            SyncBackToAcpSession(sessionState);
             await _writer.WriteEventAsync("error", new { message = e.Message });
         }
     }
@@ -300,30 +443,6 @@ public sealed class AcpTurnRunner : IAcpEventSink
             first = false;
         }
     }
-
-    private SessionState BuildSessionState()
-    {
-        var ss = new SessionState();
-        foreach (var m in _acpSession.Messages) ss.AddMessage(m);
-        ss.TurnCount = _acpSession.TurnCount;
-        ss.Meta.PlanMode = _acpSession.PlanMode;
-        ss.Meta.AutoApproveWrites = _acpSession.AutoApproveWrites;
-        ss.Todos.Clear();
-        foreach (var t in _acpSession.Todos) ss.Todos.Add(t);
-        ss.Meta.TokenTracker ??= new TokenTracker();
-        return ss;
-    }
-
-    private void SyncBackToAcpSession(SessionState ss)
-    {
-        _acpSession.Messages.Clear();
-        _acpSession.Messages.AddRange(ss.Messages);
-        _acpSession.PlanMode = ss.Meta.PlanMode;
-        _acpSession.AutoApproveWrites = ss.Meta.AutoApproveWrites;
-        _acpSession.Todos.Clear();
-        foreach (var t in ss.Todos) _acpSession.Todos.Add(t);
-    }
-
 
 
     public Task OnTextDeltaAsync(string content)

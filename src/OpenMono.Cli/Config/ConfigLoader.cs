@@ -43,14 +43,6 @@ public static class ConfigLoader
 
     private static readonly string[] DataSubdirectories = ["sessions", "memory", "artifacts"];
 
-    // Resolves config.DataDirectory to a location we can actually write to.
-    // The default (~/.openmono) is frequently unwritable inside Docker when it
-    // is bind-mounted from the host but owned by root or another UID. Every
-    // downstream consumer — sessions, the turn journal, memory, artifacts, logs
-    // — derives its path from DataDirectory, so validating it once here keeps
-    // the agent from crashing later (e.g. UnauthorizedAccessException writing a
-    // *.journal.jsonl). If the configured directory fails, we fall back to a
-    // temp directory and warn that data won't persist.
     private static void EnsureWritableDataDirectory(AppConfig config, Action<string>? warn)
     {
         if (TryInitDataDirectory(config.DataDirectory))
@@ -99,11 +91,6 @@ public static class ConfigLoader
 
     private static void ProbeWritable(string directory)
     {
-        // Directory.CreateDirectory on an existing-but-unwritable directory is a
-        // silent no-op — it never throws — which is exactly the Docker case
-        // where ~/.openmono/sessions is owned by another UID. Probe with a real
-        // file write so we detect unwritable dirs before the agent tries to
-        // persist a session, journal, or artifact into them.
         var probe = Path.Combine(directory, $".writable-{Guid.NewGuid():N}");
         File.WriteAllText(probe, string.Empty);
         File.Delete(probe);
@@ -120,6 +107,7 @@ public static class ConfigLoader
             if (overrides is null) return;
 
             config.Llm.MergeFrom(overrides.Llm);
+            config.Agents.MergeFrom(overrides.Agents);
             config.Web.MergeFrom(overrides.Web);
 
             foreach (var (tool, rules) in overrides.Permissions.Tools)

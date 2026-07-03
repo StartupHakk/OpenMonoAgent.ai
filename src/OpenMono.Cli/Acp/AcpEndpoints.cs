@@ -19,6 +19,7 @@ public static class AcpEndpoints
     public static void Map(WebApplication app)
     {
         app.MapGet("/api/v1/discovery", GetDiscovery);
+        app.MapGet("/api/v1/sessions", GetSessions);
         app.MapPost("/api/v1/sessions", PostSession);
         app.MapGet("/api/v1/sessions/{id}", GetSession);
         app.MapGet("/api/v1/sessions/{id}/messages", GetMessages);
@@ -40,6 +41,26 @@ public static class AcpEndpoints
             status = "ready",
             uptime_seconds = uptime,
         });
+    }
+
+
+
+    private static IResult GetSessions(AcpSessionStore store)
+    {
+        var digests = store.List()
+            .Select(s => new SessionDigestDto
+            {
+                SessionId = s.Id,
+                Title = string.IsNullOrEmpty(s.Title) ? s.FirstMessage : s.Title,
+                StartedAt = s.StartedAt.ToString("o"),
+                LastActivityAt = s.LastActivityAt.ToString("o"),
+                TurnCount = s.TurnCount,
+                Model = s.Model,
+                MessageCount = s.MessageCount,
+                Summary = s.LatestSummary,
+            })
+            .ToList();
+        return Results.Ok(new SessionsEnvelope { Sessions = digests });
     }
 
 
@@ -149,11 +170,23 @@ public static class AcpEndpoints
                     var runner = runners.Create(session, new SseWriter(ctx.Response.Body, ctx.RequestAborted));
                     await runner.ResumeWithUserInputAsync(uinEl, ctx.RequestAborted);
                 }
+                else if (root.TryGetProperty("playbookPermission", out var pbkEl))
+                {
+                    StartSseResponse(ctx);
+                    var runner = runners.Create(session, new SseWriter(ctx.Response.Body, ctx.RequestAborted));
+                    await runner.ResumeWithPlaybookApprovalAsync(pbkEl, ctx.RequestAborted);
+                }
                 else if (root.TryGetProperty("plan_decision", out var pdEl))
                 {
                     StartSseResponse(ctx);
                     var runner = runners.Create(session, new SseWriter(ctx.Response.Body, ctx.RequestAborted));
                     await runner.ResumeWithPlanDecisionAsync(pdEl.GetString() ?? "keep", ctx.RequestAborted);
+                }
+                else if (root.TryGetProperty("toggle_mode", out var tmEl))
+                {
+                    StartSseResponse(ctx);
+                    var runner = runners.Create(session, new SseWriter(ctx.Response.Body, ctx.RequestAborted));
+                    await runner.ResumeWithToggleModeAsync(tmEl, ctx.RequestAborted);
                 }
                 else if (root.TryGetProperty("mode", out var modeEl))
                 {
@@ -188,7 +221,7 @@ public static class AcpEndpoints
                         new
                         {
                             error = "invalid_body",
-                            detail = "body must contain `message`, `permission`, `user_input`, `mode`, or `abort:true`",
+                            detail = "body must contain `message`, `permission`, `playbookPermission`, `user_input`, `mode`, or `abort:true`",
                         },
                         ctx.RequestAborted);
                 }
@@ -337,6 +370,24 @@ public static class AcpEndpoints
     {
         [JsonPropertyName("messages")]
         public List<HistoryMessageDto> Messages { get; set; } = new();
+    }
+
+    private sealed class SessionsEnvelope
+    {
+        [JsonPropertyName("sessions")]
+        public List<SessionDigestDto> Sessions { get; set; } = new();
+    }
+
+    internal sealed record SessionDigestDto
+    {
+        [JsonPropertyName("session_id")] public required string SessionId { get; init; }
+        [JsonPropertyName("title")] public required string Title { get; init; }
+        [JsonPropertyName("started_at")] public required string StartedAt { get; init; }
+        [JsonPropertyName("last_activity_at")] public required string LastActivityAt { get; init; }
+        [JsonPropertyName("turn_count")] public int TurnCount { get; init; }
+        [JsonPropertyName("model")] public string Model { get; init; } = "";
+        [JsonPropertyName("message_count")] public int MessageCount { get; init; }
+        [JsonPropertyName("summary")] public string? Summary { get; init; }
     }
 
     private sealed class CreateSessionBody

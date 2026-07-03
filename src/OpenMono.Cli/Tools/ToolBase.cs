@@ -1,4 +1,5 @@
 using System.Text.Json;
+using OpenMono.Permissions;
 
 namespace OpenMono.Tools;
 
@@ -9,6 +10,7 @@ public abstract class ToolBase : ITool
     public virtual bool IsConcurrencySafe => false;
     public virtual bool IsReadOnly => false;
     public virtual bool IsDeferred => false;
+    public virtual TimeSpan? Timeout => null;
     public virtual PermissionLevel DefaultPermission => PermissionLevel.Ask;
 
     private JsonElement? _cachedSchema;
@@ -18,6 +20,8 @@ public abstract class ToolBase : ITool
     protected abstract SchemaBuilder DefineSchema();
 
     public virtual PermissionLevel RequiredPermission(JsonElement input) => DefaultPermission;
+
+    public virtual IReadOnlyList<Capability> RequiredCapabilities(JsonElement input) => [];
 
     public Task<ToolResult> ExecuteAsync(JsonElement input, ToolContext context, CancellationToken ct)
         => ExecuteCoreAsync(input, context, ct);

@@ -88,6 +88,8 @@ Flags passed to `openmono agent` override settings.json and env vars for that se
 | `--api-key <key>` | `llm.api_key` | Set API key for cloud providers |
 | `--verbose` | `verbose` | Show full LLM stream, SSE events, and token counts |
 | `--classic` | — | Use classic scrolling terminal instead of TUI |
+| `--acp-only` | — | Start in ACP server mode (no TUI) — for VS Code / Cursor extension |
+| `--acp-port <port>` | — | ACP server port (default: `7475`) |
 
 ---
 
@@ -172,6 +174,11 @@ By default these write to the project-level `.openmono/settings.json`. Pass `--g
   },
   "playbooks": {
     "paths": [".openmono/playbooks/", "~/.openmono/playbooks/"]
+  },
+  "web": {
+    "gateway": "http://localhost:47480",
+    "search": true,
+    "scrape": true
   },
   "auto_detect_code_graph": true,
   "verbose": false,
@@ -348,6 +355,22 @@ Additional directories to scan for `.yaml` playbook files. Paths are checked in 
 
 ---
 
+## `web`
+
+Controls the self-hosted web search and scraping gateway. Services are auto-detected via `GET /services` on the gateway — no manual config needed if you used `openmono setup search` or `openmono setup scraper`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `gateway` | string | *(same as `llm.endpoint`)* | Caddy gateway base URL (`:47480`) |
+| `search` | bool | *(auto-detected)* | Force-enable/disable SearXNG routing for `WebSearch` |
+| `scrape` | bool | *(auto-detected)* | Force-enable/disable Scrapling routing for `WebFetch` |
+
+Override via env vars: `OPENMONO_WEB_SEARCH=1` / `OPENMONO_WEB_SCRAPE=1` (truthy: `1/true/yes/on`).
+
+→ [Web services architecture](ARCHITECTURE.md#inference-side-web-services-caddy-gateway)
+
+---
+
 ## Top-level flags
 
 | Key | Type | Default | Description |
@@ -384,3 +407,5 @@ All env vars override their settings.json equivalents regardless of load order.
 | `OPENMONO_MODEL_PRESET` | Activate a preset by name |
 | `OPENMONO_PROVIDER` | Activate a provider by name |
 | `OPENMONO_VISION_ENABLED` | `vision_enabled` — set to `1` to enable image input |
+| `OPENMONO_WEB_SEARCH` | `web.search` — set to `1` to force-enable SearXNG routing |
+| `OPENMONO_WEB_SCRAPE` | `web.scrape` — set to `1` to force-enable Scrapling routing |

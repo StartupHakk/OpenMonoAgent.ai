@@ -36,6 +36,9 @@ public sealed record ToolCall
     public required string Arguments { get; init; }
 }
 
+[JsonPolymorphic(TypeDiscriminatorPropertyName = "type")]
+[JsonDerivedType(typeof(TextPart), "text")]
+[JsonDerivedType(typeof(ImagePart), "image")]
 public abstract record ContentPart;
 public sealed record TextPart(string Text) : ContentPart;
 public sealed record ImagePart(string Url) : ContentPart;

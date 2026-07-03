@@ -1,3 +1,5 @@
+using OpenMono.Playbooks;
+
 namespace OpenMono.Acp;
 
 
@@ -45,7 +47,7 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
         }
 
         var id = "perm_" + Guid.NewGuid().ToString("N")[..12];
-        _session.RegisterPause(id, PendingResponseKind.Permission, contextKey);
+        var tcs = _session.RegisterPause(id, PendingResponseKind.Permission, contextKey);
 
         await _writer.WriteEventAsync("permission_request", new
         {
@@ -56,6 +58,58 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
         });
 
         throw new PendingUserResponseException(id, PendingResponseKind.Permission);
+    }
+
+    public async Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct)
+    {
+        var contextKey = "playbook:" + plan.PlaybookName;
+
+        // If approval already cached (user approved on first call, we're being re-invoked), return cached
+        if (_session.TryGetRememberedPermission(contextKey) is bool cached)
+        {
+            Utils.Log.Info($"[OMA_PLAYBOOK] RequestPlaybookApprovalAsync: using cached approval for {plan.PlaybookName}");
+            return cached;
+        }
+
+        var id = "pbk_" + Guid.NewGuid().ToString("N")[..12];
+        var tcs = _session.RegisterPause(id, PendingResponseKind.PlaybookApproval, contextKey);
+        Utils.Log.Info($"[OMA_PLAYBOOK] RequestPlaybookApprovalAsync: pause registered id={id} playbook={plan.PlaybookName} requiresModeSwitch={plan.RequiresModeSwitch}");
+
+        await _writer.WriteEventAsync("playbook_permission_request", new
+        {
+            id,
+            playbookName = plan.PlaybookName,
+            steps = plan.Steps.Select(s => new
+            {
+                id = s.Id,
+                gate = s.Gate.ToString(),
+                description = s.Description,
+            }),
+            tools = plan.Tools.Select(t => new { name = t.Name, isReadOnly = t.IsReadOnly, dangerous = t.Dangerous }),
+            requiresModeSwitch = plan.RequiresModeSwitch,
+        });
+
+        Utils.Log.Info($"[OMA_PLAYBOOK] RequestPlaybookApprovalAsync: awaiting approval id={id}");
+        throw new PendingUserResponseException(id, PendingResponseKind.PlaybookApproval);
+    }
+
+    public async Task<bool> RequestToggleModeAsync(string reason, CancellationToken ct)
+    {
+        var contextKey = "toggle_mode:" + reason;
+
+        if (_session.TryGetRememberedPermission(contextKey) is bool cached)
+            return cached;
+
+        var id = "mode_" + Guid.NewGuid().ToString("N")[..12];
+        _session.RegisterPause(id, PendingResponseKind.ToggleMode, contextKey);
+
+        await _writer.WriteEventAsync("toggle_mode_request", new
+        {
+            id,
+            reason,
+        });
+
+        throw new PendingUserResponseException(id, PendingResponseKind.ToggleMode);
     }
 
     public async Task<string?> RequestUserInputAsync(string question, CancellationToken ct)

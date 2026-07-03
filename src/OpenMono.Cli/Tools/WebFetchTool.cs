@@ -37,14 +37,12 @@ public sealed partial class WebFetchTool : ToolBase
         }
     };
 
-    // Scrapling can drive a real browser (Cloudflare/CAPTCHA bypass), so give the
-    // gateway path a longer ceiling than a plain HTTP fetch.
     private static readonly HttpClient ScrapeHttp = new()
     {
         Timeout = TimeSpan.FromSeconds(90),
     };
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
     {
         var url = input.TryGetProperty("url", out var u) ? u.GetString() : null;
         if (string.IsNullOrEmpty(url))
@@ -63,9 +61,6 @@ public sealed partial class WebFetchTool : ToolBase
             (uri.Scheme != "http" && uri.Scheme != "https"))
             return ToolResult.Error($"Invalid URL: {url}");
 
-        // Prefer self-hosted Scrapling behind the gateway when it offers scraping.
-        // Availability comes from the gateway's /services registry (or an explicit
-        // web.scrape override); the gateway defaults to the LLM endpoint.
         if (await GatewayCapabilities.IsEnabledAsync(context.Config, GatewayCapabilities.WebService.Scrape, ct))
         {
             var gateway = GatewayCapabilities.ResolveGateway(context.Config)!;
@@ -112,7 +107,6 @@ public sealed partial class WebFetchTool : ToolBase
         var status = root.TryGetProperty("status", out var s) && s.ValueKind == JsonValueKind.Number
             ? s.GetInt32() : 200;
 
-        // The scraper reports an upstream/transport failure — let the caller fall back.
         if (root.TryGetProperty("error", out var errEl) && errEl.ValueKind == JsonValueKind.String)
             throw new HttpRequestException($"scrape error: {errEl.GetString()}");
 

@@ -3,6 +3,7 @@ using System.Text;
 using OpenMono.Commands;
 using OpenMono.Config;
 using OpenMono.Permissions;
+using OpenMono.Playbooks;
 using OpenMono.Utils;
 
 namespace OpenMono.Rendering;
@@ -44,9 +45,6 @@ internal sealed class AnsiInputReader(
                 if (s == "O" && Console.KeyAvailable)
                     continue;
 
-                // SGR mouse report: ESC [ < Cb ; Cx ; Cy (M=press, m=release).
-                // The scroll wheel arrives as a press with bit 0x40 set; low 2 bits
-                // give direction (0=up, 1=down). Clicks/other buttons are ignored.
                 if ((ch == 'M' || ch == 'm') && s.Length > 3 && s[0] == '[' && s[1] == '<')
                 {
                     var body  = s.Substring(2, s.Length - 3);
@@ -55,13 +53,12 @@ internal sealed class AnsiInputReader(
                     if (int.TryParse(cbStr, out var cb) && (cb & 0x40) != 0)
                     {
                         var dir = cb & 0x3;
-                        if (dir == 0) return (+2, null, 0, 0); // wheel up   → line scroll
-                        if (dir == 1) return (-2, null, 0, 0); // wheel down → line scroll
+                        if (dir == 0) return (+2, null, 0, 0);
+                        if (dir == 1) return (-2, null, 0, 0);
                     }
                     return (0, null, 0, 0);
                 }
 
-                // scroll magnitude: ±1 = page (PageUp/PageDown), ±2 = line (Shift+arrows)
                 return s switch
                 {
                     "b" or "[1;3D" or "[1;5D" => (0, null, -1,  0),
@@ -79,7 +76,6 @@ internal sealed class AnsiInputReader(
         return (0, null, 0, 0);
     }
 
-    // Maps a scroll code from TryReadEscapeSequence to a paint: ±1 pages, ±2 scrolls a few lines.
     private void ApplyScroll(int scroll)
     {
         switch (scroll)
@@ -357,6 +353,53 @@ internal sealed class AnsiInputReader(
         painter.Paint();
         StartBackgroundInput();
         return Task.FromResult(response);
+    }
+
+    public Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct)
+    {
+        StopBackgroundInput();
+        painter.AddMessage(new AnsiPainter.Msg("sys",
+            $"{AnsiPainter.Fy}▶ Playbook approval: {plan.PlaybookName}{AnsiPainter.R}"));
+
+        var stepsStr = string.Join(", ", plan.Steps.Select(s => s.Id));
+        var toolsStr = string.Join(", ", plan.Tools.Select(t => t.Name));
+
+        painter.Sz();
+        var maxLineLen = painter.ComputeLayout("").MainW - 4;
+        var truncatedSteps = stepsStr.Length > maxLineLen
+            ? stepsStr[..(maxLineLen - 3)] + "..."
+            : stepsStr;
+        var truncatedTools = toolsStr.Length > maxLineLen
+            ? toolsStr[..(maxLineLen - 3)] + "..."
+            : toolsStr;
+
+        painter.PaintPermissionLane(
+            $"{AnsiPainter.Fy}{AnsiPainter.B}▸ Approve playbook: {plan.PlaybookName}{AnsiPainter.R}",
+            $"{AnsiPainter.Fw}Steps: {truncatedSteps}\nTools: {truncatedTools}{AnsiPainter.R}",
+            $"  {AnsiPainter.B}{AnsiPainter.Fg}[y]{AnsiPainter.R}{AnsiPainter.BgInput}  Allow",
+            $"  {AnsiPainter.B}{AnsiPainter.Fy}[n]{AnsiPainter.R}{AnsiPainter.BgInput}  Deny",
+            "",
+            ""
+        );
+
+        bool approved;
+        try
+        {
+            while (true)
+            {
+                var result = terminal.TryReadKey();
+                if (result is null) { Thread.Sleep(20); continue; }
+                var k = result.Value;
+
+                if (k.KeyChar is 'y' or 'Y') { approved = true; break; }
+                if (k.KeyChar is 'n' or 'N') { approved = false; break; }
+            }
+        }
+        finally { painter.ClearLane(); }
+
+        painter.Paint();
+        StartBackgroundInput();
+        return Task.FromResult(approved);
     }
 
     private string ReadInputCore(bool interactive)

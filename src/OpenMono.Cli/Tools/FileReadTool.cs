@@ -27,7 +27,7 @@ public sealed class FileReadTool : ToolBase
         .AddString("from_cursor", "P2.6: Cursor ID from a previous tool (e.g., Grep). Reads all files in the cursor.")
         .AddInteger("max_files", "When using from_cursor, maximum number of files to read (default: 5)", minimum: 1, maximum: 20);
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
     {
 
         if (input.TryGetProperty("from_cursor", out _))

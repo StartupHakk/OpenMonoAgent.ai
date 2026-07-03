@@ -107,9 +107,6 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
     private volatile bool _paintInProgress;
     private CancellationTokenSource? _paintCts;
 
-    // A modal "lane" (permission prompt) is drawn directly over the bottom rows, but the
-    // background paint thread keeps repainting the input box / tab bar on top of it. While
-    // a lane is active we re-stamp it at the end of every full/conv paint so it stays visible.
     private volatile bool _laneActive;
     private string _laneOverlay = "";
 
@@ -313,7 +310,6 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         }
     }
 
-    // A "page" scrolls almost a full screen, keeping two lines of context overlap.
     internal void ScrollPageUp()   => ScrollBy(Math.Max(1, ConvHeight - 2));
     internal void ScrollPageDown() => ScrollBy(-Math.Max(1, ConvHeight - 2));
 
@@ -407,23 +403,17 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         Row(2, opt3);
         Row(1, opt4);
 
-        // Publish the overlay before flipping the flag so any concurrent paint that observes
-        // _laneActive == true (a volatile read inside _writeLock) is guaranteed to see the text.
         _laneOverlay = sb.ToString();
         _laneActive  = true;
         lock (_writeLock) { W(_laneOverlay); Flush(); }
     }
 
-    // Stops the modal lane from being re-stamped. Must be followed by a full repaint to
-    // clear the lane rows and restore the normal input box / tab bar.
     internal void ClearLane()
     {
         _laneActive  = false;
         _laneOverlay = "";
     }
 
-    // Re-draws the active modal lane as the last thing written, so a full/conv repaint that
-    // would otherwise cover the bottom rows leaves the prompt visible. Caller holds _writeLock.
     private void AppendLaneOverlay(StringBuilder sb)
     {
         if (_laneActive) sb.Append(_laneOverlay);
@@ -1568,9 +1558,6 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
             {
                 lines.Add("");
                 var mdLines = AnsiMarkdown.Render(m.Text, w - 4);
-                // Render the full message; the conversation buffer is bounded globally by
-                // MaxCachedLines/TrimThreshold, so long messages stay fully scrollable
-                // instead of being clipped to a per-message line cap.
                 foreach (var l in mdLines)
                     lines.Add($"  {Fk}│{R} {l}");
                 if (m.Footer is not null)

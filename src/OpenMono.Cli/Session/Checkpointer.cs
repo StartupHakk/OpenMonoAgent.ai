@@ -109,6 +109,9 @@ public sealed class Checkpointer
         if (latest is null)
             return session.Messages;
 
+        if (latest.CutoffMessageIndex < 0 || latest.CutoffMessageIndex > session.Messages.Count)
+            return session.Messages;
+
         var system = session.Messages.Where(m => m.Role == MessageRole.System).ToList();
         var recent = session.Messages.Skip(latest.CutoffMessageIndex).ToList();
 

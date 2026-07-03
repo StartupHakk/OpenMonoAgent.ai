@@ -9,6 +9,8 @@ public sealed record PlaybookDefinition
     public TriggerMode Trigger { get; init; } = TriggerMode.Manual;
     public string[] TriggerPatterns { get; init; } = [];
     public bool UserInvocable { get; init; } = true;
+    /// <summary>Either "global" (~/.openmono/playbooks/) or "workspace" (.openmono/playbooks/).</summary>
+    public string? Scope { get; init; }
     public string? ArgumentHint { get; init; }
 
     public Dictionary<string, ParameterDefinition> Parameters { get; init; } = [];
@@ -16,7 +18,9 @@ public sealed record PlaybookDefinition
     public StepDefinition[] Steps { get; init; } = [];
     public ConstraintSet Constraints { get; init; } = new();
 
-    public string[] AllowedTools { get; init; } = ["*"];
+    /// <summary>Tools this playbook is allowed to use. Empty array means no tools allowed (deny by default).
+    /// Use specific tool names or patterns like "Tool*" to allow tools. </summary>
+    public string[] AllowedTools { get; init; } = [];
     public ContextMode ContextMode { get; init; } = ContextMode.Selective;
     public int MaxContextTokens { get; init; } = 3000;
 
@@ -32,6 +36,7 @@ public sealed record ParameterDefinition
     public required ParameterType Type { get; init; }
     public bool Required { get; init; }
     public object? Default { get; init; }
+    public string? Description { get; init; }
     public string? Hint { get; init; }
     public string[]? Enum { get; init; }
     public double? Min { get; init; }

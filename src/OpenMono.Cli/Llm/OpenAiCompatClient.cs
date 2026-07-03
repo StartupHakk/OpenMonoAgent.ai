@@ -74,6 +74,8 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
         {
         HttpResponseMessage? response = null;
         var lastException = default(Exception);
+        TimeSpan? pendingRetryAfter = null;
+        var retryDelay = TimeSpan.Zero;
 
         for (var attempt = 0; attempt <= MaxRetries; attempt++)
         {
@@ -81,8 +83,8 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
 
             if (attempt > 0)
             {
-                var delay = RetryDelays[Math.Min(attempt - 1, RetryDelays.Length - 1)];
-                await Task.Delay(delay, ct);
+                retryDelay = RetryPolicy.NextDelay(attempt, pendingRetryAfter, Random.Shared.NextDouble());
+                await Task.Delay(retryDelay, ct);
             }
 
             var requestBody = BuildRequestBody(messages, tools, options, _model);
@@ -99,9 +101,8 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
             }
             else
             {
-                var delay = RetryDelays[Math.Min(attempt - 1, RetryDelays.Length - 1)];
-                OnDebug?.Invoke($"[LLM] Retry {attempt}/{MaxRetries} after {delay.TotalSeconds}s");
-                Log.Warn($"LLM retry {attempt}/{MaxRetries} after {delay.TotalSeconds}s");
+                OnDebug?.Invoke($"[LLM] Retry {attempt}/{MaxRetries} after {retryDelay.TotalSeconds:F1}s");
+                Log.Warn($"LLM retry {attempt}/{MaxRetries} after {retryDelay.TotalSeconds:F1}s");
             }
 
             var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
@@ -124,6 +125,7 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                     lastException = new HttpRequestException(
                         $"HTTP {(int)response.StatusCode} {response.StatusCode}",
                         inner: null, response.StatusCode);
+                    pendingRetryAfter = RetryPolicy.ParseRetryAfter(response);
                     response.Dispose();
                     response = null;
                     continue;
@@ -135,6 +137,7 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
             catch (HttpRequestException ex) when (attempt < MaxRetries)
             {
                 lastException = ex;
+                pendingRetryAfter = null;
                 response?.Dispose();
                 response = null;
             }
@@ -142,6 +145,7 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
             {
 
                 lastException = ex;
+                pendingRetryAfter = null;
                 response?.Dispose();
                 response = null;
             }

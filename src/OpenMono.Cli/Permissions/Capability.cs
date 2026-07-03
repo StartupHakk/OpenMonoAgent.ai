@@ -1,9 +1,17 @@
+using OpenMono.Playbooks;
+using OpenMono.Rendering;
+
 namespace OpenMono.Permissions;
 
 public abstract record Capability
 {
-
     public abstract string Summary { get; }
+
+    public virtual async Task<bool> PromptUserAsync(IInputReader input, string toolName, CancellationToken ct)
+    {
+        var response = await input.AskPermissionAsync(toolName, Summary, ct);
+        return response == PermissionResponse.Allow;
+    }
 }
 
 public sealed record FileReadCap(string Path) : Capability
@@ -63,4 +71,29 @@ public sealed record MemoryCap(string Namespace, string Operation) : Capability
 public sealed record AgentSpawnCap(string AgentType, string TaskSummary) : Capability
 {
     public override string Summary => $"Spawn agent ({AgentType}): {TaskSummary[..Math.Min(50, TaskSummary.Length)]}...";
+}
+
+// Stores gate info per step for reconstruction
+public sealed record PlaybookStepInfo(string Id, GateType Gate, string? Description);
+public sealed record PlaybookToolInfo(string Name, bool IsReadOnly, bool Dangerous);
+
+public sealed record PlaybookApproveCap(
+    string PlaybookName,
+    IReadOnlyList<PlaybookStepInfo> Steps,
+    IReadOnlyList<PlaybookToolInfo> Tools) : Capability
+{
+    public override string Summary => $"Run playbook: {PlaybookName} ({Steps.Count} steps)";
+
+    public override async Task<bool> PromptUserAsync(IInputReader input, string toolName, CancellationToken ct)
+    {
+        var requiresModeSwitch = Tools.Any(t => !t.IsReadOnly);
+        var plan = new PlaybookToolPlan
+        {
+            PlaybookName = PlaybookName,
+            Steps = Steps.Select(s => new PlaybookPlanStep { Id = s.Id, Gate = s.Gate, Description = s.Description }).ToList(),
+            Tools = Tools.Select(t => new PlaybookPlanTool { Name = t.Name, IsReadOnly = t.IsReadOnly, Dangerous = t.Dangerous }).ToList(),
+            RequiresModeSwitch = requiresModeSwitch
+        };
+        return await input.RequestPlaybookApprovalAsync(plan, ct);
+    }
 }

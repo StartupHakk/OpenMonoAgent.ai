@@ -21,6 +21,8 @@ public sealed class ConversationLoopFactory
     private readonly IOutputSink _output;
     private readonly IInputReader _input;
     private readonly ILiveFeedback? _liveFeedback;
+    private readonly Playbooks.PlaybookRegistry? _playbookRegistry;
+    private readonly Memory.MemoryStore? _memoryStore;
 
     public AppConfig Config => _config;
 
@@ -30,7 +32,9 @@ public sealed class ConversationLoopFactory
         AppConfig config,
         IOutputSink output,
         IInputReader input,
-        ILiveFeedback? liveFeedback = null)
+        ILiveFeedback? liveFeedback = null,
+        Playbooks.PlaybookRegistry? playbookRegistry = null,
+        Memory.MemoryStore? memoryStore = null)
     {
         _llm = llm;
         _tools = tools;
@@ -38,6 +42,8 @@ public sealed class ConversationLoopFactory
         _output = output;
         _input = input;
         _liveFeedback = liveFeedback;
+        _playbookRegistry = playbookRegistry;
+        _memoryStore = memoryStore;
     }
 
 

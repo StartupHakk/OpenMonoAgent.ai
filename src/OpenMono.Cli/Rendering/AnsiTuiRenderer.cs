@@ -1,6 +1,7 @@
 using OpenMono.Commands;
 using OpenMono.Config;
 using OpenMono.Permissions;
+using OpenMono.Playbooks;
 using OpenMono.Session;
 
 namespace OpenMono.Rendering;
@@ -45,8 +46,6 @@ public sealed class AnsiTuiRenderer : IRenderer
     public void EnterFullScreen()
     {
         _painter.Sz();
-        // ?1049h alt-screen, ?1000h button tracking + ?1006h SGR coords (enables wheel scroll),
-        // ?25l hide cursor, 2J clear. Mouse modes are torn down in Exit/SafeExit (?1000l ?1006l).
         _painter.Write($"{AnsiPainter.E}[?1049h{AnsiPainter.E}[?1000h{AnsiPainter.E}[?1006h{AnsiPainter.E}[?25l{AnsiPainter.E}[2J");
         AnsiPainter.Flush();
         _inFullScreen = true;
@@ -124,6 +123,9 @@ public sealed class AnsiTuiRenderer : IRenderer
 
     public Task<PermissionResponse> AskPermissionAsync(string toolName, string summary, CancellationToken ct)
         => _inputReader.AskPermissionAsync(toolName, summary, ct);
+
+    public Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct)
+        => _inputReader.RequestPlaybookApprovalAsync(plan, ct);
 
     public void BeginTurn()
     {

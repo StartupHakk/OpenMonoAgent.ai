@@ -24,7 +24,7 @@ public sealed class MemorySaveTool : ToolBase
         .AddString("content", "The memory content to persist")
         .Require("name", "type", "description", "content");
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
     {
         var type = input.TryGetProperty("type", out var t) ? t.GetString() : "project";
         return [new MemoryCap(type ?? "project", "write")];

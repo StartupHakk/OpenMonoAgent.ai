@@ -44,7 +44,7 @@ public sealed class AgentTool : ToolBase
             "general-purpose", "Explore", "Plan", "Coder", "Verify")
         .Require("description", "prompt");
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
     {
         var description = input.TryGetProperty("description", out var d) ? d.GetString() : "task";
         var agentType = input.TryGetProperty("agent_type", out var at) ? at.GetString() : "general-purpose";
@@ -114,15 +114,12 @@ public sealed class AgentTool : ToolBase
             foreach (var tool in context.ToolRegistry.All)
             {
                 if (tool.Name == "Agent") continue;
-                if (IsToolAllowed(tool.Name, agentDef.AllowedTools))
+                if (ToolNameMatcher.IsAllowed(tool.Name, agentDef.AllowedTools))
                     subTools.Register(tool);
             }
 
             var sink = new SubAgentOutputSink(description, context.WriteOutput, context.Output);
             var inputReader = new NullInputReader();
-            // Sub-agents run on a background thread and have no console of their own, so they
-            // must never reach the parent's interactive permission prompt (that deadlocks).
-            // Give them a non-interactive engine that inherits the parent's session approvals.
             var childPermissions = context.Permissions.CreateChildEngine(sink, inputReader);
             var llm = new OpenAiCompatClient(context.Config.Llm) { ApiKey = context.Config.Llm.ApiKey };
 
@@ -163,20 +160,4 @@ public sealed class AgentTool : ToolBase
         }
     }
 
-    private static bool IsToolAllowed(string toolName, string[] allowedTools)
-    {
-        foreach (var entry in allowedTools)
-        {
-            if (entry == "*") return true;
-            if (entry.EndsWith('*'))
-            {
-                var prefix = entry[..^1];
-                if (toolName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                    return true;
-            }
-            else if (toolName.Equals(entry, StringComparison.OrdinalIgnoreCase))
-                return true;
-        }
-        return false;
-    }
 }

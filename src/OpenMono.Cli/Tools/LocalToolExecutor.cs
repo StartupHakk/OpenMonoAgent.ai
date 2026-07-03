@@ -135,26 +135,33 @@ public sealed class LocalToolExecutor : IToolExecutor
         bool allowed;
         string? reason;
 
+        Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: capabilities.Count={capabilities.Count}, AutoApproveWrites={_session.Meta.AutoApproveWrites}, IsReadOnly={tool.IsReadOnly}");
+
         // "Auto implement" for an approved plan: write/exec tools are pre-approved, so skip the
         // per-edit permission prompt. "Ask before edits" leaves AutoApproveWrites false → normal
         // prompting below. (Read-only tools are unaffected; the plan-mode gate already ran above.)
         if (_session.Meta.AutoApproveWrites && !tool.IsReadOnly)
         {
+            Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: AUTO-APPROVED (AutoApproveWrites)");
             allowed = true;
             reason = null;
         }
         else if (capabilities.Count > 0)
         {
+            Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: checking {capabilities.Count} capabilities");
             var capDecision = await _permissions.CheckCapabilitiesAsync(tool.Name, capabilities, ct);
             allowed = capDecision.Allowed;
             reason = capDecision.Reason;
+            Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: capability check result: allowed={allowed}");
         }
         else
         {
+            Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: using legacy permission check");
             var permLevel = tool.RequiredPermission(input);
             var legacyDecision = await _permissions.CheckAsync(tool.Name, input, permLevel, ct);
             allowed = legacyDecision.Allowed;
             reason = legacyDecision.Reason;
+            Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: legacy check result: allowed={allowed}");
         }
 
         if (!allowed)
@@ -197,14 +204,34 @@ public sealed class LocalToolExecutor : IToolExecutor
         var stopwatch = Stopwatch.StartNew();
 
         ToolResult result;
+
+        CancellationTokenSource? timeoutCts = null;
+        var execCt = ct;
+        if (tool.Timeout is { } toolTimeout && toolTimeout > TimeSpan.Zero)
+        {
+            timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(toolTimeout);
+            execCt = timeoutCts.Token;
+        }
+
         try
         {
-            await _hookRunner.RunPreToolUseHooksAsync(call.Name, call.Arguments, ct);
+            var hookDecision = await _hookRunner.RunPreToolUseHooksAsync(call.Name, call.Arguments, ct);
+            if (!hookDecision.Allowed)
+            {
+                var hookReason = hookDecision.Reason ?? "Blocked by a PreToolUse hook";
+                Log.Info($"Tool blocked by PreToolUse hook: {call.Name} — {hookReason}");
+                result = ToolResult.PermissionDenied(
+                    $"{call.Name} was blocked by a PreToolUse hook: {hookReason}. " +
+                    "Do not retry; address the hook's requirement or ask the user how to proceed.");
+            }
+            else
+            {
+                Log.Debug($"Tool executing: {call.Name}");
+                result = await tool.ExecuteAsync(input, ctx, execCt);
 
-            Log.Debug($"Tool executing: {call.Name}");
-            result = await tool.ExecuteAsync(input, ctx, ct);
-
-            await _hookRunner.RunPostToolUseHooksAsync(call.Name, result.Content, ct);
+                await _hookRunner.RunPostToolUseHooksAsync(call.Name, result.Content, ct);
+            }
 
             if (result.Class == ResultClass.Success && result.ModelPreview.Length > _artifactStore.LargeOutputThreshold)
             {
@@ -254,6 +281,16 @@ public sealed class LocalToolExecutor : IToolExecutor
                 }
             }
         }
+        catch (OperationCanceledException) when (timeoutCts is { IsCancellationRequested: true } && !ct.IsCancellationRequested)
+        {
+            var secs = tool.Timeout!.Value.TotalSeconds;
+            _journal.RecordToolCrashed(call.Id, "Timeout", $"timed out after {secs:F0}s");
+            _output.WriteToolError(call.Name, $"timed out after {secs:F0}s");
+            Log.Warn($"Tool timed out: {call.Name} after {secs:F0}s");
+            result = ToolResult.StateConflict(
+                $"{call.Name} timed out after {secs:F0}s",
+                "Narrow the input (e.g. a more specific path or pattern) and retry.");
+        }
         catch (OperationCanceledException)
         {
             _journal.RecordToolCrashed(call.Id, "OperationCanceledException", "cancelled");
@@ -266,6 +303,10 @@ public sealed class LocalToolExecutor : IToolExecutor
             _output.WriteToolError(call.Name, ex.Message);
             Log.Error($"Tool exception: {call.Name}", ex);
             result = ToolResult.Crash($"Tool execution failed: {ex.Message}", "Try with different parameters or report this as a bug.");
+        }
+        finally
+        {
+            timeoutCts?.Dispose();
         }
 
         stopwatch.Stop();

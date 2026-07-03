@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="262" viewBox="0 0 800 262" role="img" aria-label="Linux NVIDIA GPU / CPU support">
+  <defs>
+    <style>
+      .mono { font-family: 'JetBrains Mono','Cascadia Code','Fira Code',ui-monospace,monospace; }
+      .col { font-size: 9.5px; fill: #7E887C; letter-spacing: 1px; }
+      .spec { font-size: 11px; font-weight: 600; }
+      .val { font-size: 11px; fill: #C9D2C6; }
+      .val-dim { font-size: 11px; fill: #8C968A; }
+    </style>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0B0F0A"/>
+      <stop offset="1" stop-color="#070807"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0.5" y="0.5" width="799" height="261" rx="10" fill="url(#bg)" stroke="#1C231A" stroke-width="1"/>
+
+  <!-- header -->
+  <rect x="22" y="20" width="30" height="30" rx="5" fill="none" stroke="#ADFF8F" stroke-width="1.6"/>
+  <path d="M31 30 l6 5 -6 5" fill="none" stroke="#ADFF8F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="39" y1="40" x2="45" y2="40" stroke="#ADFF8F" stroke-width="1.8" stroke-linecap="round"/>
+  <text x="64" y="34" class="mono" font-size="14" font-weight="700" fill="#DAE5D8">Linux</text>
+  <text x="64" y="48" class="mono" font-size="9.5" fill="#7E887C" letter-spacing="2">NVIDIA GPU · CPU</text>
+  <line x1="22" y1="68" x2="778" y2="68" stroke="#1C231A" stroke-width="1"/>
+
+  <!-- column headers -->
+  <text x="34"  y="88" class="mono col">VRAM / RAM</text>
+  <text x="220" y="88" class="mono col">MODEL</text>
+  <text x="560" y="88" class="mono col">ACCURACY</text>
+  <text x="680" y="88" class="mono col">SPEED</text>
+
+  <!-- row 1 · GPU 24 (recommended) -->
+  <rect x="22" y="98" width="756" height="34" rx="6" fill="#13200E" stroke="#3A5C28" stroke-width="1"/>
+  <rect x="22" y="98" width="3" height="34" rx="1.5" fill="#ADFF8F"/>
+  <text x="34"  y="119" class="mono spec" fill="#ADFF8F">GPU 24 GB+</text>
+  <text x="220" y="119" class="mono val">Qwen3.6-27B-Q4_K_M</text>
+  <rect x="560" y="108" width="44" height="15" rx="7.5" fill="#ADFF8F"/>
+  <text x="582" y="119" class="mono" font-size="9" font-weight="700" fill="#0A1207" text-anchor="middle">FULL</text>
+  <text x="680" y="119" class="mono val">~45–70 tok/s</text>
+
+  <!-- row 2 · GPU 16 -->
+  <text x="34"  y="155" class="mono val-dim">GPU 16 GB</text>
+  <text x="220" y="155" class="mono val-dim">Qwen3.6-27B-UD-IQ3_XXS</text>
+  <rect x="560" y="144" width="50" height="15" rx="7.5" fill="none" stroke="#C8922E" stroke-width="1"/>
+  <text x="585" y="155" class="mono" font-size="9" font-weight="700" fill="#E0B341" text-anchor="middle">LOWER</text>
+  <text x="680" y="155" class="mono val-dim">~20–42 tok/s</text>
+  <line x1="22" y1="168" x2="778" y2="168" stroke="#141A12" stroke-width="1"/>
+
+  <!-- row 3 · GPU 12 -->
+  <text x="34"  y="191" class="mono val-dim">GPU 12 GB</text>
+  <text x="220" y="191" class="mono val-dim">Qwen3.5-9B-Q4_K_M</text>
+  <rect x="560" y="180" width="50" height="15" rx="7.5" fill="none" stroke="#C8922E" stroke-width="1"/>
+  <text x="585" y="191" class="mono" font-size="9" font-weight="700" fill="#E0B341" text-anchor="middle">LOWER</text>
+  <text x="680" y="191" class="mono val-dim">~38–40 tok/s</text>
+  <line x1="22" y1="204" x2="778" y2="204" stroke="#141A12" stroke-width="1"/>
+
+  <!-- row 4 · CPU (full) -->
+  <rect x="22" y="214" width="756" height="34" rx="6" fill="#13200E" stroke="#3A5C28" stroke-width="1"/>
+  <rect x="22" y="214" width="3" height="34" rx="1.5" fill="#ADFF8F"/>
+  <text x="34"  y="235" class="mono spec" fill="#ADFF8F">CPU 24 GB RAM</text>
+  <text x="220" y="235" class="mono val">Qwen3.6-35B-A3B-UD-Q4_K_XL</text>
+  <rect x="560" y="224" width="44" height="15" rx="7.5" fill="#ADFF8F"/>
+  <text x="582" y="235" class="mono" font-size="9" font-weight="700" fill="#0A1207" text-anchor="middle">FULL</text>
+  <text x="680" y="235" class="mono val">~17–20 tok/s</text>
+</svg>

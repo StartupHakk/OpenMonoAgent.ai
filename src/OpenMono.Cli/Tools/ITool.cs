@@ -20,6 +20,8 @@ public interface ITool
 
     bool IsDeferred => false;
 
+    TimeSpan? Timeout => null;
+
     Task<ToolResult> ExecuteAsync(JsonElement input, ToolContext context, CancellationToken ct);
 
     PermissionLevel RequiredPermission(JsonElement input);

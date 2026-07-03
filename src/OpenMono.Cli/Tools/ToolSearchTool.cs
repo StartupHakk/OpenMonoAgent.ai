@@ -23,7 +23,7 @@ public sealed class ToolSearchTool : ToolBase
         .AddBoolean("list_deferred", "If true, list all deferred tools with brief descriptions")
         .AddInteger("max_results", "Maximum number of search results (default: 10)", minimum: 1, maximum: 50);
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input) => [];
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input) => [];
 
     protected override Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
     {

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Spectre.Console;
 using OpenMono.Commands;
 using OpenMono.Permissions;
+using OpenMono.Playbooks;
 
 namespace OpenMono.Rendering;
 
@@ -310,8 +311,17 @@ public sealed class TerminalRenderer : IRenderer
         _console.MarkupLine($"  [dim]{Markup.Escape(message)}[/]");
     }
 
+    private static bool IsNonInteractive => Console.IsInputRedirected || Console.IsOutputRedirected;
+
     public Task<string> AskUserAsync(string question, CancellationToken ct)
     {
+        if (IsNonInteractive)
+        {
+            _console.MarkupLine($"  [yellow]⚠ Cannot prompt (non-interactive session): {Markup.Escape(question)}[/]");
+            return Task.FromResult(
+                "[Non-interactive session: cannot ask the user a question. Make a decision based on available information and continue, or stop and report what is blocking.]");
+        }
+
         _console.WriteLine();
         _console.MarkupLine($"  [bold yellow]? {Markup.Escape(question)}[/]");
         var answer = _console.Prompt(
@@ -323,6 +333,13 @@ public sealed class TerminalRenderer : IRenderer
     public Task<PermissionResponse> AskPermissionAsync(
         string toolName, string summary, CancellationToken ct)
     {
+        if (IsNonInteractive)
+        {
+            _console.MarkupLine(
+                $"  [yellow]⚠ {Markup.Escape(toolName)} needs approval but this session is non-interactive (stdin/stdout redirected). Denying.[/]");
+            return Task.FromResult(PermissionResponse.Deny);
+        }
+
         _console.WriteLine();
         var panel = new Panel(Markup.Escape(summary))
         {
@@ -349,9 +366,75 @@ public sealed class TerminalRenderer : IRenderer
         });
     }
 
-    public void WriteToolDiff(string diff) { }
+    public Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct)
+    {
+        if (IsNonInteractive)
+        {
+            _console.MarkupLine(
+                $"  [yellow]⚠ Playbook approval required but this session is non-interactive. Denying.[/]");
+            return Task.FromResult(false);
+        }
 
-    public void WriteToolContent(string toolName, string filePath, string content) { }
+        _console.WriteLine();
+        var stepsStr = string.Join(", ", plan.Steps.Select(s => s.Id));
+        var toolsStr = string.Join(", ", plan.Tools.Select(t => t.Name));
+
+        var summary = $"Playbook: [bold]{Markup.Escape(plan.PlaybookName)}[/]\n\n" +
+                     $"Steps: {Markup.Escape(stepsStr)}\n" +
+                     $"Tools: {Markup.Escape(toolsStr)}";
+
+        var panel = new Panel(summary)
+        {
+            Header = new PanelHeader(" Playbook Approval "),
+            Border = BoxBorder.Rounded,
+            BorderStyle = new Style(Color.Yellow),
+            Padding = new Padding(2, 1),
+        };
+        _console.Write(panel);
+
+        _console.MarkupLine("  [dim][[y]] Allow  [[n]] Deny[/]");
+        var key = _console.Prompt(
+            new TextPrompt<string>("  [yellow]Approve?[/] ")
+                .DefaultValue("n")
+                .AddChoice("y").AddChoice("n"));
+
+        return Task.FromResult(key == "y");
+    }
+
+    public void WriteToolDiff(string diff) 
+    {
+        if (string.IsNullOrWhiteSpace(diff)) return;
+        foreach (var line in diff.Replace("\r\n", "\n").Split('\n'))
+        {
+            var escaped = Markup.Escape(line);
+            var markup = line switch
+            {
+                _ when line.StartsWith("+++") || line.StartsWith("---") => $"  [dim]{escaped}[/]",
+                _ when line.StartsWith("@@") => $"  [cyan]{escaped}[/]",
+                _ when line.StartsWith('+') => $"  [green]{escaped}[/]",
+                _ when line.StartsWith('-') => $"  [red]{escaped}[/]",
+                _ => $"  [grey]{escaped}[/]",
+            };
+            _console.MarkupLine(markup);
+        }
+    }
+
+    public void WriteToolContent(string toolName, string filePath, string content)
+    {
+        if (string.IsNullOrEmpty(content)) return;
+
+        const int maxLines = 20;
+        var lines = content.Replace("\r\n", "\n").Split('\n');
+
+        _console.MarkupLine($"  [dim]{Markup.Escape(filePath)}[/]");
+
+        var show = Math.Min(lines.Length, maxLines);
+        for (var i = 0; i < show; i++)
+            _console.MarkupLine($"  [grey]{Markup.Escape(lines[i])}[/]");
+
+        if (lines.Length > maxLines)
+            _console.MarkupLine($"  [dim]… {lines.Length - maxLines} more line(s)[/]");
+    }
 
     public void WriteTodos(IReadOnlyList<Session.TodoItem> todos)
     {

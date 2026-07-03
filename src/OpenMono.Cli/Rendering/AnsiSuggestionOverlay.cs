@@ -106,11 +106,6 @@ internal sealed class AnsiSuggestionOverlay(AppConfig config, AnsiPainter painte
         var convH  = layout.ConvH;
         var max    = Math.Min(_filteredCmds.Count, 8);
 
-        // Clear any leftover rows above the new (possibly shorter) list. The
-        // overlay is bottom-aligned, so a previous taller list leaves stale
-        // rows above the new top when the filter narrows. Old rows occupy
-        // convH-_lastDrawnCount+1..convH; new rows occupy convH-max+1..convH;
-        // the stale band is convH-_lastDrawnCount+1..convH-max.
         for (var i = 0; i < _lastDrawnCount - max; i++)
         {
             var row = convH - _lastDrawnCount + i + 1;
