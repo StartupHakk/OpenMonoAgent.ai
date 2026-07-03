@@ -1,5 +1,6 @@
 using OpenMono.Commands;
 using OpenMono.Permissions;
+using OpenMono.Playbooks;
 using OpenMono.Rendering;
 
 namespace OpenMono.Acp;
@@ -41,7 +42,10 @@ public sealed class AcpInputReaderAdapter : IInputReader
         return value ?? string.Empty;
     }
 
-
+    public async Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct)
+    {
+        return await _interaction.RequestPlaybookApprovalAsync(plan, ct);
+    }
 
     public void EnableCommandSuggestions(CommandRegistry registry) { }
     public string ReadInput() => string.Empty;

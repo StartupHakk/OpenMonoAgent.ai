@@ -3,6 +3,7 @@ using System.Text;
 using OpenMono.Commands;
 using OpenMono.Config;
 using OpenMono.Permissions;
+using OpenMono.Playbooks;
 using OpenMono.Utils;
 
 namespace OpenMono.Rendering;
@@ -352,6 +353,53 @@ internal sealed class AnsiInputReader(
         painter.Paint();
         StartBackgroundInput();
         return Task.FromResult(response);
+    }
+
+    public Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct)
+    {
+        StopBackgroundInput();
+        painter.AddMessage(new AnsiPainter.Msg("sys",
+            $"{AnsiPainter.Fy}▶ Playbook approval: {plan.PlaybookName}{AnsiPainter.R}"));
+
+        var stepsStr = string.Join(", ", plan.Steps.Select(s => s.Id));
+        var toolsStr = string.Join(", ", plan.Tools.Select(t => t.Name));
+
+        painter.Sz();
+        var maxLineLen = painter.ComputeLayout("").MainW - 4;
+        var truncatedSteps = stepsStr.Length > maxLineLen
+            ? stepsStr[..(maxLineLen - 3)] + "..."
+            : stepsStr;
+        var truncatedTools = toolsStr.Length > maxLineLen
+            ? toolsStr[..(maxLineLen - 3)] + "..."
+            : toolsStr;
+
+        painter.PaintPermissionLane(
+            $"{AnsiPainter.Fy}{AnsiPainter.B}▸ Approve playbook: {plan.PlaybookName}{AnsiPainter.R}",
+            $"{AnsiPainter.Fw}Steps: {truncatedSteps}\nTools: {truncatedTools}{AnsiPainter.R}",
+            $"  {AnsiPainter.B}{AnsiPainter.Fg}[y]{AnsiPainter.R}{AnsiPainter.BgInput}  Allow",
+            $"  {AnsiPainter.B}{AnsiPainter.Fy}[n]{AnsiPainter.R}{AnsiPainter.BgInput}  Deny",
+            "",
+            ""
+        );
+
+        bool approved;
+        try
+        {
+            while (true)
+            {
+                var result = terminal.TryReadKey();
+                if (result is null) { Thread.Sleep(20); continue; }
+                var k = result.Value;
+
+                if (k.KeyChar is 'y' or 'Y') { approved = true; break; }
+                if (k.KeyChar is 'n' or 'N') { approved = false; break; }
+            }
+        }
+        finally { painter.ClearLane(); }
+
+        painter.Paint();
+        StartBackgroundInput();
+        return Task.FromResult(approved);
     }
 
     private string ReadInputCore(bool interactive)

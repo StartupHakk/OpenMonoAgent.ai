@@ -16,7 +16,7 @@ public sealed class FileEditTool : ToolBase
         .AddBoolean("replace_all", "Replace all occurrences (default: false)")
         .Require("file_path", "old_string", "new_string");
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
     {
         var filePath = input.TryGetProperty("file_path", out var fp) ? fp.GetString() : null;
         if (string.IsNullOrEmpty(filePath))

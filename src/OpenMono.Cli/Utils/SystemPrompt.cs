@@ -1,3 +1,7 @@
+using OpenMono.Config;
+using OpenMono.Memory;
+using OpenMono.Playbooks;
+
 namespace OpenMono.Utils;
 
 static class SystemPrompt
@@ -122,4 +126,80 @@ static class SystemPrompt
         - agent_type="explore" — to search and summarize code without building on context.
         Plan before delegating: tell the user what the agent will do, and why delegation makes sense.
         """;
+
+    /// <summary>
+    /// Builds the complete system prompt with project instructions, memory, git context,
+    /// environment info, and available playbooks. Shared between TUI and ACP paths.
+    /// </summary>
+    public static async Task<string> BuildAsync(
+        AppConfig config,
+        MemoryStore? memoryStore = null,
+        PlaybookRegistry? playbookRegistry = null)
+    {
+        var parts = new List<string>();
+
+        parts.Add(Base);
+
+        var projectInstructions = Config.ProjectConfig.Load(config.WorkingDirectory);
+        if (projectInstructions is not null)
+            parts.Add($"# Project Instructions\n\nContents of OPENMONO.md (project instructions, checked into the codebase):\n\n{projectInstructions}");
+
+        if (memoryStore is not null)
+        {
+            var memoryIndex = memoryStore.LoadIndex();
+            if (memoryIndex is not null)
+                parts.Add($"# Memory\n\n{memoryIndex}");
+        }
+
+        var gitContext = await Utils.GitHelper.GetContextAsync(config.WorkingDirectory);
+        if (gitContext is not null)
+            parts.Add($"# Git\n\n{gitContext}");
+
+        parts.Add($"""
+            # Environment
+            - Working directory: {config.WorkingDirectory}
+            - Platform: {Environment.OSVersion.Platform}
+            - Date: {DateTime.UtcNow:yyyy-MM-dd}
+            - Model: {config.Llm.Model}
+            """);
+
+        if (playbookRegistry is not null)
+        {
+            var all = playbookRegistry.All;
+            if (all.Count > 0)
+            {
+                var autoPlaybooks = all.Where(p => p.Trigger != TriggerMode.Manual).ToList();
+                var manualPlaybooks = all.Where(p => p.Trigger == TriggerMode.Manual).ToList();
+
+                var playbookSection = new System.Text.StringBuilder();
+
+                if (autoPlaybooks.Count > 0)
+                {
+                    playbookSection.AppendLine("**Auto-triggered playbooks** — these trigger automatically when your request matches their description or patterns. Call `Playbook { name: \"<name>\" }` — do NOT execute the steps yourself.");
+                    foreach (var p in autoPlaybooks)
+                    {
+                        var hint = p.ArgumentHint is not null ? $" {p.ArgumentHint}" : "";
+                        var scope = p.Scope is not null ? $", {p.Scope}" : "";
+                        playbookSection.AppendLine($"- **{p.Name}**{hint} (auto{scope}) — {p.Description}");
+                    }
+                    playbookSection.AppendLine();
+                }
+
+                if (manualPlaybooks.Count > 0)
+                {
+                    playbookSection.AppendLine("**Manual playbooks** — these ONLY trigger when the user explicitly invokes them by name (e.g. \"run file-scan\", \"file-scan\"). Do NOT call these for general requests that happen to mention similar words.");
+                    foreach (var p in manualPlaybooks)
+                    {
+                        var hint = p.ArgumentHint is not null ? $" {p.ArgumentHint}" : "";
+                        var scope = p.Scope is not null ? $", {p.Scope}" : "";
+                        playbookSection.AppendLine($"- **{p.Name}**{hint} (manual{scope}) — {p.Description}");
+                    }
+                }
+
+                parts.Add($"# Available Playbooks\n\n{playbookSection.ToString().Trim()}");
+            }
+        }
+
+        return string.Join("\n\n", parts);
+    }
 }

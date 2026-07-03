@@ -33,6 +33,7 @@ public sealed class ConversationLoop : IDisposable
     private readonly ToolResultCache _cache;
     private readonly ArtifactStore _artifactStore;
     private readonly IAcpEventSink? _sink;
+    private readonly IAcpUserInteraction? _interaction;
     private readonly IToolExecutor _executor;
     private readonly IReadOnlyList<ITool>? _toolSubset;
 
@@ -98,8 +99,7 @@ public sealed class ConversationLoop : IDisposable
         _cache = cache ?? new ToolResultCache();
         _artifactStore = artifactStore ?? ArtifactStore.ForSession(session, config.DataDirectory);
         _sink = sink;
-
-
+        _interaction = interaction;
 
 
 
@@ -223,8 +223,21 @@ public sealed class ConversationLoop : IDisposable
 
             if (_sink is not null)
             {
-                var artifactId = result.Artifacts.Count > 0 ? result.Artifacts[0].Id : null;
-                await _sink.OnToolResultPreviewAsync(call.Id, result.ModelPreview, artifactId);
+                if (!granted)
+                {
+                    // Denied: the tool never executed and ExecuteAsync (which normally emits
+                    // status/end) was skipped, so emit them here or the card stays stuck on the
+                    // ⏸ awaiting-permission icon. Show a short user-facing note — NOT the
+                    // model-directed "do not retry / tell the user…" text that lives in ModelPreview.
+                    await _sink.OnToolResultPreviewAsync(call.Id, "Permission denied by user.", null);
+                    await _sink.OnToolStatusAsync(call.Id, "failed");
+                    await _sink.OnToolEndAsync(call.Id, call.Name, ok: false, durationMs: 0.0);
+                }
+                else
+                {
+                    var artifactId = result.Artifacts.Count > 0 ? result.Artifacts[0].Id : null;
+                    await _sink.OnToolResultPreviewAsync(call.Id, result.ModelPreview, artifactId);
+                }
             }
         }
     }
@@ -435,6 +448,8 @@ public sealed class ConversationLoop : IDisposable
                     lastUsage = chunk.Usage;
                     _session.TotalTokensUsed += chunk.Usage.TotalTokens;
                     _session.Meta.TokenTracker?.RecordUsage(chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens);
+                    _session.Meta.TokenTracker?.RecordTimings(
+                        chunk.Usage.PredictedTokens, chunk.Usage.PredictedMs, chunk.Usage.PredictedPerSecond);
                     turnTokens += chunk.Usage.TotalTokens;
                 }
 
@@ -459,6 +474,8 @@ public sealed class ConversationLoop : IDisposable
                 CompletionTokens = lastUsage?.CompletionTokens ?? turnTokens,
                 TimeToFirstToken = ttft,
                 TotalElapsed = requestSw.Elapsed,
+                GenTokensPerSecond = lastUsage?.PredictedPerSecond ?? 0,
+                AvgGenTokensPerSecond = _session.Meta.TokenTracker?.AvgGenTokensPerSecond ?? 0,
             });
 
             var assistantMsg = new Message
@@ -735,7 +752,16 @@ public sealed class ConversationLoop : IDisposable
         if (_sink is null) return Task.CompletedTask;
         var tracker = _session.Meta.TokenTracker;
         if (tracker is null) return Task.CompletedTask;
-        return _sink.OnUsageAsync(tracker.TotalPromptTokens, tracker.TotalCompletionTokens, tracker.TotalTokens);
+        // context_tokens = LastPromptTokens (the full conversation sent on the most recent call =
+        // current context occupancy); context_window = n_ctx (fetched from /props at startup).
+        return _sink.OnUsageAsync(
+            tracker.TotalPromptTokens,
+            tracker.TotalCompletionTokens,
+            tracker.TotalTokens,
+            tracker.LastPromptTokens,
+            _config.Llm.ContextSize,
+            tracker.LastGenTokensPerSecond,
+            tracker.AvgGenTokensPerSecond);
     }
 
 
@@ -906,6 +932,7 @@ public sealed class ConversationLoop : IDisposable
         },
         OnDebug = msg => { _output.WriteDebug(msg); Log.Debug(msg); },
         Output = _output,
+        Interaction = _interaction,
         AgentDepth = _agentDepth,
     };
 }

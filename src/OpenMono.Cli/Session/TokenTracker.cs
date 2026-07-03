@@ -14,6 +14,13 @@ public sealed class TokenTracker
 
     public int LastPromptTokens { get; private set; }
 
+    // Generation throughput (from llama.cpp `timings`). LastGenTokensPerSecond is the most recent
+    // turn's live decode rate; AvgGenTokensPerSecond is the session average weighted by tokens.
+    public double LastGenTokensPerSecond { get; private set; }
+    private int _genTokensTotal;
+    private double _genMsTotal;
+    public double AvgGenTokensPerSecond => _genMsTotal > 0 ? _genTokensTotal / (_genMsTotal / 1000.0) : 0;
+
     public Action<int, int>? OnUsageUpdated { get; set; }
 
     public void RecordUsage(int promptTokens, int completionTokens)
@@ -24,6 +31,17 @@ public sealed class TokenTracker
         if (promptTokens > MaxPromptTokens) MaxPromptTokens = promptTokens;
         ApiCalls++;
         OnUsageUpdated?.Invoke(TotalPromptTokens, TotalCompletionTokens);
+    }
+
+    // Fold one turn's generation timings into the rolling average and store the live rate.
+    public void RecordTimings(int predictedTokens, double predictedMs, double predictedPerSecond)
+    {
+        if (predictedPerSecond > 0) LastGenTokensPerSecond = predictedPerSecond;
+        if (predictedTokens > 0 && predictedMs > 0)
+        {
+            _genTokensTotal += predictedTokens;
+            _genMsTotal += predictedMs;
+        }
     }
 
     public void RecordToolUse(string toolName)

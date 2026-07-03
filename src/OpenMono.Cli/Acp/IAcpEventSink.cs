@@ -11,8 +11,9 @@ public interface IAcpEventSink
     Task OnThinkingDeltaAsync(string content);
 
 
-    Task OnToolStartAsync(string callId, string name, string summary);
+    Task OnToolStartAsync(string callId, string name, string summary, string? arguments = null);
 
+    Task OnToolStatusAsync(string callId, string status);
 
     Task OnToolEndAsync(string callId, string name, bool ok, double durationMs);
 
@@ -30,7 +31,10 @@ public interface IAcpEventSink
     Task OnPlanReadyAsync(string planContent, string? planPath);
 
     Task OnCompactionAsync(int messagesCompressed, double durationSeconds, int checkpointIndex);
-    Task OnUsageAsync(int inputTokens, int outputTokens, int totalTokens);
+    // contextTokens = prompt tokens of the most recent API call (current context occupancy);
+    // contextWindow = the model's n_ctx (denominator for a context-usage gauge).
+    // genTps = most recent turn's live generation rate; avgTps = session rolling average (tok/s).
+    Task OnUsageAsync(int inputTokens, int outputTokens, int totalTokens, int contextTokens, int contextWindow, double genTps, double avgTps);
 
     // Progress lines forwarded from sub-agents via WriteOutput/StreamText.
     // These are distinct from the main assistant text stream.

@@ -25,7 +25,7 @@ public sealed class TodoTool : ToolBase
         })
         .Require("todos");
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input) => [];
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input) => [];
 
     protected override Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
     {

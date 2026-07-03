@@ -256,12 +256,24 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                     if (root.TryGetProperty("usage", out var usageEl) &&
                         usageEl.ValueKind == JsonValueKind.Object)
                     {
+                        // llama.cpp appends a `timings` block to the same final chunk that carries `usage`.
+                        // predicted_per_second = live generation rate; predicted_n/ms feed the rolling average.
+                        int predictedN = 0; double predictedMs = 0, predictedPerSec = 0;
+                        if (root.TryGetProperty("timings", out var tEl) && tEl.ValueKind == JsonValueKind.Object)
+                        {
+                            if (tEl.TryGetProperty("predicted_n", out var pn)) predictedN = pn.GetInt32();
+                            if (tEl.TryGetProperty("predicted_ms", out var pms)) predictedMs = pms.GetDouble();
+                            if (tEl.TryGetProperty("predicted_per_second", out var pps)) predictedPerSec = pps.GetDouble();
+                        }
                         usage = new UsageInfo
                         {
                             PromptTokens = usageEl.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : 0,
                             CompletionTokens = usageEl.TryGetProperty("completion_tokens", out var cpt) ? cpt.GetInt32() : 0,
+                            PredictedTokens = predictedN,
+                            PredictedMs = predictedMs,
+                            PredictedPerSecond = predictedPerSec,
                         };
-                        var usageMsg = $"[SSE] usage: prompt={usage.PromptTokens} completion={usage.CompletionTokens} total={usage.TotalTokens}";
+                        var usageMsg = $"[SSE] usage: prompt={usage.PromptTokens} completion={usage.CompletionTokens} total={usage.TotalTokens} gen_tps={usage.PredictedPerSecond:F1}";
                         OnDebug?.Invoke(usageMsg);
                         Log.Info(usageMsg);
                     }

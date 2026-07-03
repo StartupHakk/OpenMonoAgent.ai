@@ -49,4 +49,4 @@ public sealed class PendingUserResponseException : Exception
     }
 }
 
-public enum PendingResponseKind { Permission, UserInput }
+public enum PendingResponseKind { Permission, UserInput, ToggleMode, PlaybookApproval }

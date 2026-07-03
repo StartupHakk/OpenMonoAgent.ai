@@ -1,6 +1,7 @@
 using OpenMono.Commands;
 using OpenMono.Config;
 using OpenMono.Permissions;
+using OpenMono.Playbooks;
 using OpenMono.Session;
 
 namespace OpenMono.Rendering;
@@ -122,6 +123,9 @@ public sealed class AnsiTuiRenderer : IRenderer
 
     public Task<PermissionResponse> AskPermissionAsync(string toolName, string summary, CancellationToken ct)
         => _inputReader.AskPermissionAsync(toolName, summary, ct);
+
+    public Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct)
+        => _inputReader.RequestPlaybookApprovalAsync(plan, ct);
 
     public void BeginTurn()
     {

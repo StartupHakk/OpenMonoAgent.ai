@@ -79,6 +79,10 @@ public sealed class AcpEventSinkTests
         sink.UsageEvents[0].input.Should().Be(42);
         sink.UsageEvents[0].output.Should().Be(7);
         sink.UsageEvents[0].total.Should().Be(49);
+        // context_tokens reflects the most recent prompt size (current context occupancy);
+        // context_window is the model's n_ctx (positive denominator for the usage gauge).
+        sink.UsageEvents[0].contextTokens.Should().Be(42);
+        sink.UsageEvents[0].contextWindow.Should().BePositive();
     }
 
     [Fact]
@@ -268,7 +272,7 @@ public sealed class AcpEventSinkTests
         public List<(string callId, string name, string summary)> ToolStarts { get; } = new();
         public List<(string callId, string name, bool ok, double durationMs)> ToolEnds { get; } = new();
         public List<(string callId, string preview, string? artifactId)> ToolPreviews { get; } = new();
-        public List<(int input, int output, int total)> UsageEvents { get; } = new();
+        public List<(int input, int output, int total, int contextTokens, int contextWindow)> UsageEvents { get; } = new();
         public List<(int compressed, double seconds, int idx)> Compactions { get; } = new();
         public List<string> ModeChanges { get; } = new();
 
@@ -278,12 +282,15 @@ public sealed class AcpEventSinkTests
         public Task OnModeChangedAsync(string mode) { ModeChanges.Add(mode); return Task.CompletedTask; }
         public Task OnPlanReadyAsync(string planContent, string? planPath) { PlanReady.Add(planPath); return Task.CompletedTask; }
         public Task OnThinkingDeltaAsync(string content) { ThinkingDeltas.Add(content); return Task.CompletedTask; }
-        public Task OnToolStartAsync(string callId, string name, string summary)
+        public List<(string callId, string status)> ToolStatuses { get; } = new();
+        public Task OnToolStartAsync(string callId, string name, string summary, string? arguments = null)
         { ToolStarts.Add((callId, name, summary)); return Task.CompletedTask; }
+        public Task OnToolStatusAsync(string callId, string status)
+        { ToolStatuses.Add((callId, status)); return Task.CompletedTask; }
         public Task OnToolEndAsync(string callId, string name, bool ok, double durationMs)
         { ToolEnds.Add((callId, name, ok, durationMs)); return Task.CompletedTask; }
         public Task OnCompactionAsync(int m, double s, int i) { Compactions.Add((m, s, i)); return Task.CompletedTask; }
-        public Task OnUsageAsync(int i, int o, int t) { UsageEvents.Add((i, o, t)); return Task.CompletedTask; }
+        public Task OnUsageAsync(int i, int o, int t, int ctx, int win, double genTps, double avgTps) { UsageEvents.Add((i, o, t, ctx, win)); return Task.CompletedTask; }
         public Task OnToolResultPreviewAsync(string callId, string preview, string? artifactId)
         { ToolPreviews.Add((callId, preview, artifactId)); return Task.CompletedTask; }
         public Task OnSubAgentLogAsync(string line) => Task.CompletedTask;

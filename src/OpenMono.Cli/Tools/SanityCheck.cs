@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace OpenMono.Tools;
 
@@ -68,6 +69,10 @@ public static class SanityCheck
     private static readonly HashSet<string> InlineExecFlags =
         new(StringComparer.OrdinalIgnoreCase) { "-c", "-e", "-r" };
 
+    // Shell commands that read file contents — steer to FileRead.
+    private static readonly HashSet<string> FileReadCommands =
+        new(StringComparer.OrdinalIgnoreCase) { "cat", "head", "tail", "nl", "less", "more" };
+
     private static string? CheckBash(JsonElement input)
     {
         if (!input.TryGetProperty("command", out var cmdEl) || cmdEl.GetString() is not { } command)
@@ -114,9 +119,49 @@ public static class SanityCheck
             var interpreterReason = CheckInterpreterAbuse(seg);
             if (interpreterReason is not null)
                 return interpreterReason;
+
+            // Reading a file through the shell — use FileRead (line-numbered output, caching,
+            // editor integration). Only fires when there's a real file operand (not a flag, a
+            // numeric flag-value like `-n 20`, or a redirect token), so bare `cat` (stdin) is fine.
+            if (FileReadCommands.Contains(seg.Binary) &&
+                seg.Args.Any(a => !a.StartsWith('-') && !a.All(char.IsDigit) &&
+                                  a is not (">" or ">>" or "<" or "|" or "&")))
+            {
+                return $"SanityCheck refused Bash: '{seg.Binary}' reads a file through the shell — use FileRead instead.";
+            }
+
+            // tee writes its stdin to the named file(s).
+            if (string.Equals(seg.Binary, "tee", StringComparison.OrdinalIgnoreCase) &&
+                seg.Args.Any(a => !a.StartsWith('-') && IsRegularFileTarget(a)))
+                return "SanityCheck refused Bash: 'tee' writes to a file — use FileWrite/FileEdit instead.";
         }
 
+        // Authoring file content via redirection (e.g. `echo "x" >> notes.txt`). Detected on the
+        // raw command because the parser mangles space-separated redirects. This is a file write
+        // that should go through FileWrite/FileEdit (permission checks, undo history, secret
+        // scanning). Device/fd targets (/dev/null, /dev/stderr) are excluded so output-discarding
+        // redirects still work; only echo/printf sources are matched, so `build > out.log` (output
+        // capture by another command) is unaffected.
+        var redirectWrite = Regex.Match(
+            command, @"\b(?:echo|printf)\b[^|;&<>]*?>>?\s*(?<target>[^\s|;&<>]+)",
+            RegexOptions.IgnoreCase);
+        if (redirectWrite.Success && IsRegularFileTarget(redirectWrite.Groups["target"].Value))
+            return "SanityCheck refused Bash: writing file content via shell redirection " +
+                   "(e.g. `echo \"x\" >> file`) is not allowed — use FileWrite to create/overwrite " +
+                   "or FileEdit for an in-place change.";
+
         return null;
+    }
+
+    // A regular file we should author via FileWrite/FileEdit — excludes device/fd targets
+    // (/dev/*, &1, numeric fds) which are handled elsewhere or are legitimate redirects.
+    private static bool IsRegularFileTarget(string target)
+    {
+        if (string.IsNullOrWhiteSpace(target)) return false;
+        target = target.Trim('"', '\'');
+        if (target.Length == 0 || target.StartsWith('&')) return false;
+        if (target.StartsWith("/dev/", StringComparison.OrdinalIgnoreCase)) return false;
+        return !target.All(char.IsDigit);
     }
 
     private static string? CheckInterpreterAbuse(CommandSegment seg)

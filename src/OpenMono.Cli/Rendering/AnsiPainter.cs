@@ -595,7 +595,10 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         if (metrics is { PromptTokens: > 0 } m)
         {
             var genTime = m.TotalElapsed - m.TimeToFirstToken;
-            var genTps = genTime.TotalSeconds > 0.001 ? m.CompletionTokens / genTime.TotalSeconds : 0;
+            // Prefer llama.cpp's server-reported decode rate; fall back to wall-clock if absent.
+            var genTps = m.GenTokensPerSecond > 0
+                ? m.GenTokensPerSecond
+                : (genTime.TotalSeconds > 0.001 ? m.CompletionTokens / genTime.TotalSeconds : 0);
             footer = $"TTFT {m.TimeToFirstToken.TotalSeconds:F1}s · gen {genTps:F0}/s · {m.CompletionTokens} tok · {m.TotalElapsed.TotalSeconds:F1}s";
         }
         else

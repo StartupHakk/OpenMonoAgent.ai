@@ -19,7 +19,7 @@ public sealed class GlobTool : ToolBase
         .AddString("path", "Directory to search in (default: working directory)")
         .Require("pattern");
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
     {
         var searchPath = input.TryGetProperty("path", out var p) ? p.GetString() : ".";
         if (string.IsNullOrEmpty(searchPath))

@@ -2,15 +2,19 @@
 set -euo pipefail
 
 # ──────────────────────────────────────────────────────────────────────────────
-# OpenMono.ai — Prerequisite Installer for Ubuntu
+# OpenMono.ai — Prerequisite Installer for Ubuntu (and Ubuntu derivatives)
 #
 # Installs: Docker, git, cmake, curl, jq, .NET 10, ripgrep, build-essential,
 #           (and CUDA + nvidia-container-toolkit if an NVIDIA GPU is detected).
 #
+# Ubuntu derivatives (Linux Mint, Pop!_OS, Zorin, elementary, KDE neon, …) are
+# supported: their VERSION_CODENAME (e.g. Linux Mint "zara") is mapped to the
+# Ubuntu base codename (e.g. "noble") for apt repositories — see ubuntu_codename.
+#
 # Options:
 #   OPENMONO_VERBOSE=1    Show detailed command output
 #
-# Tested on: Ubuntu 24.04 LTS
+# Tested on: Ubuntu 24.04 LTS, Linux Mint 22.x
 # ──────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -56,6 +60,18 @@ if [[ "$AMD_IGPU_MODE" = "0" && -f "$HOME/.openmono/.setup_prefs" ]]; then
 fi
 export AMD_IGPU_MODE
 
+ubuntu_codename() {
+    local cn=""
+    cn="$(. /etc/os-release 2>/dev/null && echo "${UBUNTU_CODENAME:-}")"
+    if [ -z "$cn" ] && [ -f /etc/upstream-release/lsb-release ]; then
+        cn="$(. /etc/upstream-release/lsb-release 2>/dev/null && echo "${DISTRIB_CODENAME:-}")"
+    fi
+    if [ -z "$cn" ]; then
+        cn="$(. /etc/os-release 2>/dev/null && echo "${VERSION_CODENAME:-}")"
+    fi
+    echo "$cn"
+}
+
 TOTAL_STEPS=8
 
 banner "OpenMono.ai Prerequisites"
@@ -70,11 +86,13 @@ fi
 
 . /etc/os-release
 
-if [ "$ID" != "ubuntu" ]; then
-    warn "Detected $PRETTY_NAME — this script targets Ubuntu."
-    warn "Continuing, but some steps may need manual adjustment."
-else
+if [ "${ID:-}" = "ubuntu" ]; then
     ok "$PRETTY_NAME"
+elif [ "${ID:-}" = "linuxmint" ] || printf '%s' "${ID_LIKE:-}" | grep -qw ubuntu; then
+    ok "$PRETTY_NAME (Ubuntu ${BOLD}$(ubuntu_codename)${NC} base)"
+else
+    warn "Detected $PRETTY_NAME — this script targets Ubuntu and its derivatives."
+    warn "Continuing, but some steps may need manual adjustment."
 fi
 
 # ── Step 2: Ensure sudo ───────────────────────────────────────────────────────
@@ -95,6 +113,18 @@ fi
 # ── Step 3: Update package index ──────────────────────────────────────────────
 
 step 3 $TOTAL_STEPS "Updating apt package index"
+
+_docker_list=/etc/apt/sources.list.d/docker.list
+if [ -f "$_docker_list" ] && grep -q 'download.docker.com/linux/ubuntu' "$_docker_list"; then
+    _want_cn="$(ubuntu_codename)"
+    _have_cn="$(grep -oE 'download\.docker\.com/linux/ubuntu[[:space:]]+[a-z]+' "$_docker_list" | awk '{print $NF}' | head -1)"
+    if [ -n "$_want_cn" ] && [ -n "$_have_cn" ] && [ "$_have_cn" != "$_want_cn" ]; then
+        warn "Docker apt source targets '$_have_cn', which Docker's Ubuntu repo does not publish."
+        info "Rewriting it to the Ubuntu base codename '$_want_cn'..."
+        run $SUDO sed -i "s#\(download\.docker\.com/linux/ubuntu\)[[:space:]]\{1,\}${_have_cn}#\1 ${_want_cn}#g" "$_docker_list"
+        ok "Docker apt source corrected"
+    fi
+fi
 
 info "Running apt-get update..."
 if ! run $SUDO apt-get update -qq; then
@@ -428,7 +458,7 @@ if [ "$INSTALL_DOCKER_CE" = true ] || ! command -v docker &>/dev/null; then
     fi
 
     ARCH="$(dpkg --print-architecture)"
-    CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+    CODENAME="$(ubuntu_codename)"
     run bash -c "echo 'deb [arch=$ARCH signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $CODENAME stable' | $SUDO tee /etc/apt/sources.list.d/docker.list >/dev/null"
 
     info "Installing Docker packages..."
@@ -491,7 +521,7 @@ else
             run $SUDO chmod a+r /etc/apt/keyrings/docker.gpg
         fi
         ARCH="$(dpkg --print-architecture)"
-        CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+        CODENAME="$(ubuntu_codename)"
         run bash -c "echo 'deb [arch=$ARCH signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $CODENAME stable' | $SUDO tee /etc/apt/sources.list.d/docker.list >/dev/null"
         run $SUDO apt-get update -qq
     fi

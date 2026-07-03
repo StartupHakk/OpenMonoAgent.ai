@@ -54,6 +54,46 @@ public sealed class PlaybookExecutor : IDisposable
             _dispatcher.Dispose();
     }
 
+    public PlaybookToolPlan BuildToolPlan(PlaybookDefinition playbook)
+    {
+        var steps = ResolveStepOrder(playbook.Steps);
+        var allToolsByName = new Dictionary<string, PlaybookPlanTool>(StringComparer.OrdinalIgnoreCase);
+
+        var planSteps = steps.Select(s =>
+        {
+            var registry = BuildEffectiveToolRegistry(s, playbook);
+            foreach (var tool in registry.All)
+            {
+                if (!allToolsByName.ContainsKey(tool.Name))
+                {
+                    allToolsByName[tool.Name] = new PlaybookPlanTool
+                    {
+                        Name = tool.Name,
+                        IsReadOnly = tool.IsReadOnly,
+                        Dangerous = IsDangerousTool(tool.Name),
+                    };
+                }
+            }
+
+            return new PlaybookPlanStep
+            {
+                Id = s.Id,
+                Gate = s.Gate,
+                Description = s.InlinePrompt is { Length: > 0 } p ? (p.Length > 120 ? p[..120] + "..." : p) : s.File,
+            };
+        }).ToList();
+
+        var planTools = allToolsByName.Values.OrderBy(t => t.Name, StringComparer.Ordinal).ToList();
+
+        return new PlaybookToolPlan
+        {
+            PlaybookName = playbook.Name,
+            Steps = planSteps,
+            Tools = planTools,
+            RequiresModeSwitch = false,
+        };
+    }
+
     public async Task<string> ExecuteAsync(
         PlaybookDefinition playbook,
         Dictionary<string, object> parameters,
@@ -73,68 +113,93 @@ public sealed class PlaybookExecutor : IDisposable
             Parameters = parameters,
         };
 
-        _renderer.WriteInfo($"Playbook: {playbook.Name} v{playbook.Version}");
+        var plan = BuildToolPlan(playbook);
+        var runId = state.SessionId;
+        _permissions.PushPlaybookScope(runId, plan.Tools.Select(t => t.Name));
 
-        var steps = ResolveStepOrder(playbook.Steps);
-        var finalOutput = new StringBuilder();
-
-        foreach (var step in steps)
+        try
         {
-            if (state.IsStepCompleted(step.Id))
+            _renderer.WriteInfo($"Playbook: {playbook.Name} v{playbook.Version}");
+
+            var steps = ResolveStepOrder(playbook.Steps);
+            var finalOutput = new StringBuilder();
+
+            foreach (var step in steps)
             {
-                _renderer.WriteInfo($"  Step '{step.Id}' — already completed (resumed)");
-                continue;
-            }
-
-            foreach (var dep in step.Requires)
-            {
-                if (!state.IsStepCompleted(dep))
-                    return $"Step '{step.Id}' requires '{dep}' which is not completed.";
-            }
-
-            state.CurrentStepId = step.Id;
-            _renderer.WriteInfo($"  Step '{step.Id}' — running...");
-
-            var stepContent = await GetStepContentAsync(step, playbook, state, ct);
-
-            if (step.Gate != GateType.None)
-            {
-                var gateResult = await HandleGateAsync(step.Gate, step.Id, stepContent, ct);
-                if (!gateResult)
+                if (state.IsStepCompleted(step.Id))
                 {
-                    _renderer.WriteInfo($"  Step '{step.Id}' — skipped by user");
+                    _renderer.WriteInfo($"  Step '{step.Id}' — already completed (resumed)");
                     continue;
                 }
-            }
 
-            var output = await RunStepAsync(step, stepContent, playbook, state, ct);
-
-            if (step.Script is not null)
-            {
-                var scriptPath = Path.Combine(playbook.BasePath, step.Script);
-                if (File.Exists(scriptPath))
+                foreach (var dep in step.Requires)
                 {
-                    var (exit, stdout, stderr) = await Utils.ProcessRunner.RunAsync(
-                        $"bash \"{scriptPath}\"", _config.WorkingDirectory, ct: ct);
-                    if (exit != 0)
+                    if (!state.IsStepCompleted(dep))
+                        return $"Step '{step.Id}' requires '{dep}' which is not completed.";
+                }
+
+                state.CurrentStepId = step.Id;
+                _renderer.WriteInfo($"  Step '{step.Id}' — running...");
+
+                var stepContent = await GetStepContentAsync(step, playbook, state, ct);
+
+                if (step.Gate != GateType.None)
+                {
+                    if (IsNonInteractiveSession())
                     {
-                        _renderer.WriteWarning($"  Step '{step.Id}' aborted — validation script failed:\n{stdout}{stderr}");
-                        return $"Playbook '{playbook.Name}' aborted at step '{step.Id}'.\n{stdout}{stderr}";
+                        var msg = $"Playbook '{playbook.Name}' aborted: gate '{step.Id}' ({step.Gate}) requires interactive confirmation.";
+                        _renderer.WriteWarning($"  {msg}");
+                        return msg;
+                    }
+
+                    var gateResult = await HandleGateAsync(step.Gate, step.Id, stepContent, ct);
+                    if (!gateResult)
+                    {
+                        _renderer.WriteInfo($"  Step '{step.Id}' — skipped by user");
+                        continue;
                     }
                 }
+
+                var output = await RunStepAsync(step, stepContent, playbook, state, ct);
+
+                if (step.Script is not null)
+                {
+                    var scriptPath = Path.Combine(playbook.BasePath, step.Script);
+                    if (File.Exists(scriptPath))
+                    {
+                        var (exit, stdout, stderr) = await Utils.ProcessRunner.RunAsync(
+                            $"bash \"{scriptPath}\"", _config.WorkingDirectory, ct: ct);
+                        if (exit != 0)
+                        {
+                            _renderer.WriteWarning($"  Step '{step.Id}' aborted — validation script failed:\n{stdout}{stderr}");
+                            return $"Playbook '{playbook.Name}' aborted at step '{step.Id}'.\n{stdout}{stderr}";
+                        }
+                    }
+                }
+
+                state.CompleteStep(step.Id, output);
+                _renderer.WriteInfo($"  Step '{step.Id}' — done");
+
+                await state.SaveAsync(_config.DataDirectory, ct);
+
+                if (step == steps[^1])
+                    finalOutput.Append(output);
             }
 
-            state.CompleteStep(step.Id, output);
-            _renderer.WriteInfo($"  Step '{step.Id}' — done");
-
-            await state.SaveAsync(_config.DataDirectory, ct);
-
-            if (step == steps[^1])
-                finalOutput.Append(output);
+            _renderer.WriteInfo($"Playbook '{playbook.Name}' completed ({state.CompletedSteps.Count} steps)");
+            return finalOutput.Length > 0 ? finalOutput.ToString() : "Playbook completed.";
         }
-
-        _renderer.WriteInfo($"Playbook '{playbook.Name}' completed ({state.CompletedSteps.Count} steps)");
-        return finalOutput.Length > 0 ? finalOutput.ToString() : "Playbook completed.";
+        finally
+        {
+            try
+            {
+                _permissions.PopPlaybookScope(runId);
+            }
+            catch (InvalidOperationException ex)
+            {
+                _renderer.WriteWarning($"PopPlaybookScope failed — scope stack corrupted: {ex.Message}");
+            }
+        }
     }
 
     private async Task<string> GetStepContentAsync(
@@ -191,18 +256,7 @@ public sealed class PlaybookExecutor : IDisposable
             new() { Role = MessageRole.User, Content = content }
         };
 
-        var effectiveTools = _tools;
-        if (step.Agent is not null && BuiltInAgents.All.TryGetValue(step.Agent, out var agentDef))
-        {
-            var filtered = new ToolRegistry();
-            foreach (var tool in _tools.All)
-            {
-                if (agentDef.AllowedTools.Contains("*") ||
-                    agentDef.AllowedTools.Contains(tool.Name, StringComparer.OrdinalIgnoreCase))
-                    filtered.Register(tool);
-            }
-            effectiveTools = filtered;
-        }
+        var effectiveTools = BuildEffectiveToolRegistry(step, playbook);
 
         var toolDefs = effectiveTools.BuildToolDefinitions();
         var options = new LlmOptions
@@ -254,21 +308,65 @@ public sealed class PlaybookExecutor : IDisposable
                 ToolCalls = pendingToolCalls
             });
 
-            var toolResults = await _dispatcher.ExecuteToolCallsAsync(pendingToolCalls, ct);
+            // HARD BLOCK: reject any tool calls outside the effective allowlist
+            var disallowedCalls = pendingToolCalls
+                .Where(call => !(_tools.Resolve(call.Name) is { } && effectiveTools.All.Any(t => t.Name.Equals(call.Name, StringComparison.OrdinalIgnoreCase))))
+                .ToList();
 
-            for (var i = 0; i < pendingToolCalls.Count; i++)
+            if (disallowedCalls.Count > 0)
             {
-                var call = pendingToolCalls[i];
-                var toolResult = toolResults[i];
+                var allowedToolNames = string.Join(", ", effectiveTools.All.Select(t => t.Name).OrderBy(n => n));
+                var disallowedNames = string.Join(", ", disallowedCalls.Select(c => c.Name));
+                var errorMsg = $"Tool call(s) not allowed in playbook '{playbook.Name}': {disallowedNames}. " +
+                               $"Allowed tools: {allowedToolNames}. Do not retry this tool.";
 
-                messages.Add(new Message
+                // Replace disallowed calls with error results
+                var resultMap = new Dictionary<string, ToolResult>();
+                foreach (var call in disallowedCalls)
                 {
-                    Role = MessageRole.Tool,
-                    Content = toolResult.Content,
-                    ToolCallId = call.Id
-                });
+                    resultMap[call.Id] = ToolResult.Error(errorMsg);
+                }
 
-                result.AppendLine($"\n[Tool: {call.Name}]\n{toolResult.Content}");
+                // Execute only the allowed calls
+                var allowedCalls = pendingToolCalls.Where(c => !disallowedCalls.Any(dc => dc.Id == c.Id)).ToList();
+                var allowedResults = await _dispatcher.ExecuteToolCallsAsync(allowedCalls, ct);
+                var allowedIdx = 0;
+                foreach (var call in allowedCalls)
+                {
+                    resultMap[call.Id] = allowedResults[allowedIdx++];
+                }
+
+                for (var i = 0; i < pendingToolCalls.Count; i++)
+                {
+                    var call = pendingToolCalls[i];
+                    var toolResult = resultMap[call.Id];
+                    messages.Add(new Message
+                    {
+                        Role = MessageRole.Tool,
+                        Content = toolResult.Content,
+                        ToolCallId = call.Id
+                    });
+                    result.AppendLine($"\n[Tool: {call.Name}]\n{toolResult.Content}");
+                }
+            }
+            else
+            {
+                var toolResults = await _dispatcher.ExecuteToolCallsAsync(pendingToolCalls, ct);
+
+                for (var i = 0; i < pendingToolCalls.Count; i++)
+                {
+                    var call = pendingToolCalls[i];
+                    var toolResult = toolResults[i];
+
+                    messages.Add(new Message
+                    {
+                        Role = MessageRole.Tool,
+                        Content = toolResult.Content,
+                        ToolCallId = call.Id
+                    });
+
+                    result.AppendLine($"\n[Tool: {call.Name}]\n{toolResult.Content}");
+                }
             }
         }
 
@@ -279,6 +377,38 @@ public sealed class PlaybookExecutor : IDisposable
 
         return result.ToString();
     }
+
+    private ToolRegistry BuildEffectiveToolRegistry(StepDefinition step, PlaybookDefinition playbook)
+    {
+        var filtered = new ToolRegistry();
+
+        var agentAllowedTools = step.Agent is not null && BuiltInAgents.All.TryGetValue(step.Agent, out var agentDef)
+            ? agentDef.AllowedTools
+            : null;
+
+        foreach (var tool in _tools.All)
+        {
+            var passesPlaybook = ToolNameMatcher.IsAllowed(tool.Name, playbook.AllowedTools);
+            var passesAgent = agentAllowedTools is null || ToolNameMatcher.IsAllowed(tool.Name, agentAllowedTools);
+
+            if (passesPlaybook && passesAgent)
+                filtered.Register(tool);
+        }
+
+        return filtered;
+    }
+
+    private static bool IsDangerousTool(string toolName) => toolName switch
+    {
+        "Bash" => true,
+        "FileWrite" => true,
+        "FileEdit" => true,
+        "ApplyPatch" => true,
+        _ => false,
+    };
+
+    private static bool IsNonInteractiveSession() =>
+        Console.IsInputRedirected || Console.IsOutputRedirected;
 
     private static List<StepDefinition> ResolveStepOrder(StepDefinition[] steps)
     {

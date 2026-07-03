@@ -14,7 +14,7 @@ public sealed class FileWriteTool : ToolBase
         .AddString("content", "The content to write to the file")
         .Require("file_path", "content");
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
     {
         var filePath = input.TryGetProperty("file_path", out var fp) ? fp.GetString() : null;
         if (string.IsNullOrEmpty(filePath))

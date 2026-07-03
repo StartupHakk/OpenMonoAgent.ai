@@ -42,7 +42,7 @@ public sealed partial class WebFetchTool : ToolBase
         Timeout = TimeSpan.FromSeconds(90),
     };
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
     {
         var url = input.TryGetProperty("url", out var u) ? u.GetString() : null;
         if (string.IsNullOrEmpty(url))

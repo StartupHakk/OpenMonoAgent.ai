@@ -22,7 +22,7 @@ public sealed class GrepTool : ToolBase
         .AddInteger("max_results", "Maximum number of results (default: 250)")
         .Require("pattern");
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
     {
         var searchPath = input.TryGetProperty("path", out var p) ? p.GetString() : ".";
         if (string.IsNullOrEmpty(searchPath))

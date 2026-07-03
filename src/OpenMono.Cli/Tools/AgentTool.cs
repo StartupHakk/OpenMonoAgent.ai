@@ -44,7 +44,7 @@ public sealed class AgentTool : ToolBase
             "general-purpose", "Explore", "Plan", "Coder", "Verify")
         .Require("description", "prompt");
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
     {
         var description = input.TryGetProperty("description", out var d) ? d.GetString() : "task";
         var agentType = input.TryGetProperty("agent_type", out var at) ? at.GetString() : "general-purpose";
@@ -114,7 +114,7 @@ public sealed class AgentTool : ToolBase
             foreach (var tool in context.ToolRegistry.All)
             {
                 if (tool.Name == "Agent") continue;
-                if (IsToolAllowed(tool.Name, agentDef.AllowedTools))
+                if (ToolNameMatcher.IsAllowed(tool.Name, agentDef.AllowedTools))
                     subTools.Register(tool);
             }
 
@@ -160,20 +160,4 @@ public sealed class AgentTool : ToolBase
         }
     }
 
-    private static bool IsToolAllowed(string toolName, string[] allowedTools)
-    {
-        foreach (var entry in allowedTools)
-        {
-            if (entry == "*") return true;
-            if (entry.EndsWith('*'))
-            {
-                var prefix = entry[..^1];
-                if (toolName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                    return true;
-            }
-            else if (toolName.Equals(entry, StringComparison.OrdinalIgnoreCase))
-                return true;
-        }
-        return false;
-    }
 }

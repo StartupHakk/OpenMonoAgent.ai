@@ -27,7 +27,7 @@ public sealed partial class WebSearchTool : ToolBase
         }
     };
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input) =>
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input) =>
         [new NetworkEgressCap("duckduckgo.com", 443, "https")];
 
     protected override async Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)

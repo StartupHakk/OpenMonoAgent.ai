@@ -300,7 +300,7 @@ fi
 # We resolve the platform briefly here too, just for the step count — the full
 # platform detection happens a few lines down so the rest of the script can use it.
 case "$(uname -s)" in
-    Linux)  _is_ubuntu_quick=0; [ -f /etc/os-release ] && grep -q '^ID=ubuntu' /etc/os-release && _is_ubuntu_quick=1 ;;
+    Linux)  _is_ubuntu_quick=0; [ -f /etc/os-release ] && grep -qE '^(ID=ubuntu|ID=linuxmint|ID_LIKE=.*ubuntu)' /etc/os-release && _is_ubuntu_quick=1 ;;
     *)      _is_ubuntu_quick=0 ;;
 esac
 
@@ -354,7 +354,11 @@ case "$(uname -s)" in
         if [ -f /etc/os-release ]; then
             # shellcheck disable=SC1091
             . /etc/os-release
-            [ "${ID:-}" = "ubuntu" ] && IS_UBUNTU=1
+            # Ubuntu and its apt-compatible derivatives (Linux Mint, Pop!_OS, …)
+            # install the same packages the same way, so --deep can reverse them.
+            if [ "${ID:-}" = "ubuntu" ] || [ "${ID:-}" = "linuxmint" ] || printf '%s' "${ID_LIKE:-}" | grep -qw ubuntu; then
+                IS_UBUNTU=1
+            fi
         fi
         ;;
     Darwin) PLATFORM="macos" ;;

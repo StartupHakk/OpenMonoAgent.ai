@@ -8,6 +8,12 @@ public sealed record TurnMetrics
     public int CompletionTokens { get; init; }
     public TimeSpan TimeToFirstToken { get; init; }
     public TimeSpan TotalElapsed { get; init; }
+
+    // Server-reported generation rate from llama.cpp's `timings` (tok/s). More accurate than the
+    // wall-clock estimate because it excludes transport/scheduling overhead. 0 when unavailable —
+    // renderers fall back to the wall-clock figure in that case.
+    public double GenTokensPerSecond { get; init; }
+    public double AvgGenTokensPerSecond { get; init; }
 }
 
 public interface IOutputSink

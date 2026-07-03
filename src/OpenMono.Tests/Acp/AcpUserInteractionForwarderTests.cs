@@ -4,6 +4,7 @@ using FluentAssertions;
 using OpenMono.Acp;
 using OpenMono.Permissions;
 using OpenMono.Session;
+using OpenMono.Playbooks;
 using Xunit;
 
 namespace OpenMono.Tests.Acp;
@@ -153,14 +154,30 @@ public sealed class AcpUserInteractionForwarderTests
     private sealed class FakeInteraction : IAcpUserInteraction
     {
         public bool PermissionResult { get; set; }
+        public bool PlaybookApprovalResult { get; set; }
+        public bool ToggleModeResult { get; set; }
         public string? UserInputResult { get; set; }
         public List<(string tool, string summary, bool dangerous)> PermissionCalls { get; } = new();
+        public List<PlaybookToolPlan> PlaybookApprovalCalls { get; } = new();
+        public List<string> ToggleModeCalls { get; } = new();
         public List<string> UserInputCalls { get; } = new();
 
         public Task<bool> RequestPermissionAsync(string toolName, string summary, bool dangerous, CancellationToken ct)
         {
             PermissionCalls.Add((toolName, summary, dangerous));
             return Task.FromResult(PermissionResult);
+        }
+
+        public Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct)
+        {
+            PlaybookApprovalCalls.Add(plan);
+            return Task.FromResult(PlaybookApprovalResult);
+        }
+
+        public Task<bool> RequestToggleModeAsync(string reason, CancellationToken ct)
+        {
+            ToggleModeCalls.Add(reason);
+            return Task.FromResult(ToggleModeResult);
         }
 
         public Task<string?> RequestUserInputAsync(string question, CancellationToken ct)
