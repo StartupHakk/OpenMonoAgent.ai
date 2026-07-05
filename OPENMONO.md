@@ -27,6 +27,29 @@ The Obsidian SecondBrain knowledge vault is mounted at `/vault` (read-only). It 
 
 **When to use the vault:** Search it with `Grep` and `Glob` when the user asks about past decisions, architecture context, session history, or research. Example: `Grep(pattern="ego-memory", path="/vault")` finds every note mentioning ego-memory.
 
+## Rust Tooling
+
+When working with Rust code, use these specialized tools instead of raw `Bash`:
+
+| Tool | When to use |
+|------|-------------|
+| `AstGrep` | Structural code search — find patterns like `fn $F() -> Result<_, $E>` or `$X.unwrap()`. Use metavars ($X, $FN, $ARG). Can also rewrite code with `rewrite` param. |
+| `Cargo` | Run cargo commands with structured output: `check`, `clippy`, `test`, `build`, `fmt`, `tree`, `metadata`, `audit`. Returns parsed diagnostics (file:line:col, severity, code) not raw stdout. |
+| `Lsp` | Language server queries: hover info, go-to-definition, find references. Uses rust-analyzer. |
+| `Grep` | Text-based search (ripgrep) when you need literal string matches. |
+| `Bash` | For cargo commands not covered by the `Cargo` tool, or other CLI tools. |
+
+**Decision tree for Rust code search:**
+- Need to find a structural pattern (e.g. "all `.unwrap()` calls", "all `match` with `Ok` arm")? → `AstGrep`
+- Need to find a literal string or regex? → `Grep`
+- Need to find who calls a function? → `Lsp(action="references")` or `AstGrep(pattern="$F($ARGS)")`
+- Need to check compilation? → `Cargo(action="check")`
+- Need to lint? → `Cargo(action="clippy")`
+- Need to run tests? → `Cargo(action="test")`
+- Need to check formatting? → `Cargo(action="fmt")`
+- Need to find vulnerabilities? → `Cargo(action="audit")`
+- Need workspace structure? → `Cargo(action="metadata")`
+
 ## Routing table
 
 | Task keywords | Delegate to playbook |

@@ -189,6 +189,9 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     var refDir = ResolveRefDirectory(config);
     tools.Register(new RoslynTool(referenceDirectory: refDir));
 
+    tools.Register(new AstGrepTool());
+    tools.Register(new CargoTool());
+
     if (config.AutoDetectCodeGraph)
     {
         await AutoDetectCodeGraphAsync(config, renderer);
