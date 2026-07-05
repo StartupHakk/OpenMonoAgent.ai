@@ -363,7 +363,36 @@ public sealed class AcpTurnRunner : IAcpEventSink
         _acpSession.CancelAllPending();
     }
 
+    /// <summary>
+    /// Build a fresh SessionState from the current AcpSession.
+    /// Used to create a new conversation loop context for continuing the turn.
+    /// </summary>
+    private SessionState BuildSessionState()
+    {
+        var ss = new SessionState();
+        foreach (var m in _acpSession.Messages) ss.AddMessage(m);
+        ss.TurnCount = _acpSession.TurnCount;
+        ss.Meta.PlanMode = _acpSession.PlanMode;
+        ss.Meta.AutoApproveWrites = _acpSession.AutoApproveWrites;
+        ss.Todos.Clear();
+        foreach (var t in _acpSession.Todos) ss.Todos.Add(t);
+        ss.Meta.TokenTracker ??= new TokenTracker();
+        return ss;
+    }
 
+    /// <summary>
+    /// Sync changes from SessionState back to AcpSession.
+    /// Called after turn continuation to persist any updates.
+    /// </summary>
+    private void SyncBackToAcpSession(SessionState ss)
+    {
+        _acpSession.Messages.Clear();
+        _acpSession.Messages.AddRange(ss.Messages);
+        _acpSession.PlanMode = ss.Meta.PlanMode;
+        _acpSession.AutoApproveWrites = ss.Meta.AutoApproveWrites;
+        _acpSession.Todos.Clear();
+        foreach (var t in ss.Todos) _acpSession.Todos.Add(t);
+    }
 
     private async Task DriveLoopAsync(CancellationToken ct)
     {

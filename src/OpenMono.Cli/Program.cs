@@ -214,6 +214,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     {
         Name = kv.Key,
         Command = kv.Value.Command,
+        Url = kv.Value.Url,
         Args = kv.Value.Args,
         Env = kv.Value.Env,
         Enabled = kv.Value.Enabled,

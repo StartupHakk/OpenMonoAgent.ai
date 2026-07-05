@@ -46,7 +46,8 @@ public sealed class ProviderSettings
 
 public sealed class McpServerSettings
 {
-    public required string Command { get; set; }
+    public string? Command { get; set; }
+    public string? Url { get; set; }
     public string[]? Args { get; set; }
     public Dictionary<string, string>? Env { get; set; }
     public string? WorkingDirectory { get; set; }

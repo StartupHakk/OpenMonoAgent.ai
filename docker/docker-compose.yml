@@ -102,6 +102,7 @@ services:
       - ${WORKSPACE:-.}:/workspace
       - ${HOME}/.openmono:/home/agent/.openmono
       - ${HOME}/.code-review-graph:/home/agent/.code-review-graph
+      - /Volumes/Untitled/SecondBrain:/vault:ro
       - ../ref:/ref:ro
     environment:
       - HOME=/home/agent
@@ -121,8 +122,13 @@ services:
       - OPENMONO_WEB_GATEWAY=${OPENMONO_WEB_GATEWAY:-}
       - OPENMONO_WEB_SEARCH=${OPENMONO_WEB_SEARCH:-}
       - OPENMONO_WEB_SCRAPE=${OPENMONO_WEB_SCRAPE:-}
+      # Auto-approve playbook execution so specialist personas chain
+      # autonomously without a human approval gate between delegations.
+      - OPENMONO_AUTO_APPROVE_PLAYBOOKS=${OPENMONO_AUTO_APPROVE_PLAYBOOKS:-1}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    ports:
+      - "${ACP_PORT:-7475}:7475"
     stdin_open: true
     tty: true
     working_dir: /workspace

@@ -25,6 +25,7 @@ public sealed class PermissionEngine
     private readonly IOutputSink _output;
     private readonly IInputReader _input;
     private readonly bool _nonInteractive;
+    private readonly bool _autoApprovePlaybooks;
     private readonly HashSet<string> _sessionAllowAll = [];
     private readonly HashSet<string> _sessionDenyAll = [];
     private int _consecutiveDenials;
@@ -42,6 +43,8 @@ public sealed class PermissionEngine
         _output = output;
         _input  = input;
         _nonInteractive = nonInteractive;
+        _autoApprovePlaybooks =
+            Environment.GetEnvironmentVariable("OPENMONO_AUTO_APPROVE_PLAYBOOKS") == "1";
     }
 
     public PermissionEngine CreateChildEngine(IOutputSink output, IInputReader input)
@@ -238,6 +241,11 @@ public sealed class PermissionEngine
         MemoryCap mc when mc.Operation == "read" => true,
 
         ProcessExecCap pe when IsSafeReadOnlyCommand(pe) => true,
+
+        // When OPENMONO_AUTO_APPROVE_PLAYBOOKS=1, playbook execution is
+        // auto-approved so specialists chain autonomously without a human
+        // approval gate between each delegation.
+        PlaybookApproveCap when _autoApprovePlaybooks => true,
 
         _ => false
     };

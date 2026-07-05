@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace OpenMono.Mcp;
 
-public sealed class McpClient : IDisposable
+public sealed class McpClient : IMcpClient
 {
     private readonly Process _process;
     private readonly StreamWriter _stdin;

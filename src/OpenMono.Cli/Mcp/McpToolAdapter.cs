@@ -11,10 +11,10 @@ public sealed class McpToolAdapter : ITool
     public bool IsConcurrencySafe => true;
     public bool IsReadOnly => false;
 
-    private readonly McpClient _client;
+    private readonly IMcpClient _client;
     private readonly string _mcpToolName;
 
-    private McpToolAdapter(string name, string description, JsonElement inputSchema, McpClient client, string mcpToolName)
+    private McpToolAdapter(string name, string description, JsonElement inputSchema, IMcpClient client, string mcpToolName)
     {
         Name = name;
         Description = description;
@@ -23,7 +23,7 @@ public sealed class McpToolAdapter : ITool
         _mcpToolName = mcpToolName;
     }
 
-    public static McpToolAdapter FromMcpTool(JsonElement toolDef, McpClient client)
+    public static McpToolAdapter FromMcpTool(JsonElement toolDef, IMcpClient client)
     {
         var mcpName = toolDef.GetProperty("name").GetString()!;
         var description = toolDef.TryGetProperty("description", out var d) ? d.GetString() ?? "" : "";
