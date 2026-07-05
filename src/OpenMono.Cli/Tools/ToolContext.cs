@@ -4,6 +4,7 @@ using OpenMono.Session;
 using OpenMono.Permissions;
 using OpenMono.Config;
 using OpenMono.Acp;
+using OpenMono.Llm;
 
 namespace OpenMono.Tools;
 
@@ -28,6 +29,8 @@ public sealed class ToolContext
 
     public IAcpUserInteraction? Interaction { get; init; }
 
+    public MultiModelLlmClient? MultiModel { get; init; }
+
     public int AgentDepth { get; init; } = 0;
 
     public ToolContext WithAgentDepth(int newDepth) => new()
@@ -47,6 +50,7 @@ public sealed class ToolContext
         OnDebug          = this.OnDebug,
         Output           = this.Output,
         Interaction      = this.Interaction,
+        MultiModel       = this.MultiModel,
         AgentDepth       = newDepth,
     };
 }

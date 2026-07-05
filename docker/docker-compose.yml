@@ -125,6 +125,13 @@ services:
       # Auto-approve playbook execution so specialist personas chain
       # autonomously without a human approval gate between delegations.
       - OPENMONO_AUTO_APPROVE_PLAYBOOKS=${OPENMONO_AUTO_APPROVE_PLAYBOOKS:-1}
+      # Multi-model pipeline: operator (4B, fast tool-calling) and coder
+      # (4B, code generation). When set, playbooks and sub-agents run on
+      # the faster model instead of the full 35B executive.
+      - OPENMONO_OPERATOR_ENDPOINT=${OPENMONO_OPERATOR_ENDPOINT:-}
+      - OPENMONO_OPERATOR_MODEL=${OPENMONO_OPERATOR_MODEL:-}
+      - OPENMONO_CODER_ENDPOINT=${OPENMONO_CODER_ENDPOINT:-}
+      - OPENMONO_CODER_MODEL=${OPENMONO_CODER_MODEL:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

@@ -237,5 +237,38 @@ public static class ConfigLoader
             foreach (var p in config.Providers.Values) p.Active = false;
             ps.Active = true;
         }
+
+        // Multi-model tiers: operator (fast tool-calling) and coder (code generation)
+        var opEndpoint = Environment.GetEnvironmentVariable("OPENMONO_OPERATOR_ENDPOINT");
+        var opModel = Environment.GetEnvironmentVariable("OPENMONO_OPERATOR_MODEL");
+        if (!string.IsNullOrEmpty(opEndpoint) || !string.IsNullOrEmpty(opModel))
+        {
+            config.ModelTiers.Operator = new ModelTierConfig
+            {
+                Endpoint = opEndpoint ?? config.Llm.Endpoint,
+                Model = opModel ?? "",
+                ApiKey = Environment.GetEnvironmentVariable("OPENMONO_OPERATOR_API_KEY") ?? config.Llm.ApiKey,
+                ContextSize = int.TryParse(Environment.GetEnvironmentVariable("OPENMONO_OPERATOR_CONTEXT_SIZE"), out var opCtx) ? opCtx : config.Llm.ContextSize,
+                MaxOutputTokens = int.TryParse(Environment.GetEnvironmentVariable("OPENMONO_OPERATOR_MAX_OUTPUT"), out var opMax) ? opMax : 8192,
+                Temperature = double.TryParse(Environment.GetEnvironmentVariable("OPENMONO_OPERATOR_TEMPERATURE"), out var opTemp) ? opTemp : 0.3,
+                MaxConcurrentRequests = 2,
+            };
+        }
+
+        var coderEndpoint = Environment.GetEnvironmentVariable("OPENMONO_CODER_ENDPOINT");
+        var coderModel = Environment.GetEnvironmentVariable("OPENMONO_CODER_MODEL");
+        if (!string.IsNullOrEmpty(coderEndpoint) || !string.IsNullOrEmpty(coderModel))
+        {
+            config.ModelTiers.Coder = new ModelTierConfig
+            {
+                Endpoint = coderEndpoint ?? config.Llm.Endpoint,
+                Model = coderModel ?? "",
+                ApiKey = Environment.GetEnvironmentVariable("OPENMONO_CODER_API_KEY") ?? config.Llm.ApiKey,
+                ContextSize = int.TryParse(Environment.GetEnvironmentVariable("OPENMONO_CODER_CONTEXT_SIZE"), out var coderCtx) ? coderCtx : config.Llm.ContextSize,
+                MaxOutputTokens = int.TryParse(Environment.GetEnvironmentVariable("OPENMONO_CODER_MAX_OUTPUT"), out var coderMax) ? coderMax : 8192,
+                Temperature = double.TryParse(Environment.GetEnvironmentVariable("OPENMONO_CODER_TEMPERATURE"), out var coderTemp) ? coderTemp : 0.2,
+                MaxConcurrentRequests = 2,
+            };
+        }
     }
 }

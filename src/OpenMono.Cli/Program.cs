@@ -148,11 +148,33 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     var hookRunner = new HookRunner(config, warn: msg => renderer.WriteWarning(msg));
 
     var providerRegistry = new ProviderRegistry();
-    using var llm = providerRegistry.CreateClient(config);
+    using var baseLlm = providerRegistry.CreateClient(config);
 
     Action<string> debugCallback = msg => renderer.WriteDebug(msg);
-    if (llm is OpenAiCompatClient openAiClient) openAiClient.OnDebug = debugCallback;
-    if (llm is AnthropicClient anthropicClient) anthropicClient.OnDebug = debugCallback;
+    if (baseLlm is OpenAiCompatClient openAiClient) openAiClient.OnDebug = debugCallback;
+    if (baseLlm is AnthropicClient anthropicClient) anthropicClient.OnDebug = debugCallback;
+
+    // Multi-model tier setup: create operator/coder clients if configured.
+    // The executive model (baseLlm) handles planning, routing, and review.
+    // The operator model handles fast tool-calling (grep, read, context building).
+    // The coder model handles code generation (implement, refactor, write tests).
+    OpenAiCompatClient? operatorLlm = null;
+    OpenAiCompatClient? coderLlm = null;
+
+    if (config.ModelTiers.Operator?.IsConfigured == true)
+    {
+        var opConfig = config.ModelTiers.Operator!.ToLlmConfig(config.Llm);
+        operatorLlm = new OpenAiCompatClient(opConfig) { ApiKey = opConfig.ApiKey, OnDebug = debugCallback };
+        renderer.WriteInfo($"Multi-model: operator tier → {opConfig.Model} @ {opConfig.Endpoint}");
+    }
+    if (config.ModelTiers.Coder?.IsConfigured == true)
+    {
+        var coderConfig = config.ModelTiers.Coder!.ToLlmConfig(config.Llm);
+        coderLlm = new OpenAiCompatClient(coderConfig) { ApiKey = coderConfig.ApiKey, OnDebug = debugCallback };
+        renderer.WriteInfo($"Multi-model: coder tier → {coderConfig.Model} @ {coderConfig.Endpoint}");
+    }
+
+    using var llm = new MultiModelLlmClient(baseLlm, operatorLlm, coderLlm);
 
     var fileHistory = new FileHistory(config);
     session.Meta.FileHistory = fileHistory;

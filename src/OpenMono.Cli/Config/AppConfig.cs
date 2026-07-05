@@ -7,6 +7,7 @@ namespace OpenMono.Config;
 public sealed class AppConfig
 {
     public LlmConfig Llm { get; set; } = new();
+    public ModelTiersConfig ModelTiers { get; set; } = new();
     public WebConfig Web { get; set; } = new();
     public PermissionConfig Permissions { get; set; } = new();
     public SecretWritePolicy SecretWrites { get; set; } = SecretWritePolicy.Block;
@@ -57,6 +58,49 @@ public sealed class McpServerSettings
 public sealed class ModelPresetSettings : LlmConfig
 {
     public bool Active { get; set; }
+}
+
+public sealed class ModelTierConfig
+{
+    public string? Endpoint { get; set; }
+    public string? Model { get; set; }
+    public string? ApiKey { get; set; }
+    public int? ContextSize { get; set; }
+    public int? MaxOutputTokens { get; set; }
+    public double? Temperature { get; set; }
+    public int? MaxConcurrentRequests { get; set; }
+
+    public LlmConfig ToLlmConfig(LlmConfig fallback)
+    {
+        var cfg = new LlmConfig
+        {
+            Endpoint = Endpoint ?? fallback.Endpoint,
+            Model = Model ?? fallback.Model,
+            ApiKey = ApiKey ?? fallback.ApiKey,
+            ContextSize = ContextSize ?? fallback.ContextSize,
+            MaxOutputTokens = MaxOutputTokens ?? fallback.MaxOutputTokens,
+            MaxConcurrentRequests = MaxConcurrentRequests ?? 1,
+            Temperature = Temperature ?? 0.2,
+            TopP = fallback.TopP,
+            TopK = fallback.TopK,
+            PresencePenalty = fallback.PresencePenalty,
+            MinP = fallback.MinP,
+            RepetitionPenalty = fallback.RepetitionPenalty,
+        };
+        return cfg;
+    }
+
+    public bool IsConfigured =>
+        !string.IsNullOrEmpty(Endpoint) && !string.IsNullOrEmpty(Model);
+}
+
+public sealed class ModelTiersConfig
+{
+    public ModelTierConfig? Operator { get; set; }
+    public ModelTierConfig? Coder { get; set; }
+
+    public bool HasTiers =>
+        (Operator?.IsConfigured ?? false) || (Coder?.IsConfigured ?? false);
 }
 
 public class LlmConfig
