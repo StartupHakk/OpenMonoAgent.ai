@@ -23,7 +23,7 @@ public sealed class CargoTool : ToolBase
     protected override SchemaBuilder DefineSchema() => new SchemaBuilder()
         .AddEnum("action", "Cargo action to run", "check", "clippy", "test", "build", "fmt", "tree", "metadata", "audit")
         .AddString("package", "Specific package to check (e.g. 'my-crate'). Uses -p <name>.")
-        .AddString("manifest_path", "Path to Cargo.toml (default: auto-detect in working directory)")
+        .AddString("manifest_path", "Path to Cargo.toml OR directory containing it (default: auto-detect in working directory)")
         .AddArray("extra_args", "Additional cargo arguments (e.g. ['--all-features', '--release'])", new { type = "string" })
         .Require("action");
 
@@ -55,7 +55,23 @@ public sealed class CargoTool : ToolBase
         var workingDir = context.WorkingDirectory;
         if (!string.IsNullOrEmpty(manifestPath))
         {
-            workingDir = Path.GetDirectoryName(manifestPath) ?? workingDir;
+            // manifest_path can be either a Cargo.toml file or a directory containing one
+            if (Directory.Exists(manifestPath))
+            {
+                var found = FindCargoToml(manifestPath);
+                workingDir = found is not null
+                    ? Path.GetDirectoryName(found) ?? manifestPath
+                    : manifestPath;
+            }
+            else if (File.Exists(manifestPath))
+            {
+                workingDir = Path.GetDirectoryName(manifestPath) ?? workingDir;
+            }
+            else
+            {
+                // Treat as a directory path that might not exist yet
+                workingDir = manifestPath;
+            }
         }
         else
         {

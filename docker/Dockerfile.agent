@@ -52,6 +52,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
     && npm install -g @ast-grep/cli \
     && rm -rf /var/lib/apt/lists/*
 
+# Rust toolchain for CargoTool + rust-analyzer (LSP).
+# rustup gives us cargo, rustc, and rust-analyzer (via rustup component).
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH="/usr/local/cargo/bin:${PATH}"
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+    --default-toolchain stable \
+    --profile minimal \
+    --no-modify-path \
+    && rustup component add rust-analyzer clippy rustfmt \
+    && rustup component add llvm-tools-preview \
+    && cargo install cargo-audit --locked \
+    && rm -rf /usr/local/rustup/downloads /usr/local/rustup/tmp
+
 # HOME for the docker-compose TUI variant; compose mounts ~/.openmono here.
 RUN mkdir -p /home/agent && chmod 1777 /home/agent
 
