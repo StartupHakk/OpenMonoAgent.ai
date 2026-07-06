@@ -1,8 +1,10 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using OpenMono.Acp;
 using OpenMono.Config;
 using OpenMono.Rendering;
 using OpenMono.Tools;
+using OpenMono.Utils;
 
 namespace OpenMono.Permissions;
 
@@ -195,6 +197,24 @@ public sealed class PermissionEngine
         var prompted = await PromptUserAsync(toolName, input, ct);
         if (prompted.Allowed) TrackAllow(); else TrackDenial();
         return prompted;
+    }
+
+    /// <summary>
+    /// Pauses execution and waits for user response to a permission request.
+    /// Logs "Awaiting user response" and throws PendingUserResponseException to pause the agent.
+    /// </summary>
+    public async Task<(bool Approved, string Scope)> PauseForUserResponseAsync(
+        IAcpUserInteraction? userInteraction,
+        string toolName,
+        string summary,
+        bool dangerous,
+        CancellationToken ct)
+    {
+        if (userInteraction is null)
+            throw new InvalidOperationException("User interaction is not available for permission request");
+
+        Utils.Log.Info($"Awaiting user response for {toolName}");
+        return await userInteraction.RequestPermissionAsync(toolName, summary, dangerous, ct);
     }
 
     private string? CheckCapabilityDenyRules(Capability cap)

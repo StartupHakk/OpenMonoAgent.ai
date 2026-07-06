@@ -513,8 +513,10 @@ public sealed class ConversationLoop : IDisposable
             // ExitPlanMode flips _session.Meta.PlanMode) can be detected and pushed to the
             // frontend below — the agent must never change mode without the UI/TUI learning.
             var planModeBeforeTools = _session.Meta.PlanMode;
+            Log.Info($"[OMA_MODE_DETECT] Before tools: PlanMode={planModeBeforeTools}");
 
             var results = await ExecuteToolCallsWithInflightAsync(toolCalls, inFlightTasks, context, siblingAbortCts, ct);
+            Log.Info($"[OMA_MODE_DETECT] ExecuteToolCallsWithInflightAsync returned normally");
 
             foreach (var (call, result) in toolCalls.Zip(results))
             {
@@ -546,12 +548,14 @@ public sealed class ConversationLoop : IDisposable
             // Agent-initiated mode change (EnterPlanMode / ExitPlanMode): keep both frontends
             // in sync. Push an SSE event to the extension UI and print to the TUI. Done here
             // (before the BreakTurn early-return) so ExitPlanMode's plan→build flip is covered.
+            Log.Info($"[OMA_MODE_DETECT] After tools: PlanMode={_session.Meta.PlanMode}, Before={planModeBeforeTools}, _sink={(_sink != null ? "present" : "null")}");
             if (_session.Meta.PlanMode != planModeBeforeTools)
             {
                 var modeStr = _session.Meta.PlanMode ? "plan" : "build";
                 _output.WriteInfo(_session.Meta.PlanMode
                     ? "✓ Switched to Plan mode — only read-only tools are available"
                     : "✓ Switched to Build mode — all tools are available");
+                Log.Info($"[OMA_MODE_DETECT] Mode changed! Calling OnModeChangedAsync('{modeStr}')");
                 if (_sink is not null) await _sink.OnModeChangedAsync(modeStr);
                 Log.Info($"[OMA_MODE] Agent changed mode mid-turn → {modeStr.ToUpperInvariant()}; notified frontend");
             }
@@ -880,6 +884,12 @@ public sealed class ConversationLoop : IDisposable
                     await siblingAbortCts.CancelAsync();
                 }
             }
+            catch (PendingUserResponseException)
+            {
+                // User interaction pending (permission, input, etc.) — propagate to turn runner to pause
+                Log.Info($"[PENDING_RESPONSE] Tool {call.Name} paused for user response — re-throwing to turn runner");
+                throw;
+            }
             catch (OperationCanceledException) when (siblingAbortCts.IsCancellationRequested && !ct.IsCancellationRequested)
             {
 
@@ -902,7 +912,16 @@ public sealed class ConversationLoop : IDisposable
                 continue;
             }
 
-            results[item.Index] = await _executor.ExecuteAsync(item.Call, item.Tool, context, ct);
+            try
+            {
+                results[item.Index] = await _executor.ExecuteAsync(item.Call, item.Tool, context, ct);
+            }
+            catch (PendingUserResponseException)
+            {
+                // User interaction pending (permission, input, etc.) — propagate to turn runner to pause
+                Log.Info($"[PENDING_RESPONSE] Tool {item.Call.Name} paused for user response — re-throwing to turn runner");
+                throw;
+            }
         }
 
         return [.. results];

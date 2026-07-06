@@ -7,11 +7,13 @@ namespace OpenMono.Acp;
 
 public interface IAcpUserInteraction
 {
-
-
-
-
-    Task<bool> RequestPermissionAsync(string toolName, string summary, bool dangerous, CancellationToken ct);
+    /// <summary>
+    /// Request permission to execute a tool.
+    /// Returns (Allow: bool, Scope: "once"|"session")
+    /// - "once" = temporary grant for this tool call only
+    /// - "session" = persistent grant for remainder of session
+    /// </summary>
+    Task<(bool Allow, string Scope)> RequestPermissionAsync(string toolName, string summary, bool dangerous, CancellationToken ct);
 
     Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct);
 

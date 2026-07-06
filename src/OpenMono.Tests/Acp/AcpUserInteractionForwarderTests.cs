@@ -162,10 +162,10 @@ public sealed class AcpUserInteractionForwarderTests
         public List<string> ToggleModeCalls { get; } = new();
         public List<string> UserInputCalls { get; } = new();
 
-        public Task<bool> RequestPermissionAsync(string toolName, string summary, bool dangerous, CancellationToken ct)
+        public Task<(bool Allow, string Scope)> RequestPermissionAsync(string toolName, string summary, bool dangerous, CancellationToken ct)
         {
             PermissionCalls.Add((toolName, summary, dangerous));
-            return Task.FromResult(PermissionResult);
+            return Task.FromResult((PermissionResult, "once"));
         }
 
         public Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct)

@@ -134,8 +134,10 @@ public sealed class AcpTurnRunnerTests
         using var payload = JsonDocument.Parse($"{{\"id\":\"{pauseId}\",\"decision\":\"allow\",\"scope\":\"session\"}}");
         await runner.ResumeWithPermissionAsync(payload.RootElement, CancellationToken.None);
 
-        session.TryGetRememberedPermission(ctx.ContextKey).Should().BeTrue(
-            "an allow-session decision must persist so the tool is not re-prompted this session");
+        var cached = session.TryGetRememberedPermission(ctx.ContextKey);
+        cached.Should().NotBeNull("an allow-session decision must persist so the tool is not re-prompted this session");
+        cached.Value.Allow.Should().BeTrue();
+        cached.Value.Scope.Should().Be("session");
     }
 
     [Fact]
@@ -175,7 +177,10 @@ public sealed class AcpTurnRunnerTests
     [Fact]
     public void New_acp_session_defaults_to_plan_mode()
     {
-        var s = new AcpSession { Id = "s", StartedAt = DateTime.UtcNow, Model = "m" };
+        var s = new AcpSession
+        {
+            State = new SessionState { Id = "s", StartedAt = DateTime.UtcNow, Model = "m" }
+        };
         s.PlanMode.Should().BeTrue(
             "the extension UI defaults to plan mode and only sends the mode on an explicit toggle, " +
             "so the server must default to plan mode or writes would run while the UI shows 'plan'");
@@ -379,6 +384,142 @@ public sealed class AcpTurnRunnerTests
         // plan-mode default (read-only) so write tools reach the permission engine.
         s.PlanMode = false;
         return s;
+    }
+
+    [Fact]
+    public async Task ResumeWithPermissionAsync_scope_session_caches_permission_persistently()
+    {
+        var tools = new ToolRegistry();
+        tools.Register(new AskingTool());
+
+        var (runner, session, _) = BuildHarness(
+            tools: tools,
+            llmRounds: new List<List<StreamChunk>>
+            {
+                new()
+                {
+                    new() { ToolCallDelta = new ToolCall { Id = "call_1", Name = "AskingTool", Arguments = "{}" }, IsComplete = false },
+                    new() { IsComplete = true },
+                },
+            });
+
+        await runner.RunUserMessageAsync("request 1", CancellationToken.None);
+
+        var pauseId = session.PendingIds.Single();
+        var ctx = session.LookupPauseContext(pauseId)!.Value;
+
+        // Approve with scope="session"
+        using var payload = JsonDocument.Parse($"{{\"id\":\"{pauseId}\",\"decision\":\"allow\",\"scope\":\"session\"}}");
+        await runner.ResumeWithPermissionAsync(payload.RootElement, CancellationToken.None);
+
+        // Verify permission is cached with session scope
+        var cached = session.TryGetRememberedPermission(ctx.ContextKey);
+        cached.Should().NotBeNull();
+        cached.Value.Allow.Should().BeTrue();
+        cached.Value.Scope.Should().Be("session");
+    }
+
+    [Fact]
+    public async Task ResumeWithPermissionAsync_scope_once_forgets_permission_after_execution()
+    {
+        var tools = new ToolRegistry();
+        tools.Register(new AskingTool());
+
+        var (runner, session, _) = BuildHarness(
+            tools: tools,
+            llmRounds: new List<List<StreamChunk>>
+            {
+                new()
+                {
+                    new() { ToolCallDelta = new ToolCall { Id = "call_1", Name = "AskingTool", Arguments = "{}" }, IsComplete = false },
+                    new() { IsComplete = true },
+                },
+                new()
+                {
+                    new() { TextDelta = "done.", IsComplete = false },
+                    new() { IsComplete = true, Usage = new UsageInfo() },
+                },
+            });
+
+        await runner.RunUserMessageAsync("request 1", CancellationToken.None);
+
+        var pauseId = session.PendingIds.Single();
+        var ctx = session.LookupPauseContext(pauseId)!.Value;
+
+        // Approve with scope="once"
+        using var payload = JsonDocument.Parse($"{{\"id\":\"{pauseId}\",\"decision\":\"allow\",\"scope\":\"once\"}}");
+        await runner.ResumeWithPermissionAsync(payload.RootElement, CancellationToken.None);
+
+        // Verify permission is not cached (forgotten after execution)
+        var cached = session.TryGetRememberedPermission(ctx.ContextKey);
+        cached.Should().BeNull("scope=once should be forgotten after execution");
+    }
+
+    [Fact]
+    public void AcpSession_PermissionQueue_serializes_concurrent_permissions()
+    {
+        var session = NewSession();
+
+        // Enqueue 3 permissions
+        var result1 = session.TryEnqueuePermission("perm_1", "FileWrite", "file.ts", false);
+        var result2 = session.TryEnqueuePermission("perm_2", "FileWrite", "file.ts", false);
+        var result3 = session.TryEnqueuePermission("perm_3", "FileWrite", "file.ts", false);
+
+        // First should process, others queued
+        result1.Should().BeTrue("first permission should process immediately");
+        result2.Should().BeFalse("second permission should be queued");
+        result3.Should().BeFalse("third permission should be queued");
+    }
+
+    [Fact]
+    public void AcpSession_PermissionQueue_dequeues_in_order()
+    {
+        var session = NewSession();
+
+        // Enqueue 3 permissions
+        session.TryEnqueuePermission("perm_1", "FileWrite", "file.ts", false);
+        session.TryEnqueuePermission("perm_2", "FileWrite", "file.ts", false);
+        session.TryEnqueuePermission("perm_3", "FileWrite", "file.ts", false);
+
+        // Dequeue them
+        var next2 = session.DequeueNextPermission();
+        next2.Should().NotBeNull();
+        next2.Value.Id.Should().Be("perm_2");
+
+        var next3 = session.DequeueNextPermission();
+        next3.Should().NotBeNull();
+        next3.Value.Id.Should().Be("perm_3");
+
+        var next4 = session.DequeueNextPermission();
+        next4.Should().BeNull("queue should be empty");
+    }
+
+    [Fact]
+    public void AcpSession_PermissionQueue_isolated_per_session()
+    {
+        var session1 = NewSession();
+        var session2 = NewSession();
+
+        // Enqueue in session 1
+        session1.TryEnqueuePermission("perm_1", "FileWrite", "file.ts", false);
+        session1.TryEnqueuePermission("perm_2", "FileWrite", "file.ts", false);
+
+        // Enqueue in session 2 (both, so one is in-flight and one is queued)
+        session2.TryEnqueuePermission("perm_3", "WebFetch", "url", false);
+        session2.TryEnqueuePermission("perm_4", "WebFetch", "url", false);
+
+        // Verify independence: session1's queue has perm_2, session2's queue has perm_4
+        var next1 = session1.DequeueNextPermission();
+        next1.Should().NotBeNull();
+        next1!.Value.Id.Should().Be("perm_2");
+
+        var next2 = session2.DequeueNextPermission();
+        next2.Should().NotBeNull();
+        next2!.Value.Id.Should().Be("perm_4", "session2's queue should contain perm_4 (perm_3 was in-flight)");
+
+        // Verify both queues are now empty
+        session1.DequeueNextPermission().Should().BeNull();
+        session2.DequeueNextPermission().Should().BeNull();
     }
 
     private static List<(string name, JsonElement data)> ParseSseEvents(MemoryStream body)

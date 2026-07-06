@@ -400,8 +400,14 @@ public sealed class AcpSessionStoreTests : IDisposable
         session.RememberPermission("Bash|x", allow: true);
         session.RememberPermission("Bash|y", allow: false);
 
-        session.TryGetRememberedPermission("Bash|x").Should().BeTrue();
-        session.TryGetRememberedPermission("Bash|y").Should().BeFalse();
+        var cachedX = session.TryGetRememberedPermission("Bash|x");
+        cachedX.Should().NotBeNull();
+        cachedX.Value.Allow.Should().BeTrue();
+
+        var cachedY = session.TryGetRememberedPermission("Bash|y");
+        cachedY.Should().NotBeNull();
+        cachedY.Value.Allow.Should().BeFalse();
+
         session.TryGetRememberedPermission("Bash|never-asked").Should().BeNull();
     }
 

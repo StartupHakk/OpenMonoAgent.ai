@@ -22,10 +22,21 @@ public sealed class TerminalUserInteraction : IAcpUserInteraction
         _input = input;
     }
 
-    public async Task<bool> RequestPermissionAsync(string toolName, string summary, bool dangerous, CancellationToken ct)
+    public async Task<(bool Allow, string Scope)> RequestPermissionAsync(string toolName, string summary, bool dangerous, CancellationToken ct)
     {
         var response = await _input.AskPermissionAsync(toolName, summary, ct);
-        return response is PermissionResponse.Allow or PermissionResponse.AllowAll;
+
+        // Map PermissionResponse to (allow, scope)
+        var (allow, scope) = response switch
+        {
+            PermissionResponse.Allow => (true, "once"),          // Allow Once
+            PermissionResponse.AllowAll => (true, "session"),    // Allow Session
+            PermissionResponse.Deny => (false, "once"),          // Deny Once
+            PermissionResponse.DenyAll => (false, "session"),    // Deny Session
+            _ => (false, "once")
+        };
+
+        return (allow, scope);
     }
 
     public async Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct)

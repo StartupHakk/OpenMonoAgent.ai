@@ -47,6 +47,7 @@ public sealed class EnterPlanModeTool : ToolBase
                 "Already in plan mode. Investigate, then call CreatePlan to present your plan."));
 
         context.Session.Meta.PlanMode = true;
+        Utils.Log.Info("<---SWITCHED-TO-PLAN-MODE--->");
         return Task.FromResult(ToolResult.Success(ModeInstructions.Activation(reason)));
     }
 }
@@ -154,6 +155,7 @@ public sealed class ImplementPlanTool : ToolBase
                 "Already in Build mode with full tool access. Implement the approved plan now." + plan));
 
         context.Session.Meta.PlanMode = false;
+        Utils.Log.Info("<---SWITCHED-TO-BUILD-MODE--->");
         return Task.FromResult(ToolResult.Success(
             "Switched to Build mode — you now have full tool access (FileWrite, FileEdit, Bash, etc.). " +
             "Implement the approved plan now." + plan));

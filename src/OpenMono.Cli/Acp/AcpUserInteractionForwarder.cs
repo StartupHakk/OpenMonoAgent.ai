@@ -27,12 +27,13 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
         _timeout = timeout;
     }
 
-    public async Task<bool> RequestPermissionAsync(string toolName, string summary, bool dangerous, CancellationToken ct)
+    public async Task<(bool Allow, string Scope)> RequestPermissionAsync(string toolName, string summary, bool dangerous, CancellationToken ct)
     {
         var contextKey = PermissionContextKey(toolName, summary);
 
-        if (_session.TryGetRememberedPermission(contextKey) is bool cached)
-            return cached;
+        // Check cache first - returns (allow, scope)
+        if (_session.TryGetRememberedPermission(contextKey) is var cached && cached.HasValue)
+            return cached.Value;
 
         // If a pause for this contextKey is already pending (e.g. from a concurrent
         // speculative tool execution), reuse that pause instead of registering a new
@@ -47,15 +48,22 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
         }
 
         var id = "perm_" + Guid.NewGuid().ToString("N")[..12];
-        var tcs = _session.RegisterPause(id, PendingResponseKind.Permission, contextKey);
 
-        await _writer.WriteEventAsync("permission_request", new
+        // Try to process immediately, or queue if another permission is in flight
+        bool shouldProcess = _session.TryEnqueuePermission(id, toolName, summary, dangerous);
+
+        if (shouldProcess)
         {
-            id,
-            tool = toolName,
-            summary,
-            dangerous,
-        });
+            // Register pause and emit permission_request
+            var tcs = _session.RegisterPause(id, PendingResponseKind.Permission, contextKey);
+            await _writer.WriteEventAsync("permission_request", new
+            {
+                id,
+                tool = toolName,
+                summary,
+                dangerous,
+            });
+        }
 
         throw new PendingUserResponseException(id, PendingResponseKind.Permission);
     }
@@ -65,10 +73,10 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
         var contextKey = "playbook:" + plan.PlaybookName;
 
         // If approval already cached (user approved on first call, we're being re-invoked), return cached
-        if (_session.TryGetRememberedPermission(contextKey) is bool cached)
+        if (_session.TryGetRememberedPermission(contextKey) is var cached && cached.HasValue)
         {
             Utils.Log.Info($"[OMA_PLAYBOOK] RequestPlaybookApprovalAsync: using cached approval for {plan.PlaybookName}");
-            return cached;
+            return cached.Value.Allow;
         }
 
         var id = "pbk_" + Guid.NewGuid().ToString("N")[..12];
@@ -97,8 +105,8 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
     {
         var contextKey = "toggle_mode:" + reason;
 
-        if (_session.TryGetRememberedPermission(contextKey) is bool cached)
-            return cached;
+        if (_session.TryGetRememberedPermission(contextKey) is var cached && cached.HasValue)
+            return cached.Value.Allow;
 
         var id = "mode_" + Guid.NewGuid().ToString("N")[..12];
         _session.RegisterPause(id, PendingResponseKind.ToggleMode, contextKey);

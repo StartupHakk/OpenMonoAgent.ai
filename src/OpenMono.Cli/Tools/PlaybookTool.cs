@@ -13,9 +13,9 @@ public sealed class PlaybookTool : ToolBase
 
     public override bool IsDeferred => false;
 
-    // Available in both Plan and Build modes, but gated by whether the playbook requires write tools.
-    // If a playbook needs write tools in Plan mode, user is prompted to switch to Build mode.
-    // This mirrors ImplementPlan's behavior — the tool is available but may require a mode switch.
+    // Available in both Plan and Build modes.
+    // Marked as read-only so it shows in Plan mode. If it needs write tools, the user is
+    // prompted during execution to switch to Build mode (with the plan shown).
     public override bool IsReadOnly => true;
 
     public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;
@@ -37,24 +37,10 @@ public sealed class PlaybookTool : ToolBase
 
     public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
     {
-        Console.Error.WriteLine($"[PLAYBOOK_REQCAP] called with input: {input}");
-        var playbook = input.TryGetProperty("name", out var nameEl)
-            ? _registry.Resolve(nameEl.GetString() ?? "")
-            : null;
-
-        Console.Error.WriteLine($"[PLAYBOOK_REQCAP] playbook: {playbook?.Name ?? "NULL"}");
-
-        if (playbook is null)
-            return [];
-
-        var plan = _executor.BuildToolPlan(playbook);
-        var cap = new PlaybookApproveCap(
-            playbook.Name,
-            plan.Steps.Select(s => new PlaybookStepInfo(s.Id, s.Gate, s.Description)).ToList(),
-            plan.Tools.Select(t => new PlaybookToolInfo(t.Name, t.IsReadOnly, t.Dangerous)).ToList()
-        );
-        Console.Error.WriteLine($"[PLAYBOOK_REQCAP] returning capability with {cap.Steps.Count} steps");
-        return [cap];
+        // Playbook handles its own permission flow inside ExecuteCoreAsync
+        // (shows plan + permission prompt when switching from Plan to Build mode)
+        // No capabilities needed here.
+        return [];
     }
 
     protected override async Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
@@ -62,6 +48,8 @@ public sealed class PlaybookTool : ToolBase
         var name = input.GetProperty("name").GetString()!;
         var arguments = input.TryGetProperty("arguments", out var argsEl) ? argsEl.GetString() ?? "" : "";
         var resume = input.TryGetProperty("resume", out var r) && r.GetBoolean();
+
+        Utils.Log.Info($"[PLAYBOOK_EXEC] Starting playbook '{name}', current backend mode: {(context.Session.Meta.PlanMode ? "PLAN" : "BUILD")}");
 
         var playbook = _registry.Resolve(name);
         if (playbook is null)
@@ -73,11 +61,36 @@ public sealed class PlaybookTool : ToolBase
         var plan = _executor.BuildToolPlan(playbook);
         var requiresModeSwitch = context.Session.Meta.PlanMode && PlaybookRequiresWriteTools(playbook, context);
         plan = plan with { RequiresModeSwitch = requiresModeSwitch };
+        Utils.Log.Info($"[PLAYBOOK_EXEC] PlaybookRequiresWriteTools={PlaybookRequiresWriteTools(playbook, context)}, requiresModeSwitch={requiresModeSwitch}");
 
-        // Auto-switch from Plan to Build mode if needed
+        // In Plan mode with write tools: request permission with the plan shown
+        if (requiresModeSwitch && context.Permissions is not null)
+        {
+            var summary = FormatPlaybookApprovalPrompt(plan);
+            var dangerous = plan.Tools.Any(t => t.Dangerous);
+            var cacheKey = $"Playbook:{plan.PlaybookName}";
+
+            Console.Error.WriteLine($"[PLAYBOOK] Requesting permission for {plan.PlaybookName} (dangerous={dangerous})");
+            var (approved, scope) = await context.Permissions.PauseForUserResponseAsync(
+                context.Interaction,
+                cacheKey,
+                summary,
+                dangerous,
+                ct
+            );
+
+            if (!approved)
+                return ToolResult.Error($"Playbook '{plan.PlaybookName}' execution cancelled by user");
+
+            Console.Error.WriteLine($"[PLAYBOOK] Permission approved (scope={scope}), switching to Build mode");
+        }
+
+        // Auto-switch from Plan to Build mode if approved
         if (requiresModeSwitch)
         {
             context.Session.Meta.PlanMode = false;
+            Utils.Log.Info("<---SWITCHED-TO-BUILD-MODE--->");
+            Utils.Log.Info($"[PLAYBOOK_EXEC] After mode switch, backend mode is now: {(context.Session.Meta.PlanMode ? "PLAN" : "BUILD")}");
             context.Session.Messages.Add(new OpenMono.Session.Message
             {
                 Role = OpenMono.Session.MessageRole.User,
@@ -98,25 +111,39 @@ public sealed class PlaybookTool : ToolBase
         }
 
         var result = await _executor.ExecuteAsync(playbook, parameters, state, context.Session.Id, ct);
+        Utils.Log.Info($"[PLAYBOOK_EXEC] Playbook '{name}' completed, backend mode is: {(context.Session.Meta.PlanMode ? "PLAN" : "BUILD")}");
         return ToolResult.Success(result);
     }
 
     private static string FormatPlaybookApprovalPrompt(PlaybookToolPlan plan)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"Playbook '{plan.PlaybookName}' will run these steps:");
-        foreach (var step in plan.Steps)
-            sb.AppendLine($"  - {step.Id} (gate: {step.Gate})");
+        sb.AppendLine($"Name of the playbook: {plan.PlaybookName}");
         sb.AppendLine();
-        var tools = plan.Tools.Count > 0
-            ? string.Join(", ", plan.Tools.Select(t => t.Dangerous ? $"{t.Name}*" : t.Name))
-            : "(no tools)";
-        sb.AppendLine($"Allowed tools: {tools}");
-        if (plan.Tools.Any(t => t.Dangerous))
-            sb.AppendLine("(* = potentially destructive)");
+        sb.AppendLine("Steps:");
+        foreach (var step in plan.Steps)
+            sb.AppendLine($"- {step.Id}");
+        sb.AppendLine();
+        sb.AppendLine("Allowed Tools:");
+        if (plan.Tools.Count > 0)
+        {
+            foreach (var tool in plan.Tools)
+            {
+                var toolName = tool.Dangerous ? $"{tool.Name} (destructive)" : tool.Name;
+                sb.AppendLine($"- {toolName}");
+            }
+        }
+        else
+        {
+            sb.AppendLine("- (no tools)");
+        }
+
         if (plan.RequiresModeSwitch)
-            sb.AppendLine("Note: this will also switch you from Plan mode to Build mode.");
-        sb.Append("Approve running this playbook? [y/N]");
+        {
+            sb.AppendLine();
+            sb.AppendLine("⚠ Note: This playbook requires write access and will switch you from Plan mode to Build mode.");
+        }
+
         return sb.ToString();
     }
 

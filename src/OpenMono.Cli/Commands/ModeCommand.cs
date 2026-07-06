@@ -14,7 +14,7 @@ public sealed class ModeCommand : ICommand
         var session = context.Session;
         session.Meta.PlanMode = !session.Meta.PlanMode;
         var modeStr = session.Meta.PlanMode ? "PLAN" : "BUILD";
-        Log.Info($"[OMA_MODE] TUI toggled to {modeStr} mode");
+        Log.Info($"<---SWITCHED-TO-{modeStr}-MODE--->");
 
         // Notice in the conversation so the agent registers the switch on its next turn.
         session.AddMessage(new Message
