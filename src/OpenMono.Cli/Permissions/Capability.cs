@@ -7,6 +7,8 @@ public abstract record Capability
 {
     public abstract string Summary { get; }
 
+    public virtual bool HasCustomPrompt => false;
+
     public virtual async Task<bool> PromptUserAsync(IInputReader input, string toolName, CancellationToken ct)
     {
         var response = await input.AskPermissionAsync(toolName, Summary, ct);
@@ -83,6 +85,8 @@ public sealed record PlaybookApproveCap(
     IReadOnlyList<PlaybookToolInfo> Tools) : Capability
 {
     public override string Summary => $"Run playbook: {PlaybookName} ({Steps.Count} steps)";
+
+    public override bool HasCustomPrompt => true;
 
     public override async Task<bool> PromptUserAsync(IInputReader input, string toolName, CancellationToken ct)
     {

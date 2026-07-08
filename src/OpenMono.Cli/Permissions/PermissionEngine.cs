@@ -326,15 +326,16 @@ public sealed class PermissionEngine
                 "Allow this capability in the main session first, then re-run the sub-agent.",
                 allCaps);
 
-        if (uncoveredCaps.Count == 1)
+        if (uncoveredCaps.Count == 1 && uncoveredCaps[0].HasCustomPrompt)
         {
             var approved = await uncoveredCaps[0].PromptUserAsync(_input, toolName, ct);
             return approved ? new(true, null, allCaps) : new(false, PermissionDeniedOnce, allCaps);
         }
 
-        // Multiple capabilities: use generic batch prompt
-        var summary = $"{toolName} requires:\n" +
-                      string.Join("\n", uncoveredCaps.Select(c => $"  - {c.Summary}"));
+        var summary = uncoveredCaps.Count == 1
+            ? uncoveredCaps[0].Summary
+            : $"{toolName} requires:\n" +
+              string.Join("\n", uncoveredCaps.Select(c => $"  - {c.Summary}"));
 
         var response = await _input.AskPermissionAsync(toolName, summary, ct);
 
