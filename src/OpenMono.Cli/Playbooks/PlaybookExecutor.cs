@@ -8,12 +8,14 @@ using OpenMono.Permissions;
 using OpenMono.Rendering;
 using OpenMono.Session;
 using OpenMono.Tools;
+using OpenMono.Utils;
 
 namespace OpenMono.Playbooks;
 
 public sealed class PlaybookExecutor : IDisposable
 {
     private readonly ILlmClient _llm;
+    private readonly MultiModelLlmClient? _multiModel;
     private readonly ToolRegistry _tools;
     private readonly IRenderer _renderer;
     private readonly AppConfig _config;
@@ -32,6 +34,7 @@ public sealed class PlaybookExecutor : IDisposable
         ToolDispatcher? dispatcher = null)
     {
         _llm = llm;
+        _multiModel = llm as MultiModelLlmClient;
         _tools = tools;
         _renderer = renderer;
         _config = config;
@@ -266,6 +269,19 @@ public sealed class PlaybookExecutor : IDisposable
             MaxTokens = _config.Llm.MaxOutputTokens,
         };
 
+        // Playbooks run on the operator tier if multi-model is configured.
+        // The operator model is a fast 4B model optimized for tool-calling,
+        // making playbook execution 5-10x faster than the full 35B executive.
+        var activeLlm = _llm;
+        if (_multiModel?.HasTiers == true)
+        {
+            var tierClient = _multiModel.GetClient(ModelTier.Operator);
+            var tierOptions = _multiModel.GetOptions(ModelTier.Operator, options);
+            Log.Info($"[PLAYBOOK] Using operator tier for playbook execution");
+            activeLlm = tierClient;
+            options = tierOptions;
+        }
+
         var result = new StringBuilder();
         var maxToolLoops = 10;
         var toolLoopCount = 0;
@@ -275,7 +291,7 @@ public sealed class PlaybookExecutor : IDisposable
             var pendingToolCalls = new List<ToolCall>();
             var textContent = new StringBuilder();
 
-            await foreach (var chunk in _llm.StreamChatAsync(messages, toolDefs, options, ct))
+            await foreach (var chunk in activeLlm.StreamChatAsync(messages, toolDefs, options, ct))
             {
                 if (chunk.TextDelta is not null)
                 {

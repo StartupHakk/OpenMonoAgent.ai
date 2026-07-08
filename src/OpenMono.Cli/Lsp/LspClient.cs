@@ -180,7 +180,6 @@ public sealed class LspClient : IDisposable
             var header = $"Content-Length: {Encoding.UTF8.GetByteCount(body)}\r\n\r\n";
 
             var bytes = Encoding.UTF8.GetBytes(header + body);
-            await _stdout.WriteAsync(Array.Empty<byte>(), ct);
             await _stdin.BaseStream.WriteAsync(bytes, ct);
             await _stdin.BaseStream.FlushAsync(ct);
 

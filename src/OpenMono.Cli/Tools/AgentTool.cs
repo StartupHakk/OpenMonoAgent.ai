@@ -121,7 +121,22 @@ public sealed class AgentTool : ToolBase
             var sink = new SubAgentOutputSink(description, context.WriteOutput, context.Output);
             var inputReader = new NullInputReader();
             var childPermissions = context.Permissions.CreateChildEngine(sink, inputReader);
-            var llm = new OpenAiCompatClient(context.Config.Llm) { ApiKey = context.Config.Llm.ApiKey };
+
+            // Sub-agents use the operator tier if multi-model is configured.
+            // The operator model is a fast 4B model optimized for tool-calling
+            // (grep, glob, read, context building) instead of the full 35B executive.
+            ILlmClient llm;
+            bool disposeLlm = false;
+            if (context.MultiModel?.HasTiers == true && context.MultiModel.Operator is not null)
+            {
+                llm = context.MultiModel.Operator;
+                Utils.Log.Info($"[AGENT] Using operator tier for sub-agent: {description}");
+            }
+            else
+            {
+                llm = new OpenAiCompatClient(context.Config.Llm) { ApiKey = context.Config.Llm.ApiKey };
+                disposeLlm = true;
+            }
 
             try
             {
@@ -141,7 +156,7 @@ public sealed class AgentTool : ToolBase
             }
             finally
             {
-                llm.Dispose();
+                if (disposeLlm) llm.Dispose();
             }
 
             var result = sink.CapturedText.Trim();

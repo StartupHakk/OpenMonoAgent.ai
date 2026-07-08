@@ -102,6 +102,7 @@ services:
       - ${WORKSPACE:-.}:/workspace
       - ${HOME}/.openmono:/home/agent/.openmono
       - ${HOME}/.code-review-graph:/home/agent/.code-review-graph
+      - /Volumes/Untitled/SecondBrain:/vault:ro
       - ../ref:/ref:ro
     environment:
       - HOME=/home/agent
@@ -121,8 +122,30 @@ services:
       - OPENMONO_WEB_GATEWAY=${OPENMONO_WEB_GATEWAY:-}
       - OPENMONO_WEB_SEARCH=${OPENMONO_WEB_SEARCH:-}
       - OPENMONO_WEB_SCRAPE=${OPENMONO_WEB_SCRAPE:-}
+      # Auto-approve playbook execution so specialist personas chain
+      # autonomously without a human approval gate between delegations.
+      - OPENMONO_AUTO_APPROVE_PLAYBOOKS=${OPENMONO_AUTO_APPROVE_PLAYBOOKS:-1}
+      # Multi-model pipeline: operator (4B, fast tool-calling) and coder
+      # (4B, code generation). Playbooks and sub-agents run on the faster
+      # model instead of the full 35B executive.
+      # 4B models run natively on the host (not in Docker — Docker Desktop
+      # has limited RAM). The agent connects via host.docker.internal.
+      - OPENMONO_OPERATOR_ENDPOINT=${OPENMONO_OPERATOR_ENDPOINT:-http://host.docker.internal:7476}
+      - OPENMONO_OPERATOR_MODEL=${OPENMONO_OPERATOR_MODEL:-operator}
+      - OPENMONO_OPERATOR_API_KEY=${OPENMONO_API_KEY:-${LLAMA_API_KEY:-}}
+      - OPENMONO_OPERATOR_CONTEXT_SIZE=32768
+      - OPENMONO_OPERATOR_MAX_OUTPUT=8192
+      - OPENMONO_OPERATOR_TEMPERATURE=0.3
+      - OPENMONO_CODER_ENDPOINT=${OPENMONO_CODER_ENDPOINT:-http://host.docker.internal:7477}
+      - OPENMONO_CODER_MODEL=${OPENMONO_CODER_MODEL:-coder}
+      - OPENMONO_CODER_API_KEY=${OPENMONO_API_KEY:-${LLAMA_API_KEY:-}}
+      - OPENMONO_CODER_CONTEXT_SIZE=32768
+      - OPENMONO_CODER_MAX_OUTPUT=8192
+      - OPENMONO_CODER_TEMPERATURE=0.2
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    ports:
+      - "${ACP_PORT:-7475}:7475"
     stdin_open: true
     tty: true
     working_dir: /workspace

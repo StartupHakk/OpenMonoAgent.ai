@@ -41,16 +41,24 @@ public sealed class LspServerManager : IDisposable
     public async Task<LspClient?> GetClientAsync(string filePath, CancellationToken ct)
     {
         var language = DetectLanguage(filePath);
-        if (language is null) return null;
+        if (language is null)
+        {
+            Utils.Log.Info($"[LSP] No language detected for {filePath} (ext={Path.GetExtension(filePath)})");
+            return null;
+        }
 
         if (_clients.TryGetValue(language, out var existing) && existing.IsRunning)
             return existing;
 
         if (!_configs.TryGetValue(language, out var config))
+        {
+            Utils.Log.Info($"[LSP] No config registered for language '{language}'. Configured: {string.Join(", ", _configs.Keys)}");
             return null;
+        }
 
         try
         {
+            Utils.Log.Info($"[LSP] Starting {config.Command} for {language} (workspace: {_workspaceRoot})");
             var client = await LspClient.StartAsync(config, _workspaceRoot, ct);
             _clients[language] = client;
             _warn?.Invoke($"LSP: Started {config.Command} for {language}");
@@ -58,6 +66,7 @@ public sealed class LspServerManager : IDisposable
         }
         catch (Exception ex)
         {
+            Utils.Log.Info($"[LSP] Failed to start {config.Command}: {ex.Message}");
             _warn?.Invoke($"LSP: Failed to start {config.Command}: {ex.Message}");
             return null;
         }

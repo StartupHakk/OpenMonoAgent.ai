@@ -9,7 +9,7 @@ namespace OpenMono.Tools;
 public sealed class PlaybookTool : ToolBase
 {
     public override string Name => "Playbook";
-    public override string Description => "Invoke a playbook by name. Playbooks are multi-step, typed, composable workflows.";
+    public override string Description => "Delegate a task to a specialist agent persona. 257 expert playbooks are available covering security, architecture, design, engineering, marketing, product, game-dev, and more. ALWAYS prefer delegating to a specialist over doing the work yourself — see OPENMONO.md for the routing table. Pass the playbook name and a detailed task description as arguments.";
 
     public override bool IsDeferred => false;
 

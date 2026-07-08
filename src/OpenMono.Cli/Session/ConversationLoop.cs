@@ -17,6 +17,7 @@ namespace OpenMono.Session;
 public sealed class ConversationLoop : IDisposable
 {
     private readonly ILlmClient _llm;
+    private readonly MultiModelLlmClient? _multiModel;
     private readonly ToolRegistry _tools;
     private readonly PermissionEngine _permissions;
     private readonly IOutputSink _output;
@@ -64,10 +65,12 @@ public sealed class ConversationLoop : IDisposable
         IToolExecutor? executor = null,
         IReadOnlyList<ITool>? toolSubset = null,
         IAcpUserInteraction? interaction = null,
+        MultiModelLlmClient? multiModel = null,
         int maxIterations = 1000,
         int agentDepth = 0)
     {
         _llm = llm;
+        _multiModel = multiModel ?? llm as MultiModelLlmClient;
         _tools = tools;
         _output = output;
         if (interaction is null)
@@ -952,6 +955,7 @@ public sealed class ConversationLoop : IDisposable
         OnDebug = msg => { _output.WriteDebug(msg); Log.Debug(msg); },
         Output = _output,
         Interaction = _interaction,
+        MultiModel = _multiModel,
         AgentDepth = _agentDepth,
     };
 }
