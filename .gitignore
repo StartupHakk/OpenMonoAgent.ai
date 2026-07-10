@@ -64,3 +64,6 @@ __pycache__/
 # --- React UI (server/ui) ---
 server/ui/node_modules/
 server/ui/dist/
+
+# Local cleanup archive (July 2026)
+Juli2026_Archiv/
