@@ -7,6 +7,7 @@
 | **OS** | Ubuntu 26.04 LTS (recommended) · 25.10 · **macOS 14+** (Sonoma/Sequoia) |
 | **GPU mode** (Linux) | NVIDIA GPU · 12 GB VRAM minimum · 24 GB recommended |
 | **CPU mode** (Linux) | 24 GB RAM |
+| **Vulkan mode** (Linux) | AMD Ryzen 7x40HS/8x45HS w/ Radeon 760M/780M iGPU · 32 GB+ RAM (64–128 GB recommended — system RAM is used as VRAM) |
 | **Apple Silicon** (macOS) | M1+ · **64 GB+ unified memory recommended** (tested) · less than 64 GB not encouraged |
 | **Disk** | ~22 GB free (model + ~900 MB vision projector) |
 
@@ -63,6 +64,26 @@ If an NVIDIA GPU is detected, Phase 1 asks:
 
 Say **Y**.
 
+### AMD iGPU (Vulkan) prompt
+
+If a supported AMD Ryzen CPU with Radeon iGPU is detected (7x40HS/8x45HS Phoenix family, e.g. 7940HS or 8945HS), Phase 1 asks instead:
+
+```
+  AMD Radeon iGPU Detected
+  This iGPU can run models via Vulkan using system RAM as VRAM.
+
+  1) CPU only   — standard inference (no kernel changes)
+  2) iGPU (Vulkan) — Radeon iGPU acceleration (modifies kernel config)
+```
+
+Pick **2** for Vulkan acceleration. The installer applies kernel tuning (a GTT memory window sized to your RAM via GRUB parameters) and asks for **one reboot** on first setup. After the reboot, run `openmono setup` again — it picks up where it left off, writes the Vulkan `docker-compose.override.yml`, and from then on `openmono agent` automatically starts llama-server on the iGPU.
+
+You can also skip the prompt entirely:
+
+```bash
+openmono setup --vulkan   # force AMD iGPU (Vulkan) mode
+```
+
 ### Reboot (GPU driver installs only)
 
 If the NVIDIA drivers are being installed fresh, a reboot is required:
@@ -101,6 +122,7 @@ To override auto-detection:
 ```bash
 openmono setup --gpu     # force GPU (NVIDIA only)
 openmono setup --cpu     # force CPU
+openmono setup --vulkan  # force AMD iGPU (Vulkan)
 ```
 
 > [!NOTE]

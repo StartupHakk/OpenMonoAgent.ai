@@ -125,7 +125,7 @@ cmd_help() {
     echo "an agent box and an inference box."
     echo ""
     echo "Any box:"
-    printf "  %-14s %s\n" "setup"   "Install (--full|--inference|--agent) [--gpu|--cpu]"
+    printf "  %-14s %s\n" "setup"   "Install (--full|--inference|--agent) [--gpu|--cpu|--vulkan]"
     printf "  %-14s %s\n" "config"  "Read/write ~/.openmono/settings.json (e.g. llm.endpoint, llm.api_key)"
     printf "  %-14s %s\n" "version" "Print the CLI version"
     printf "  %-14s %s\n" "help"    "Show this help"
@@ -159,6 +159,7 @@ cmd_help() {
     echo "Examples:"
     echo "  openmono setup                    # First-time single-box setup (auto-detects GPU)"
     echo "  openmono setup --cpu              # Force CPU mode"
+    echo "  openmono setup --vulkan           # Force AMD iGPU (Vulkan) mode"
     echo "  openmono start                    # Start llama-server"
     echo "  openmono agent                    # Run agent in current directory"
     echo "  openmono --verbose                # Run agent with LLM debug output"
@@ -175,12 +176,13 @@ cmd_setup() {
         case "$arg" in
             --gpu)          export OPENMONO_GPU=1 ;;
             --cpu)          export OPENMONO_CPU=1 ;;
+            --vulkan|--igpu) export AMD_IGPU_MODE=1 ;;
             --inference)    export OPENMONO_ROLE=inference ;;
             --agent)        export OPENMONO_ROLE=agent ;;
             --full)         export OPENMONO_ROLE=full ;;
             --verbose|-v)   export OPENMONO_VERBOSE=1 ;;
             --help|-h)
-                echo "Usage: openmono setup [--full|--inference|--agent] [--gpu|--cpu] [--verbose]"
+                echo "Usage: openmono setup [--full|--inference|--agent] [--gpu|--cpu|--vulkan] [--verbose]"
                 echo ""
                 echo "Installs one of three roles. Pick based on what the box will do:"
                 echo ""
@@ -196,6 +198,10 @@ cmd_setup() {
                 echo "GPU mode (applies to --full and --inference):"
                 echo "  --gpu         Force GPU mode (requires NVIDIA + nvidia-container-toolkit)"
                 echo "  --cpu         Force CPU mode"
+                echo "  --vulkan      Force AMD iGPU (Vulkan) mode — runs llama-server on an AMD"
+                echo "                iGPU (e.g. Radeon 780M) using system RAM as VRAM. Applies"
+                echo "                kernel tuning (GRUB) and requires one reboot on first setup."
+                echo "                Auto-offered when a supported AMD iGPU is detected."
                 echo ""
                 echo "Other:"
                 echo "  --verbose     Show detailed command output (default: step-level progress)"
@@ -326,8 +332,12 @@ cmd_setup() {
             echo "  llama-server port : ${LLAMA_PORT}"
             if [[ "$NATIVE_INFERENCE" == "true" ]]; then
                 echo "  mode              : Metal GPU (native llama.cpp)"
+            elif [[ "${GPU_MODE:-0}" = "1" ]]; then
+                echo "  mode              : GPU (CUDA)"
+            elif [[ "${AMD_IGPU_MODE:-0}" = "1" ]]; then
+                echo "  mode              : Vulkan (AMD iGPU)"
             else
-                echo "  mode              : $([ "${GPU_MODE:-0}" = "1" ] && echo GPU || echo CPU)"
+                echo "  mode              : CPU"
             fi
             echo ""
             ;;
@@ -671,6 +681,13 @@ cmd_status() {
             fi
             if [ "$HAS_HW" = true ]; then
                 echo -e "  ${YELLOW}⚠${NC}  NVIDIA hardware detected, but drivers not working/installed"
+            elif grep -q "server-vulkan" "$DOCKER_DIR/docker-compose.override.yml" 2>/dev/null; then
+                _AMD_GPU_NAME=$(lspci 2>/dev/null | grep -im1 'vga.*amd' | sed 's/.*: //' || true)
+                echo "  AMD iGPU (Vulkan mode): ${_AMD_GPU_NAME:-amdgpu}"
+                if grep -q "amdgpu.gttsize=" /proc/cmdline 2>/dev/null; then
+                    _GTT_MB=$(grep -o "amdgpu.gttsize=[0-9]*" /proc/cmdline | cut -d= -f2)
+                    echo "  GTT window: $(( _GTT_MB / 1024 ))GB system RAM available as VRAM"
+                fi
             else
                 echo "  No NVIDIA GPU detected"
             fi

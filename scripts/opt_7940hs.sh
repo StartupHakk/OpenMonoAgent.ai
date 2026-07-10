@@ -2,10 +2,11 @@
 set -euo pipefail
 
 # ──────────────────────────────────────────────────────────────────────────────
-# AMD Ryzen 9 7940HS Vulkan Optimization Script
+# AMD Ryzen (Phoenix family) Vulkan Optimization Script
 #
-# Detects AMD Ryzen 9 7940HS w/ Radeon 780M and applies kernel/system tuning
-# for optimal iGPU performance via Vulkan.
+# Detects AMD Ryzen 7x40HS/8x45HS CPUs w/ Radeon 760M/780M iGPU (e.g. 7940HS,
+# 8945HS) and applies kernel/system tuning for optimal iGPU performance via
+# Vulkan. GTT sizing is derived from total system RAM.
 #
 # Usage:
 #   opt_7940hs.sh [OPTIONS]
@@ -61,9 +62,17 @@ detect_cpu_model() {
 }
 
 has_radeon_780m() {
-    lspci 2>/dev/null | grep -qi "radeon.*780m" || \
+    lspci 2>/dev/null | grep -qi "radeon.*7[68]0m" || \
     lspci 2>/dev/null | grep -qi "amd.*radeon.*7.*m" || \
+    lspci 2>/dev/null | grep -qi "amd.*phoenix" || \
     (lsmod 2>/dev/null | grep -q "amdgpu" && grep -q "amdgpu" /proc/modules)
+}
+
+# Supported CPU families: Ryzen 7x40HS (Phoenix, e.g. 7940HS) and
+# Ryzen 8x45HS (Hawk Point / Phoenix3, e.g. 8945HS) incl. PRO variants,
+# or any AMD CPU that advertises its Radeon 7x0M iGPU in the model name.
+is_supported_cpu() {
+    echo "${1:-}" | grep -qiE "7[689]40HS|8[689]45HS|Radeon 7[68]0M"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -102,17 +111,39 @@ edit_grub_config() {
     run sudo cp "$GRUB_FILE" "$GRUB_BACKUP"
     detail "Backup created: $GRUB_BACKUP"
 
+    # GTT sizing derived from total system RAM: the iGPU uses system RAM as
+    # VRAM via the GTT window. gttsize is in MiB, pages_limit in 4KiB pages.
+    #   128GB+ RAM → 96GB GTT   64GB+ RAM → 28GB GTT   else → 16GB GTT
+    # Parsed from /proc/meminfo (locale-safe; `free` labels are localized) with
+    # thresholds below nominal size since the kernel reports usable RAM only.
+    TOTAL_RAM_GB=$(awk '/^MemTotal/{print int($2/1048576)}' /proc/meminfo)
+    TOTAL_RAM_GB=${TOTAL_RAM_GB:-0}
+    if [[ "$TOTAL_RAM_GB" -ge 120 ]]; then
+        GTT_MB=98304;  GTT_PAGES=25165824
+    elif [[ "$TOTAL_RAM_GB" -ge 60 ]]; then
+        GTT_MB=28672;  GTT_PAGES=7340032
+    else
+        GTT_MB=16384;  GTT_PAGES=4194304
+    fi
+    detail "RAM: ${TOTAL_RAM_GB}GB → GTT window: $(( GTT_MB / 1024 ))GB"
+
     # Define our required performance parameters
-    PERF_PARAMS="amd_iommu=off amdgpu.gttsize=28672 amdttm.pages_limit=7340032 ttm.pages_limit=7340032 amdgpu.ppfeaturemask=0xffffffff"
+    PERF_PARAMS="amd_iommu=off amdgpu.gttsize=$GTT_MB amdttm.pages_limit=$GTT_PAGES ttm.pages_limit=$GTT_PAGES amdgpu.ppfeaturemask=0xffffffff"
 
     # Extract current default line
     CURRENT_LINE=$(sudo grep "^GRUB_CMDLINE_LINUX_DEFAULT=" "$GRUB_FILE" | sed -e 's/^GRUB_CMDLINE_LINUX_DEFAULT=//' -e 's/"//g')
 
-    # Build new line avoiding duplicates
+    # Build new line avoiding duplicates. Compare by parameter KEY (before '='),
+    # not the full key=value string: a param already tuned to a different value
+    # (manually or by a previous run on different hardware) is left untouched —
+    # never add a second, conflicting instance of e.g. amdgpu.gttsize.
     NEW_LINE="$CURRENT_LINE"
     for param in $PERF_PARAMS; do
-        if [[ ! "$CURRENT_LINE" =~ $param ]]; then
+        _key="${param%%=*}"
+        if [[ " $CURRENT_LINE " != *" $_key="* && " $CURRENT_LINE " != *" $_key "* ]]; then
             NEW_LINE="$NEW_LINE $param"
+        else
+            detail "Kernel param '$_key' already configured — keeping existing value"
         fi
     done
     # Trim leading/trailing spaces
@@ -173,7 +204,7 @@ tune_kernel_memory() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 main() {
-    banner "AMD Ryzen 9 7940HS + Radeon 780M Vulkan Optimization"
+    banner "AMD Ryzen + Radeon iGPU Vulkan Optimization"
 
     # Detect hardware
     info "Detecting hardware..."
@@ -188,9 +219,9 @@ main() {
         detail "✗ Radeon 780M not detected (may not be visible via lspci on this system)"
     fi
 
-    if [[ ! "$CPU_MODEL" =~ "7940HS" ]]; then
+    if ! is_supported_cpu "$CPU_MODEL"; then
         if [[ $FORCE_IGPU -eq 0 ]]; then
-            err "This script is optimized for AMD Ryzen 9 7940HS"
+            err "This script is optimized for AMD Ryzen 7x40HS/8x45HS + Radeon iGPU"
             err "Detected: $CPU_MODEL"
             err "Use --igpu to force installation anyway"
             exit 1
@@ -211,7 +242,7 @@ main() {
         echo "  This system can run optimizations in two modes:"
         echo ""
         echo "  1) CPU only — standard inference (no kernel changes)"
-        echo "  2) iGPU accelerated — Vulkan on Radeon 780M (modifies kernel)"
+        echo "  2) iGPU accelerated — Vulkan on Radeon iGPU (modifies kernel)"
         echo ""
         printf "  Choose mode [1=cpu, 2=igpu] [default: 1]: "
         read -r -n 1 choice
@@ -258,7 +289,7 @@ main() {
         ok "All iGPU optimizations applied!"
         echo ""
         warn "A system reboot is REQUIRED before changes take effect"
-        warn "After reboot, Vulkan will have access to ~28GB GTT memory"
+        warn "After reboot, Vulkan will have access to the configured GTT memory window"
         warn "You will be prompted to reboot at the end of setup."
     else
         info "CPU-only mode selected — no system changes required"

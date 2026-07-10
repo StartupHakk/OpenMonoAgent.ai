@@ -180,19 +180,53 @@ elif grep -qi "0x10de" /sys/bus/pci/devices/*/vendor 2>/dev/null; then
     detail "NVIDIA GPU detected via PCI vendor ID (0x10de)"
 fi
 
-# Detect AMD Ryzen 9 7940HS + Radeon 780M iGPU
+# Detect AMD Ryzen (Phoenix family) + Radeon iGPU suitable for Vulkan inference.
+# Matches 7x40HS/8x45HS parts (7640HS/7840HS/7940HS/8645HS/8845HS/8945HS incl.
+# PRO variants) or any CPU that advertises its Radeon 7x0M iGPU in the model name.
 HAS_AMD_780M=false
 _CPU_MODEL=$(grep -m1 "^model name" /proc/cpuinfo 2>/dev/null | sed 's/model name[[:space:]]*:[[:space:]]*//')
-if echo "$_CPU_MODEL" | grep -qi "7940HS"; then
+if echo "$_CPU_MODEL" | grep -qiE "7[689]40HS|8[689]45HS|Radeon 7[68]0M"; then
     if lspci 2>/dev/null | grep -qi "radeon\|amdgpu" \
         || lsmod 2>/dev/null | grep -q "^amdgpu "; then
         HAS_AMD_780M=true
-        detail "AMD Ryzen 9 7940HS + Radeon 780M detected"
+        detail "AMD iGPU (Vulkan-capable) detected: $_CPU_MODEL"
     fi
 fi
 
+# Shared iGPU activation: run kernel/system tuning (once) and persist the choice.
+# Used by both the forced (--vulkan flag / env var) and the interactive path.
+_activate_amd_igpu() {
+    # Check if GTT kernel parameters are already active (system already rebooted
+    # after a previous opt run, or tuned manually — any gttsize value counts)
+    if grep -q "amdgpu.gttsize=" /proc/cmdline 2>/dev/null; then
+        info "AMD iGPU kernel parameters already active — skipping optimization script"
+    else
+        bash "$SCRIPT_DIR/opt_7940hs.sh" --igpu || {
+            err "AMD iGPU optimization failed"
+            exit 1
+        }
+        # Signal that reboot is needed (set in parent shell, not via export from subshell)
+        AMD_IGPU_REBOOT_PENDING=true
+    fi
+    # Only save pref AFTER completion (whether via opt script or already active)
+    _save_setup_pref "AMD_IGPU_MODE" "1"
+}
+
 # Determine GPU mode: explicit flag / persisted pref takes precedence, then auto-detect with prompt
-if [[ -n "$GPU_MODE" ]]; then
+if [[ "$AMD_IGPU_MODE" = "1" && "${OPENMONO_ROLE:-}" != "agent" ]]; then
+    # Vulkan lane requested explicitly (openmono setup --vulkan / env var) or
+    # restored from a previous session — takes precedence over NVIDIA detection.
+    GPU_MODE=0  # Keep GPU_MODE=0 so the NVIDIA stack is skipped
+    if [[ "${_AMD_IGPU_MODE_RESTORED:-false}" == "true" ]]; then
+        info "Restoring saved iGPU (Vulkan) mode from previous session"
+    else
+        info "AMD iGPU (Vulkan) mode requested"
+    fi
+    if [[ "$HAS_AMD_780M" != true ]]; then
+        warn "No supported AMD iGPU positively detected — continuing anyway (--vulkan forced)"
+    fi
+    _activate_amd_igpu
+elif [[ -n "$GPU_MODE" ]]; then
     if [[ "${_GPU_MODE_RESTORED:-false}" == "true" ]]; then
         info "Restoring saved GPU mode from previous session: ${BOLD}$([ "$GPU_MODE" = "1" ] && echo GPU || echo CPU)${NC}"
     fi
@@ -229,56 +263,38 @@ elif [ "$HAS_NVIDIA_HW" = true ] || command -v nvidia-smi &>/dev/null; then
         echo ""
     fi
 elif [[ "$HAS_AMD_780M" = true && "${OPENMONO_ROLE:-}" != "agent" ]]; then
-    # AMD Ryzen 9 7940HS + Radeon 780M iGPU path
+    # AMD Ryzen + Radeon iGPU path (7x40HS/8x45HS Phoenix family, e.g. 7940HS, 8945HS)
     GPU_MODE=0  # Keep GPU_MODE=0 so NVIDIA stack is skipped; use AMD_IGPU_MODE for iGPU selection
-    if [[ "${_AMD_IGPU_MODE_RESTORED:-false}" == "true" ]]; then
-        info "Restoring saved iGPU mode from previous session"
-    elif [[ "$AMD_IGPU_MODE" = "1" ]]; then
-        # Already set via env var
-        info "iGPU mode requested"
-    else
-        # Prompt user for CPU vs iGPU
+    # Prompt user for CPU vs iGPU (forced/restored Vulkan mode is handled above)
+    echo ""
+    printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
+    printf "${BLUE}${BOLD}  AMD Radeon iGPU Detected${NC}\n"
+    printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
+    echo ""
+    echo "  CPU: $_CPU_MODEL"
+    echo "  This iGPU can run models via Vulkan using system RAM as VRAM."
+    echo ""
+    echo "  1) CPU only   — standard inference (no kernel changes)"
+    echo "  2) iGPU (Vulkan) — Radeon iGPU acceleration (modifies kernel config)"
+    echo ""
+    printf "  Choose mode [1=cpu, 2=igpu] [default: 1]: "
+    read -r -n 1 _igpu_choice
+    echo ""
+    _igpu_choice="${_igpu_choice:-1}"
+    if [[ "$_igpu_choice" = "2" ]]; then
         echo ""
-        printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
-        printf "${BLUE}${BOLD}  AMD Ryzen 9 7940HS + Radeon 780M Detected${NC}\n"
-        printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
+        printf "  ${YELLOW}${BOLD}WARNING: Experimental${NC}\n"
+        printf "  This will modify your kernel configuration.\n"
+        printf "  Recommended for dedicated inference setups only!\n"
         echo ""
-        echo "  This iGPU can run models via Vulkan using system RAM as VRAM."
-        echo ""
-        echo "  1) CPU only   — standard inference (no kernel changes)"
-        echo "  2) iGPU (Vulkan) — Radeon 780M acceleration (modifies kernel config)"
-        echo ""
-        printf "  Choose mode [1=cpu, 2=igpu] [default: 1]: "
-        read -r -n 1 _igpu_choice
-        echo ""
-        _igpu_choice="${_igpu_choice:-1}"
-        if [[ "$_igpu_choice" = "2" ]]; then
-            echo ""
-            printf "  ${YELLOW}${BOLD}WARNING: Experimental${NC}\n"
-            printf "  This will modify your kernel configuration.\n"
-            printf "  Recommended for dedicated inference setups only!\n"
-            echo ""
-            printf "  Press ENTER to continue or Ctrl+C to abort: "
-            read -r _amd_confirm
-            AMD_IGPU_MODE=1
-        fi
-        echo ""
+        printf "  Press ENTER to continue or Ctrl+C to abort: "
+        read -r _amd_confirm
+        AMD_IGPU_MODE=1
     fi
+    echo ""
 
     if [[ "$AMD_IGPU_MODE" = "1" ]]; then
-        # Check if GRUB parameters are already active (system already rebooted after previous opt run)
-        if grep -q "amdgpu.gttsize=28672" /proc/cmdline 2>/dev/null; then
-            info "AMD iGPU kernel parameters already active — skipping optimization script"
-        else
-            bash "$SCRIPT_DIR/opt_7940hs.sh" --igpu || {
-                err "AMD iGPU optimization failed"
-                exit 1
-            }
-            # Signal that reboot is needed (set in parent shell, not via export from subshell)
-            AMD_IGPU_REBOOT_PENDING=true
-        fi
-        # Only save pref AFTER completion (whether via opt script or already active)
-        _save_setup_pref "AMD_IGPU_MODE" "1"
+        _activate_amd_igpu
     fi
 else
     # No NVIDIA hardware and no AMD iGPU detected
