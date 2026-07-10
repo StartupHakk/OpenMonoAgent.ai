@@ -42,6 +42,29 @@ if ! docker compose version &>/dev/null 2>&1; then
     die "Docker Compose is required. Run: openmono setup"
 fi
 
+# ── Local-changes guard ───────────────────────────────────────────────────────
+# Never let an update roll back local modifications (e.g. a customized Vulkan
+# lane). Abort before pulling if the working tree is dirty or the current
+# branch carries commits that upstream doesn't have.
+# Override intentionally with: OPENMONO_FORCE_UPDATE=1 scripts/re-install.sh
+
+if [ "${OPENMONO_FORCE_UPDATE:-0}" != "1" ]; then
+    if [ -n "$(git status --porcelain=v1 --untracked-files=no 2>/dev/null)" ]; then
+        err "Local uncommitted changes detected — update aborted to protect them."
+        err "Review them with:  git status"
+        err "Then either commit them (git add -A && git commit) or, to update anyway:"
+        die "  OPENMONO_FORCE_UPDATE=1 $0"
+    fi
+    _CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+    _LOCAL_ONLY="$(git rev-list --count "origin/main..HEAD" 2>/dev/null || echo 0)"
+    if [ "$_CURRENT_BRANCH" != "main" ] || [ "${_LOCAL_ONLY:-0}" -gt 0 ]; then
+        err "You are on branch '$_CURRENT_BRANCH' with ${_LOCAL_ONLY:-?} local commit(s) not in origin/main."
+        err "Updating would require merging/rebasing your local work — this is not done automatically."
+        err "To update anyway (your commits are kept, conflicts must be resolved manually):"
+        die "  OPENMONO_FORCE_UPDATE=1 $0"
+    fi
+fi
+
 # ── Step 2: Prompt for GitLab credentials ─────────────────────────────────────
 
 step 2 $TOTAL_STEPS "GitLab credentials"
