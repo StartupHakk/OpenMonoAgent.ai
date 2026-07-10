@@ -576,15 +576,6 @@ EOF
 elif [ "${AMD_IGPU_MODE:-0}" = "1" ]; then
     info "Writing AMD iGPU (Vulkan) override: $OVERRIDE_FILE"
 
-    # Context size reduction for mmproj (same as CPU branch)
-    _CTX_ORIG=196608
-    _CTX=196608
-    if [ -n "${MODEL_MMPROJ:-}" ]; then
-        _CTX=$CTX_VISION
-        detail "Vision enabled: context reduced from $(( _CTX_ORIG / 1024 ))k → $(( CTX_VISION / 1024 ))k to fit mmproj in GTT allocation"
-    fi
-    MMPROJ_OPT="${MODEL_MMPROJ:+--mmproj /models/${MODEL_MMPROJ} --image-min-tokens 1024 --image-max-tokens 1280}"
-
     # Detect total RAM for shm_size and context sizing.
     # Parse /proc/meminfo instead of `free` — free's "Mem:" label is localized
     # (e.g. "Speicher:" on German systems) which silently breaks awk matching.
@@ -602,8 +593,18 @@ elif [ "${AMD_IGPU_MODE:-0}" = "1" ]; then
         _SHM_SIZE="8gb"
         _CTX_MAX=131072
     fi
-    # Ensure _CTX does not exceed the max for this RAM tier
-    [ "$_CTX" -gt "$_CTX_MAX" ] && _CTX=$_CTX_MAX
+
+    # Base context = tier max; vision (mmproj) trims it to leave headroom for
+    # the vision encoder in the GTT allocation. Never exceed the tier max.
+    _CTX_ORIG=$_CTX_MAX
+    _CTX=$_CTX_MAX
+    if [ -n "${MODEL_MMPROJ:-}" ]; then
+        [ "$CTX_VISION" -lt "$_CTX" ] && _CTX=$CTX_VISION
+        if [ "$_CTX" -lt "$_CTX_ORIG" ]; then
+            detail "Vision enabled: context reduced from $(( _CTX_ORIG / 1024 ))k → $(( _CTX / 1024 ))k to fit mmproj in GTT allocation"
+        fi
+    fi
+    MMPROJ_OPT="${MODEL_MMPROJ:+--mmproj /models/${MODEL_MMPROJ} --image-min-tokens 1024 --image-max-tokens 1280}"
 
     # The container needs the host's video/render group IDs to access /dev/dri.
     # These GIDs differ across distros (render is 109 on Ubuntu, 992 on Mint),
@@ -661,7 +662,7 @@ EOF
     printf "     ${DIM}config: $OVERRIDE_FILE  (restart: docker compose up -d llama-server)${NC}\n"
 
     printf "\n  ${BOLD}${CYAN}Tuning knobs${NC}\n"
-    printf "     ${DIM}--ctx-size N      up to $_CTX_MAX (${_TOTAL_RAM_GB}GB RAM available — 30%+ for KV cache)${NC}\n"
+    printf "     ${DIM}--ctx-size N      up to $_CTX_MAX (${_TOTAL_RAM_GB}GB RAM available — 30%%+ for KV cache)${NC}\n"
     printf "     ${DIM}--cache-type-k/v  f16 (best) → q8_0 → q5_1 → q4_1 → q4_0 (least RAM)${NC}\n"
     printf "     ${DIM}--no-mmap         prevents kernel double-mapping with GTT allocation${NC}\n"
 
@@ -674,7 +675,7 @@ EOF
     printf "     ${DIM}Quants:  Q6_K > Q5_K_M > Q4_K_M > Q3_K_M  (quality vs RAM)${NC}\n"
     printf "     ${DIM}IQ:      IQ3_XXS / IQ4_XS match one tier higher quality at lower size${NC}\n"
     printf "     ${DIM}MoE:     A3B / A22B suffix — only active params computed, runs faster${NC}\n"
-    printf "     ${DIM}Architecture: Radeon 780M iGPU + $_TOTAL_RAM_GBGB system RAM as VRAM via Vulkan${NC}\n"
+    printf "     ${DIM}Architecture: Radeon 780M iGPU + ${_TOTAL_RAM_GB}GB system RAM as VRAM via Vulkan${NC}\n"
 
 else
     info "Writing CPU override: $OVERRIDE_FILE"
