@@ -77,7 +77,6 @@ for (var i = 0; i < args.Length; i++)
             Console.WriteLine("  /help              List all commands");
             Console.WriteLine("  /status            Current session info (turns, tokens, model)");
             Console.WriteLine("  /stats             Token usage and tool analytics");
-            Console.WriteLine("  /model <name>      Switch model mid-session");
             Console.WriteLine("  /compact           Summarize history to free context space");
             Console.WriteLine("  /clear             Wipe conversation and start fresh");
             Console.WriteLine("  /retry             Resend the last message");
@@ -369,7 +368,6 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
 
     commands.Register(new RetryCommand(loop));
     commands.Register(new CompactCommand(compactor));
-    commands.Register(new ModelCommand());
 
     renderer.EnableCommandSuggestions(commands);
 

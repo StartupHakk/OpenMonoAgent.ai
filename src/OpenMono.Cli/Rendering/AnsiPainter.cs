@@ -24,11 +24,11 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
     internal const string Fw   = "\x1b[37m";
     internal const string Fk   = "\x1b[90m";
     internal const string Fbb  = "\x1b[38;2;163;255;102m";
-    internal const string BgMain   = "\x1b[40m";
-    internal const string BgInput  = "\x1b[40m";
-    internal const string BgStatus = "\x1b[40m";
-    internal const string BgSide   = "\x1b[40m";
-    internal const string BgSugg   = "\x1b[40m";
+    internal const string BgMain   = "\x1b[49m";
+    internal const string BgInput  = "\x1b[49m";
+    internal const string BgStatus = "\x1b[49m";
+    internal const string BgSide   = "\x1b[49m";
+    internal const string BgSugg   = "\x1b[49m";
 
     internal const int MaxCachedLines           = 5000;
     internal const int TrimThreshold            = 6000;
