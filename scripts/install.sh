@@ -525,7 +525,7 @@ services:
       --parallel 1
       --jinja
       --reasoning off
-      --metrics ${MMPROJ_OPT}
+      --metrics \${MODEL_MMPROJ:+--mmproj /models/\${MODEL_MMPROJ} --image-min-tokens 1024 --image-max-tokens 1280}
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -654,7 +654,7 @@ services:
       --parallel 1
       --jinja
       --reasoning off
-      --metrics ${MMPROJ_OPT}
+      --metrics \${MODEL_MMPROJ:+--mmproj /models/\${MODEL_MMPROJ} --image-min-tokens 1024 --image-max-tokens 1280}
       \${LLAMA_API_KEY:+--api-key \${LLAMA_API_KEY}}
 EOF
     ok "AMD iGPU override written"
@@ -711,7 +711,7 @@ services:
       --parallel 1
       --jinja
       --reasoning off
-      --metrics ${MMPROJ_OPT}
+      --metrics \${MODEL_MMPROJ:+--mmproj /models/\${MODEL_MMPROJ} --image-min-tokens 1024 --image-max-tokens 1280}
       \${LLAMA_API_KEY:+--api-key \${LLAMA_API_KEY}}
 EOF
     ok "CPU override written"
