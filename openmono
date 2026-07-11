@@ -854,6 +854,9 @@ cmd_model() {
         [[ -e "$m" ]] || continue
         core="$(basename "$m")"; core="${core#mmproj-}"; core="${core%.gguf}"
         core="$(echo "$core" | sed -E 's/-(bf16|f16|f32)$//I' | tr '[:upper:]' '[:lower:]')"
+        # Generic names like mmproj-BF16.gguf leave an empty core after stripping —
+        # an empty prefix would match EVERY model, so skip those.
+        [[ -n "$core" ]] || continue
         [[ "$model_lc" == "$core"* ]] && { mmproj="$(basename "$m")"; break; }
     done
 
