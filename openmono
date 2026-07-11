@@ -49,6 +49,7 @@ info()  { echo -e "${BLUE}[INFO]${NC} $*"; }
 ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+detail(){ echo -e "        $*"; }
 
 # ── Docker accessibility check ─────────────────────────────────────────────────
 
@@ -141,6 +142,7 @@ cmd_help() {
     printf "  %-14s %s\n" "restart" "Restart llama-server"
     printf "  %-14s %s\n" "logs"    "Tail llama-server logs"
     printf "  %-14s %s\n" "status"  "Show container + GPU + model status"
+    printf "  %-14s %s\n" "model"   "List models / switch model (openmono model use <name>)"
     echo ""
     echo "Inference box (frpc tunnel to the relay — dual-box only):"
     printf "  %-14s %s\n" "tunnel setup"      "Install frpc + systemd unit (prompts for relay signup values)"
@@ -733,6 +735,175 @@ print(models[0].get('id', '').strip() if models else '')
     echo ""
 }
 
+cmd_model() {
+    local models_dir="$REPO_DIR/models"
+    local env_file="$DOCKER_DIR/.env"
+    local sub="${1:-list}"
+
+    if [[ "$sub" == "--help" || "$sub" == "-h" || "$sub" == "help" ]]; then
+        echo "Usage: openmono model [list|use <name>] [--ctx N]"
+        echo ""
+        echo "  list             List all models in $models_dir (default)"
+        echo "  use <name>       Switch llama-server to a model. <name> can be the"
+        echo "                   filename or any unambiguous part of it (case-insensitive)."
+        echo "  --ctx N          Also set CTX_SIZE (context window) when switching."
+        echo ""
+        echo "Switching updates docker/.env (MODEL_NAME, MODEL_ALIAS, vision projector"
+        echo "if a matching mmproj exists) and restarts llama-server."
+        echo ""
+        echo "Examples:"
+        echo "  openmono model                       # list models"
+        echo "  openmono model use glm-4.7           # switch by partial name"
+        echo "  openmono model use ornith-1.0-9b --ctx 131072"
+        return 0
+    fi
+
+    [[ -d "$models_dir" ]] || { err "Models directory not found: $models_dir"; exit 1; }
+
+    # Candidate model files: all GGUFs except vision projectors; for sharded
+    # models only the first shard (llama-server loads the rest automatically).
+    local -a candidates=()
+    local f base
+    for f in "$models_dir"/*.gguf; do
+        [[ -e "$f" ]] || continue
+        base="$(basename "$f")"
+        [[ "$base" == mmproj-* ]] && continue
+        if [[ "$base" =~ -[0-9]{5}-of-[0-9]{5}\.gguf$ ]]; then
+            [[ "$base" == *-00001-of-* ]] || continue
+        fi
+        candidates+=("$base")
+    done
+    [[ ${#candidates[@]} -gt 0 ]] || { err "No models found in $models_dir"; exit 1; }
+
+    local current=""
+    [[ -f "$env_file" ]] && current="$(grep '^MODEL_NAME=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2-)"
+
+    # Total size of a model incl. shards, human-readable
+    _model_size() {
+        local first="$models_dir/$1" pattern
+        if [[ "$1" =~ ^(.*)-00001-of-([0-9]{5})\.gguf$ ]]; then
+            pattern="$models_dir/${BASH_REMATCH[1]}-"*"-of-${BASH_REMATCH[2]}.gguf"
+            du -ch $pattern 2>/dev/null | tail -1 | cut -f1
+        else
+            du -h "$first" 2>/dev/null | cut -f1
+        fi
+    }
+
+    if [[ "$sub" == "list" || "$sub" == "ls" ]]; then
+        echo ""
+        echo -e "${BLUE}── Models in $models_dir ──${NC}"
+        local marker
+        for base in "${candidates[@]}"; do
+            marker="  "
+            [[ "$base" == "$current" ]] && marker="${GREEN}▶ ${NC}"
+            printf "  ${marker}%-70s %8s\n" "$base" "$(_model_size "$base")"
+        done
+        echo ""
+        echo "  Switch with: openmono model use <name>"
+        [[ -n "$current" ]] && echo "  Active model (docker/.env): $current"
+        echo ""
+        return 0
+    fi
+
+    # `openmono model use <name>` — also accept `openmono model <name>` shorthand
+    [[ "$sub" == "use" ]] && shift
+    local query="${1:-}"
+    shift || true
+    local new_ctx=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --ctx) new_ctx="${2:-}"; shift 2 ;;
+            *) err "Unknown option: $1"; exit 1 ;;
+        esac
+    done
+    [[ -n "$query" ]] || { err "Usage: openmono model use <name>"; exit 1; }
+    if [[ -n "$new_ctx" && ! "$new_ctx" =~ ^[0-9]+$ ]]; then
+        err "--ctx expects a number (e.g. 131072)"; exit 1
+    fi
+
+    # Resolve query → exactly one candidate (exact match wins, then substring)
+    local -a matches=()
+    local q_lc c_lc
+    q_lc="$(echo "$query" | tr '[:upper:]' '[:lower:]')"
+    for base in "${candidates[@]}"; do
+        c_lc="$(echo "$base" | tr '[:upper:]' '[:lower:]')"
+        [[ "$c_lc" == "$q_lc" || "$c_lc" == "$q_lc.gguf" ]] && { matches=("$base"); break; }
+        [[ "$c_lc" == *"$q_lc"* ]] && matches+=("$base")
+    done
+    if [[ ${#matches[@]} -eq 0 ]]; then
+        err "No model matches '$query'. Available:"
+        printf '  %s\n' "${candidates[@]}" >&2
+        exit 1
+    elif [[ ${#matches[@]} -gt 1 ]]; then
+        err "'$query' is ambiguous — matches:"
+        printf '  %s\n' "${matches[@]}" >&2
+        exit 1
+    fi
+    local model="${matches[0]}"
+
+    # Alias: filename without .gguf and shard suffix, safe charset
+    local alias="${model%.gguf}"
+    alias="${alias%-00001-of-*}"
+    alias="$(printf '%s' "$alias" | tr -c 'A-Za-z0-9._-' '-')"
+
+    # Vision projector: use an mmproj whose core name (mmproj-<core>-F16.gguf)
+    # is a prefix of the model filename; otherwise disable vision.
+    local mmproj="" m core model_lc
+    model_lc="$(echo "$model" | tr '[:upper:]' '[:lower:]')"
+    for m in "$models_dir"/mmproj-*.gguf; do
+        [[ -e "$m" ]] || continue
+        core="$(basename "$m")"; core="${core#mmproj-}"; core="${core%.gguf}"
+        core="$(echo "$core" | sed -E 's/-(bf16|f16|f32)$//I' | tr '[:upper:]' '[:lower:]')"
+        [[ "$model_lc" == "$core"* ]] && { mmproj="$(basename "$m")"; break; }
+    done
+
+    # Rewrite docker/.env, preserving unrelated settings (same pattern as install.sh)
+    touch "$env_file"
+    grep -v -E "^MODEL_NAME=|^MODEL_ALIAS=|^MODEL_MMPROJ=|^OPENMONO_VISION_ENABLED=${new_ctx:+|^CTX_SIZE=}" \
+        "$env_file" > "${env_file}.tmp" || true
+    {
+        printf "MODEL_NAME=%s\nMODEL_ALIAS=%s\nMODEL_MMPROJ=%s\nOPENMONO_VISION_ENABLED=%s\n" \
+            "$model" "$alias" "$mmproj" "$([ -n "$mmproj" ] && echo 1 || echo 0)"
+        [[ -n "$new_ctx" ]] && printf "CTX_SIZE=%s\n" "$new_ctx"
+    } >> "${env_file}.tmp"
+    mv "${env_file}.tmp" "$env_file"
+
+    local ctx_now
+    ctx_now="$(grep '^CTX_SIZE=' "$env_file" | head -1 | cut -d= -f2-)"
+    ok "Model set: $model"
+    detail "alias: $alias  ·  vision: ${mmproj:-off}  ·  ctx: ${ctx_now:-default}  ·  size: $(_model_size "$model")"
+
+    # Large models leave less GTT room for the KV cache — hint, don't block.
+    local bytes
+    bytes="$(stat -c '%s' "$models_dir/$model" 2>/dev/null || echo 0)"
+    if [[ "$bytes" -gt 42949672960 || "$model" == *-00001-of-* ]]; then
+        warn "Large model — if it fails to load, lower the context first:"
+        warn "  openmono model use $query --ctx 65536"
+    fi
+
+    if [[ "$NATIVE_INFERENCE" == "true" ]]; then
+        info "Restart inference to apply: openmono restart"
+        return 0
+    fi
+
+    _ensure_docker
+    cd "$DOCKER_DIR"
+    info "Restarting llama-server with $alias ..."
+    docker compose up -d llama-server
+    info "Waiting for llama-server to load the model (large models take a few minutes)..."
+    local i
+    for i in $(seq 1 60); do
+        if curl -sf "http://localhost:${LLAMA_PORT}/health" &>/dev/null; then
+            ok "llama-server is healthy — model '$alias' is live"
+            return 0
+        fi
+        sleep 5
+        printf "."
+    done
+    echo ""
+    warn "llama-server not healthy yet — check progress with: openmono logs"
+}
+
 cmd_graph() {
     bash "$REPO_DIR/scripts/setup-graph.sh" "${@}"
 }
@@ -1049,6 +1220,7 @@ case "$COMMAND" in
     agent)          cmd_agent "${AGENT_FORWARD[@]+"${AGENT_FORWARD[@]}"}" "$@" ;;
     logs)           cmd_logs ;;
     status)         cmd_status ;;
+    model)          cmd_model "$@" ;;
     graph)          cmd_graph "$@" ;;
     graphify)       cmd_graphify "$@" ;;
     config)         cmd_config "$@" ;;    
