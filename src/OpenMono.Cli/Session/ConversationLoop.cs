@@ -355,7 +355,7 @@ public sealed class ConversationLoop : IDisposable
                 return;
             }
 
-            if (_doomLoop.Check(toolCalls))
+            if (_session.Meta.DoomLoopDetection && _doomLoop.Check(toolCalls))
             {
 
                 await siblingAbortCts.CancelAsync();

@@ -65,7 +65,7 @@ public sealed class ToolDispatcher : IDisposable
         if (toolCalls.Count == 0)
             return [];
 
-        if (_doomLoop.Check(toolCalls))
+        if (_session.Meta.DoomLoopDetection && _doomLoop.Check(toolCalls))
         {
             _renderer.WriteWarning("Doom loop detected — same tool calls repeated 3 times");
             return [ToolResult.InvalidInput(

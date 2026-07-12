@@ -171,6 +171,38 @@ public class ConversationLoopTests
             .Should().Contain(m => m.Content != null && m.Content.Contains("Doom loop detected"));
     }
 
+    [Fact]
+    public async Task DoomLoop_DoesNotFire_WhenDetectionDisabled()
+    {
+        static List<StreamChunk> Round(string toolName) =>
+        [
+            new() { ToolCallDelta = new ToolCall { Id = toolName, Name = toolName, Arguments = "{}" }, IsComplete = false },
+            new() { IsComplete = true },
+        ];
+
+        var llm = new FakeLlmClient(
+            Round("ToolA"), Round("ToolB"),
+            Round("ToolA"), Round("ToolB")
+        );
+
+        var tools = new ToolRegistry();
+        tools.Register(new TestTool("ToolA"));
+        tools.Register(new TestTool("ToolB"));
+        var session = new SessionState();
+        session.Meta.DoomLoopDetection = false;
+        session.AddMessage(new Message { Role = MessageRole.System, Content = "System" });
+        var renderer = new TerminalRenderer();
+        var config = new AppConfig();
+        var loop = new ConversationLoop(llm, tools, new PermissionEngine(config, renderer, renderer),
+            renderer, renderer, renderer, config, session);
+
+        await loop.RunTurnAsync("Do the thing", null, CancellationToken.None);
+
+        session.Messages
+            .Where(m => m.Role == MessageRole.User)
+            .Should().NotContain(m => m.Content != null && m.Content.Contains("Doom loop detected"));
+    }
+
     private sealed class FakeLlmClient : ILlmClient
     {
         private readonly List<List<StreamChunk>> _rounds;

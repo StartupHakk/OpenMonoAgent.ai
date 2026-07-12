@@ -358,6 +358,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     commands.Register(new CheckpointCommand(checkpointer));
     commands.Register(new ThinkCommand());
     commands.Register(new PlanCommand());
+    commands.Register(new DoomLoopCommand());
 
     var compactor = new Compactor(llm, config.Llm.ContextSize);
     var loop = new ConversationLoop(llm, tools, permissions, renderer, renderer, renderer, config, session, compactor, memoryStore,
