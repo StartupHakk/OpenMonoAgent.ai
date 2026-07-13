@@ -119,14 +119,15 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     var config = ConfigLoader.Load(workdir, configPath, warn: msg => renderer.WriteWarning(msg));
     if (endpoint is not null) config.Llm.Endpoint = endpoint;
 
+    Log.Initialize(config.DataDirectory);
+
     await TryDetectActualModelAsync(config);
     if (model is not null) config.Llm.Model = model;
     if (verbose) config.Verbose = true;
     if (showDetail) config.ShowDetail = true;
     renderer.Verbose = config.Verbose;
 
-    Log.Initialize(config.DataDirectory);
-    Log.Info($"Session starting — model={config.Llm.Model} endpoint={config.Llm.Endpoint} workdir={config.WorkingDirectory}");
+    Log.Info($"Session starting — model={config.Llm.Model} endpoint={config.Llm.Endpoint} workdir={config.WorkingDirectory} contextSize={config.Llm.ContextSize}");
 
     var sessionManager = new SessionManager(config);
     var session = SessionManager.CreateSession();
@@ -801,6 +802,9 @@ static async Task TryDetectActualModelAsync(AppConfig config)
     try
     {
         using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        if (!string.IsNullOrEmpty(config.Llm.ApiKey))
+            http.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.Llm.ApiKey);
         var url = $"{config.Llm.Endpoint.TrimEnd('/')}/props";
         var json = await http.GetStringAsync(url);
         using var doc = System.Text.Json.JsonDocument.Parse(json);
@@ -863,6 +867,9 @@ static async Task TryDetectActualModelAsync(AppConfig config)
     try
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        if (!string.IsNullOrEmpty(config.Llm.ApiKey))
+            http.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.Llm.ApiKey);
         var json = await http.GetStringAsync($"{config.Llm.Endpoint.TrimEnd('/')}/v1/models");
         using var doc = System.Text.Json.JsonDocument.Parse(json);
         if (doc.RootElement.TryGetProperty("data", out var data)

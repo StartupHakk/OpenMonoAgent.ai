@@ -14,6 +14,7 @@ public sealed class StatusCommand : ICommand
         context.Renderer.WriteInfo($"Turns: {session.TurnCount}");
         context.Renderer.WriteInfo($"Messages: {session.Messages.Count}");
         context.Renderer.WriteInfo($"Tokens used: ~{session.TotalTokensUsed:N0}");
+        context.Renderer.WriteInfo($"Context limit: {context.Config.Llm.ContextSize:N0} (checkpoint ~{(int)(context.Config.Llm.ContextSize * 0.65):N0}, compact ~{(int)(context.Config.Llm.ContextSize * 0.80):N0})");
         context.Renderer.WriteInfo($"Model: {context.Config.Llm.Model}");
         context.Renderer.WriteInfo($"Endpoint: {context.Config.Llm.Endpoint}");
         context.Renderer.WriteInfo($"Working dir: {context.Config.WorkingDirectory}");
