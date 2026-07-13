@@ -95,7 +95,7 @@ public sealed class FileWriteTool : ToolBase
                     : $"Cannot write to '{path}': file has no write permission. Run in your terminal: chmod u+w {path}";
             }
         }
-        catch { }
+        catch (Exception ex) { OpenMono.Utils.Log.Debug($"Read-only probe failed for '{path}': {ex.Message}"); }
 
         return $"Cannot write to '{path}': access denied. Check ownership with: ls -la {path}";
     }

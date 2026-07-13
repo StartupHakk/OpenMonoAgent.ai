@@ -94,8 +94,9 @@ public sealed class SessionManager
                 var msg = JsonSerializer.Deserialize<Message>(line, JsonOptions.Default);
                 if (msg is not null) session.AddMessage(msg);
             }
-            catch (JsonException)
+            catch (JsonException ex)
             {
+                OpenMono.Utils.Log.Warn($"Dropped a corrupt session message while loading: {ex.Message}");
             }
         }
 
@@ -112,8 +113,9 @@ public sealed class SessionManager
                 if (session.Checkpoints.Count > 0)
                     session.CheckpointCutoffIndex = session.Checkpoints[^1].CutoffMessageIndex;
             }
-            catch (JsonException)
+            catch (JsonException ex)
             {
+                OpenMono.Utils.Log.Warn($"Failed to load session checkpoints: {ex.Message}");
             }
         }
 

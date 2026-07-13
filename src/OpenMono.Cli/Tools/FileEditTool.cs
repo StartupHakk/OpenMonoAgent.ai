@@ -109,7 +109,7 @@ public sealed class FileEditTool : ToolBase
                     : $"Cannot edit '{path}': file has no write permission. Run in your terminal: chmod u+w {path}";
             }
         }
-        catch { }
+        catch (Exception ex) { OpenMono.Utils.Log.Debug($"Read-only probe failed for '{path}': {ex.Message}"); }
 
         return $"Cannot edit '{path}': access denied. Check ownership with: ls -la {path}";
     }

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -27,15 +28,45 @@ public sealed partial class WebFetchTool : ToolBase
         })
         .Require("url");
 
-    private static readonly HttpClient Http = new()
+    private static readonly HttpClient Http = CreateGuardedClient();
+
+    private static HttpClient CreateGuardedClient()
     {
-        Timeout = TimeSpan.FromSeconds(30),
-        DefaultRequestHeaders =
+        var handler = new SocketsHttpHandler
         {
-            { "User-Agent", "OpenMono.ai/0.1 (coding-agent)" },
-            { "Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7" },
+            AllowAutoRedirect = true,
+            ConnectCallback = GuardedConnectAsync,
+        };
+        var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
+        client.DefaultRequestHeaders.Add("User-Agent", "OpenMono.ai/0.1 (coding-agent)");
+        client.DefaultRequestHeaders.Add(
+            "Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7");
+        return client;
+    }
+
+    private static async ValueTask<Stream> GuardedConnectAsync(
+        SocketsHttpConnectionContext ctx, CancellationToken ct)
+    {
+        var host = ctx.DnsEndPoint.Host;
+        var addresses = await Dns.GetHostAddressesAsync(host, ct);
+        var target = addresses.FirstOrDefault(a => !IsBlockedAddress(a));
+        if (target is null)
+            throw new HttpRequestException(
+                $"Blocked: '{host}' resolves to a private, loopback, or link-local address — " +
+                "refusing to connect (SSRF protection).");
+
+        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        try
+        {
+            await socket.ConnectAsync(target, ctx.DnsEndPoint.Port, ct);
+            return new NetworkStream(socket, ownsSocket: true);
         }
-    };
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
 
     private static readonly HttpClient ScrapeHttp = new()
     {
@@ -122,6 +153,21 @@ public sealed partial class WebFetchTool : ToolBase
     {
         try
         {
+            IPAddress[] addresses;
+            try
+            {
+                addresses = await Dns.GetHostAddressesAsync(uri.Host, ct);
+            }
+            catch (Exception ex) when (ex is SocketException or ArgumentException)
+            {
+                return ToolResult.Error($"Could not resolve host for {url}: {ex.Message}");
+            }
+
+            if (addresses.Length == 0 || addresses.Any(IsBlockedAddress))
+                return ToolResult.Error(
+                    $"Blocked: {url} resolves to a private, loopback, or link-local address — " +
+                    "refusing to fetch (SSRF protection).");
+
             using var request = new HttpRequestMessage(HttpMethod.Get, uri);
 
             if (input.TryGetProperty("headers", out var headers))
@@ -158,6 +204,31 @@ public sealed partial class WebFetchTool : ToolBase
         {
             return ToolResult.Error($"HTTP error fetching {url}: {ex.Message}");
         }
+    }
+
+    private static bool IsBlockedAddress(IPAddress address)
+    {
+        if (address.IsIPv4MappedToIPv6)
+            address = address.MapToIPv4();
+
+        if (IPAddress.IsLoopback(address))
+            return true;
+
+        if (address.AddressFamily == AddressFamily.InterNetwork)
+        {
+            var b = address.GetAddressBytes();
+            if (b[0] == 0) return true;
+            if (b[0] == 10) return true;
+            if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true;
+            if (b[0] == 192 && b[1] == 168) return true;
+            if (b[0] == 169 && b[1] == 254) return true;
+            return false;
+        }
+
+        if (address.AddressFamily == AddressFamily.InterNetworkV6)
+            return address.IsIPv6LinkLocal || address.IsIPv6UniqueLocal;
+
+        return false;
     }
 
     private static string ExtractTextFromHtml(string html)

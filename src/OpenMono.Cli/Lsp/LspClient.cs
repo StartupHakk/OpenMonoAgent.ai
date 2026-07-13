@@ -243,7 +243,7 @@ public sealed class LspClient : IDisposable
     public void Dispose()
     {
         try { if (!_process.HasExited) { _process.Kill(true); _process.WaitForExit(3000); } }
-        catch { }
+        catch (Exception ex) { OpenMono.Utils.Log.Debug($"LSP process kill on dispose failed: {ex.Message}"); }
         _process.Dispose();
         _lock.Dispose();
     }

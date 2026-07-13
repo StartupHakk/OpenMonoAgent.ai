@@ -46,7 +46,7 @@ public sealed class AnsiTuiRenderer : IRenderer
     public void EnterFullScreen()
     {
         _painter.Sz();
-        _painter.Write($"{AnsiPainter.E}[?1049h{AnsiPainter.E}[?1000h{AnsiPainter.E}[?1006h{AnsiPainter.E}[?25l{AnsiPainter.E}[2J");
+        _painter.Write($"{AnsiPainter.E}[?1049h{AnsiPainter.E}[?1002h{AnsiPainter.E}[?1006h{AnsiPainter.E}[?25l{AnsiPainter.E}[2J");
         AnsiPainter.Flush();
         _inFullScreen = true;
         _painter.InvalidateCache();
@@ -57,7 +57,7 @@ public sealed class AnsiTuiRenderer : IRenderer
     {
         if (!_inFullScreen) return;
         _inFullScreen = false;
-        _terminal.WriteAsync($"{AnsiPainter.E}[?1000l{AnsiPainter.E}[?1006l{AnsiPainter.E}[?25h{AnsiPainter.E}[?1049l{AnsiPainter.R}").GetAwaiter().GetResult();
+        _terminal.WriteAsync($"{AnsiPainter.E}[?1000l{AnsiPainter.E}[?1002l{AnsiPainter.E}[?1006l{AnsiPainter.E}[?25h{AnsiPainter.E}[?1049l{AnsiPainter.R}").GetAwaiter().GetResult();
         Console.Out.Flush();
         try { Console.TreatControlCAsInput = false; } catch { }
     }
@@ -69,7 +69,7 @@ public sealed class AnsiTuiRenderer : IRenderer
         _painter.StopPaintThread();
         try
         {
-            _terminal.WriteAsync($"{AnsiPainter.E}[?1000l{AnsiPainter.E}[?1006l{AnsiPainter.E}[?25h{AnsiPainter.E}[?1049l{AnsiPainter.R}\n").GetAwaiter().GetResult();
+            _terminal.WriteAsync($"{AnsiPainter.E}[?1000l{AnsiPainter.E}[?1002l{AnsiPainter.E}[?1006l{AnsiPainter.E}[?25h{AnsiPainter.E}[?1049l{AnsiPainter.R}\n").GetAwaiter().GetResult();
             Console.Out.Flush();
             try { Console.TreatControlCAsInput = false; } catch { }
         }

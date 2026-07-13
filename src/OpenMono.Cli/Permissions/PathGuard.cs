@@ -54,10 +54,7 @@ public static class PathGuard
         if (IsDeviceFile(resolvedPath))
             return $"Access denied: device files cannot be accessed ('{resolvedPath}').";
 
-        var normalizedWorkspace = NormalizeDirPath(workingDirectory);
-        var normalizedPath     = NormalizeDirPath(resolvedPath);
-
-        if (!normalizedPath.StartsWith(normalizedWorkspace, PathComparison))
+        if (!IsWithinWorkspace(resolvedPath, workingDirectory))
             return $"Access denied: '{resolvedPath}' is outside the workspace ('{workingDirectory}').";
 
         return null;
@@ -65,11 +62,40 @@ public static class PathGuard
 
     private static bool IsWithinWorkspace(string resolvedPath, string workingDirectory)
     {
-        var normalizedWorkspace = NormalizeDirPath(workingDirectory);
-        var normalizedPath      = NormalizeDirPath(resolvedPath);
+        var normalizedWorkspace = NormalizeDirPath(ResolveRealPath(workingDirectory));
+        var normalizedPath      = NormalizeDirPath(ResolveRealPath(resolvedPath));
 
         return normalizedPath.StartsWith(normalizedWorkspace, PathComparison);
     }
+
+    private static string ResolveRealPath(string path)
+    {
+        try
+        {
+            var full = Path.GetFullPath(path);
+
+            if (Directory.Exists(full) || File.Exists(full))
+            {
+                FileSystemInfo info = Directory.Exists(full)
+                    ? new DirectoryInfo(full)
+                    : new FileInfo(full);
+                return info.ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? full;
+            }
+
+            var parent = Path.GetDirectoryName(full);
+            if (string.IsNullOrEmpty(parent) || PathComparisonEquals(parent, full))
+                return full;
+
+            return Path.Combine(ResolveRealPath(parent), Path.GetFileName(full));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return Path.GetFullPath(path);
+        }
+    }
+
+    private static bool PathComparisonEquals(string a, string b) =>
+        string.Equals(a, b, PathComparison);
 
     private static bool IsProtectedFile(string resolvedPath)
     {

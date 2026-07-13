@@ -162,9 +162,9 @@ public sealed class TurnJournal : IDisposable
                 if (evt is not null)
                     events.Add(evt);
             }
-            catch (JsonException)
+            catch (JsonException ex)
             {
-
+                OpenMono.Utils.Log.Debug($"Skipped a corrupt turn-journal line: {ex.Message}");
             }
         }
 

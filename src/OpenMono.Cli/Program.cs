@@ -150,7 +150,11 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     using var llm = providerRegistry.CreateClient(config);
 
     Action<string> debugCallback = msg => renderer.WriteDebug(msg);
-    if (llm is OpenAiCompatClient openAiClient) openAiClient.OnDebug = debugCallback;
+    if (llm is OpenAiCompatClient openAiClient)
+    {
+        openAiClient.OnDebug = debugCallback;
+        openAiClient.OnModelReported = m => config.Llm.Model = m;
+    }
     if (llm is AnthropicClient anthropicClient) anthropicClient.OnDebug = debugCallback;
 
     var fileHistory = new FileHistory(config);
@@ -410,7 +414,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
 
 
             try { acpHost?.StopAsync(CancellationToken.None).GetAwaiter().GetResult(); }
-            catch { }
+            catch (Exception ex) { Log.Debug($"ACP host stop on exit failed: {ex.Message}"); }
             ProcessWatchdog.ScheduleHardKill();
             ansiTui?.SafeExit();
             Environment.Exit(0);
@@ -436,9 +440,11 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
 
         if (input.Trim() is "exit" or "quit" or "q")
         {
-            ProcessWatchdog.ScheduleHardKill();
-            ansiTui?.SafeExit();
-            Environment.Exit(0);
+            if (currentTurnCts is { } activeCts && !activeCts.IsCancellationRequested)
+                activeCts.Cancel();
+            else
+                renderer.WriteInfo("Nothing is running. Type /quit to exit OpenMono.");
+            continue;
         }
 
         if (input.StartsWith('/'))
@@ -604,9 +610,9 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
         {
             await sessionManager.SaveAsync(session, CancellationToken.None);
         }
-        catch
+        catch (Exception ex)
         {
-
+            Log.Warn($"Session autosave failed (turn loop): {ex.Message}");
         }
     }
 
@@ -630,7 +636,7 @@ static async Task<bool> IsServerWarmAsync(string endpoint)
             return true;
         }
     }
-    catch { }
+    catch (Exception ex) { Log.Debug($"Server warmth probe failed: {ex.Message}"); }
     return false;
 }
 
@@ -957,8 +963,8 @@ static async Task AutoDetectCodeGraphAsync(AppConfig config, IRenderer renderer)
 
         renderer.WriteInfo("code-review-graph detected — registering as MCP server.");
     }
-    catch
+    catch (Exception ex)
     {
-
+        Log.Debug($"code-review-graph autodetect failed: {ex.Message}");
     }
 }

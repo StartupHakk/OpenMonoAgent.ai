@@ -34,6 +34,8 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
 
     public string? ApiKey { get; init; }
     public Action<string>? OnDebug { get; set; }
+    public Action<string>? OnModelReported { get; set; }
+    private string? _reportedModel;
 
     private readonly string _model;
 
@@ -251,6 +253,15 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                     }
 
                     chunkCount++;
+
+                    if (root.TryGetProperty("model", out var modelEl) &&
+                        modelEl.ValueKind == JsonValueKind.String &&
+                        modelEl.GetString() is { Length: > 0 } reported &&
+                        reported != _reportedModel)
+                    {
+                        _reportedModel = reported;
+                        OnModelReported?.Invoke(reported);
+                    }
 
                     UsageInfo? usage = null;
                     if (root.TryGetProperty("usage", out var usageEl) &&

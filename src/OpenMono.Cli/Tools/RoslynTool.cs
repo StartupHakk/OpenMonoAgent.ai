@@ -139,7 +139,7 @@ public sealed class RoslynTool : ToolBase, IDisposable
                         SourceText.From(text, Encoding.UTF8),
                         filePath: file);
                 }
-                catch {  }
+                catch (Exception ex) { OpenMono.Utils.Log.Debug($"Roslyn skipped file '{file}': {ex.Message}"); }
             }
 
             var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
@@ -147,7 +147,7 @@ public sealed class RoslynTool : ToolBase, IDisposable
             foreach (var dll in Directory.EnumerateFiles(runtimeDir, "*.dll"))
             {
                 try { refs.Add(MetadataReference.CreateFromFile(dll)); }
-                catch {  }
+                catch (Exception ex) { OpenMono.Utils.Log.Debug($"Roslyn skipped metadata reference '{dll}': {ex.Message}"); }
             }
             solution = solution.AddMetadataReferences(_projectId, refs);
 
