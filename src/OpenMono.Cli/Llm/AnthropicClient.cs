@@ -146,6 +146,7 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
                                 currentToolId = block.TryGetProperty("id", out var id) ? id.GetString() ?? "" : "";
                                 currentToolName = block.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "";
                                 toolArgsBuffer.Clear();
+                                yield return new StreamChunk { ToolCallProgress = currentToolName };
                             }
                             break;
 
@@ -163,6 +164,7 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
                                          delta.TryGetProperty("partial_json", out var pj))
                                 {
                                     toolArgsBuffer.Append(pj.GetString());
+                                    yield return new StreamChunk { ToolCallProgress = currentToolName };
                                 }
                             }
                             break;

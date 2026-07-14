@@ -343,6 +343,8 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                                 }
 
                                 acc.IsComplete = true;
+                                if (!string.IsNullOrEmpty(acc.Name))
+                                    yield return new StreamChunk { ToolCallProgress = acc.Name };
                             }
                         }
 

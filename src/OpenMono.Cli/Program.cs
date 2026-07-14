@@ -372,6 +372,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
 
     commands.Register(new RetryCommand(loop));
     commands.Register(new CompactCommand(compactor));
+    commands.Register(new PlanCommand(loop));
 
     renderer.EnableCommandSuggestions(commands);
 
@@ -427,7 +428,17 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
         string input;
         try
         {
-            input = InputSanitizer.SanitizeUserInput(renderer.ReadInput());
+            if (ansiTui is not null && session.Meta.PlanMode && session.Meta.LastPlanContent is { Length: > 0 })
+            {
+                var key = ansiTui.ReadMenuKey('1', '2', '3');
+                input = key == '\0'
+                    ? InputSanitizer.SanitizeUserInput(renderer.ReadInput())
+                    : key.ToString();
+            }
+            else
+            {
+                input = InputSanitizer.SanitizeUserInput(renderer.ReadInput());
+            }
         }
         catch (OperationCanceledException)
         {
@@ -526,11 +537,31 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
             };
             if (choice == "keep")
             {
-                renderer.WriteInfo("Staying in Plan mode — refine the plan, or pick 1 (auto) / 2 (ask before edits).");
-                continue;
+                renderer.WriteInfo("What would you like to change or add to the plan? (press Enter to keep planning without changes)");
+                var refinement = InputSanitizer.SanitizeUserInput(renderer.ReadInput()).Trim();
+                if (refinement.Length == 0)
+                {
+                    renderer.WriteInfo("Staying in Plan mode — press 3 to refine, or 1 (auto) / 2 (ask before edits) to implement.");
+                    continue;
+                }
+                input = refinement;
+                renderer.WriteInfo("♻ Refining the plan…");
+                transformedInput = ModeInstructions.RefinePlan(
+                    FileReferenceResolver.TransformRelativeReferences(refinement, config.WorkingDirectory));
             }
             if (choice is "auto" or "gated")
             {
+                // One-time gate before any work begins: implementation never starts silently.
+                renderer.WriteInfo("Start implementing this plan? (y/n)");
+                var confirm = ansiTui is not null
+                    ? ansiTui.ReadMenuKey('y', 'n')
+                    : (InputSanitizer.SanitizeUserInput(renderer.ReadInput()).Trim().ToLowerInvariant() is "y" or "yes" ? 'y' : 'n');
+                if (confirm != 'y')
+                {
+                    renderer.WriteInfo("Held off — still in Plan mode. Press 1 (auto) / 2 (ask before edits), or 3 to refine.");
+                    continue;
+                }
+
                 var (_, autoApprove, instruction) = ModeInstructions.ResolvePlanDecision(choice);
                 session.Meta.PlanMode = false;
                 session.Meta.AutoApproveWrites = autoApprove;
@@ -604,6 +635,9 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
         {
             currentTurnCts = null;
             if (ansiTui is not null) ansiTui.CurrentTurnCts = null;
+            // Scope plan auto-approve to the single implementation turn — never let it persist
+            // across the session (that would silently disable all future permission prompts).
+            session.Meta.AutoApproveWrites = false;
         }
 
         try

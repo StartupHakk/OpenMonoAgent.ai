@@ -120,6 +120,18 @@ internal static class ModeInstructions
     internal const string SwitchedToBuild =
         "[The user just switched to BUILD mode. You now have full tool access — proceed with any changes.]";
 
+    internal static string PlanTask(string task) =>
+        $"{task}\n\n" +
+        "[Plan this task: investigate as needed, then call CreatePlan to present a numbered " +
+        "implementation plan for approval. Do not implement anything yet.]";
+
+    // ── User picked "keep planning" and gave feedback: force a revised plan, not a chat reply ──
+    internal static string RefinePlan(string feedback) =>
+        $"Revise the plan based on this feedback:\n{feedback}\n\n" +
+        "Investigate further if needed, then call CreatePlan again with the FULL updated plan to " +
+        "present the revised version. Do NOT just reply in prose — the user is waiting for an updated " +
+        "plan. Stay in Plan mode; do not implement yet.";
+
     // ── CreatePlan: after the plan is presented, tell the agent to wait for the user ────────
     internal const string PlanPresented =
         "The plan above has been presented to the user. You are STILL in Plan mode (read-only).\n" +

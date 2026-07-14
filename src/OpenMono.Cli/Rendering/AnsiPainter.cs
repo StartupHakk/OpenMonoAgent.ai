@@ -55,6 +55,8 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
     private readonly StringBuilder _streamBuf = new();
     private readonly object _streamLock = new();
     private volatile bool _streaming;
+    private volatile string? _toolProgress;
+    private int _toolProgressFrame;
     private int _chunks;
     private double _lastTokSec;
     private readonly Stopwatch _turnTimer = new();
@@ -558,6 +560,7 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         {
             _ctrlCBannerVisible = false;
             _ctrlCBannerTimer = null;
+            InvalidateFrameBuffer();
             PaintConvThrottled(force: true);
         }, null, dueTime: 2000, period: System.Threading.Timeout.Infinite);
         PaintConvThrottled(force: true);
@@ -721,6 +724,7 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
     {
         _turnTimer.Stop();
         _streaming = false;
+        _toolProgress = null;
         ComputeWindowStats();
         string finalText;
         lock (_streamLock) { finalText = _streamBuf.ToString(); _streamBuf.Clear(); }
@@ -809,6 +813,20 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         }
     }
 
+    internal void ShowToolProgress(string label)
+    {
+        _toolProgress = label;
+        System.Threading.Interlocked.Increment(ref _toolProgressFrame);
+        PaintConvThrottled(force: false);
+    }
+
+    internal void ClearToolProgress()
+    {
+        if (_toolProgress is null) return;
+        _toolProgress = null;
+        PaintConvThrottled(force: true);
+    }
+
     private void EnsureThinkingTimer()
     {
         lock (_thinkingTimerLock)
@@ -852,6 +870,7 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
     internal void ClearStreaming()
     {
         _streaming = false;
+        _toolProgress = null;
         lock (_streamLock) { _streamBuf.Clear(); }
         _ctrlCBannerVisible = false;
         _ctrlCBannerTimer?.Dispose();
@@ -1427,6 +1446,14 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
                     }
                 }
             }
+        }
+
+        var toolProg = _toolProgress;
+        if (toolProg is not null)
+        {
+            var spinner = SpinnerFrames[Math.Abs(_toolProgressFrame) % SpinnerFrames.Length];
+            lines.Add("");
+            lines.Add($"  {Fbb}{spinner} {IT}{Fk}{toolProg}…{R}");
         }
 
         lock (_queueLock)

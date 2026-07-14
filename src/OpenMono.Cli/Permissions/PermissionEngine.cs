@@ -350,15 +350,20 @@ public sealed class PermissionEngine
     private CapabilityDecision AllowAllCapabilitiesForSession(
         string toolName, List<Capability> caps, IReadOnlyList<Capability> allCaps)
     {
+        _sessionDenyAll.Remove(toolName);
         _sessionAllowAll.Add(toolName);
 
         foreach (var cap in caps)
+        {
+            _sessionDenyCapTypes.Remove(cap.GetType().Name);
             _sessionAllowCapTypes.Add(cap.GetType().Name);
+        }
         return new(true, null, allCaps);
     }
 
     private CapabilityDecision DenyAllCapabilitiesForSession(string toolName, IReadOnlyList<Capability> allCaps)
     {
+        _sessionAllowAll.Remove(toolName);
         _sessionDenyAll.Add(toolName);
         return new(false, PermissionDeniedSession, allCaps);
     }
@@ -386,12 +391,14 @@ public sealed class PermissionEngine
 
     private PermissionDecision AllowAllForSession(string toolName)
     {
+        _sessionDenyAll.Remove(toolName);
         _sessionAllowAll.Add(toolName);
         return new(true);
     }
 
     private PermissionDecision DenyAllForSession(string toolName)
     {
+        _sessionAllowAll.Remove(toolName);
         _sessionDenyAll.Add(toolName);
         return new(false,
             $"{toolName} was denied for this session by the user. " +

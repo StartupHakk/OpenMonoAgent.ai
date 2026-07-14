@@ -407,6 +407,14 @@ public sealed class ConversationLoop : IDisposable
                     continue;
                 }
 
+                if (chunk.ToolCallProgress is not null)
+                {
+                    _output.ShowToolProgress(chunk.ToolCallProgress == "CreatePlan"
+                        ? "Writing plan"
+                        : $"Preparing {chunk.ToolCallProgress}");
+                    continue;
+                }
+
                 if (!receivedFirstChunk)
                 {
                     ttft = requestSw.Elapsed;
@@ -428,6 +436,7 @@ public sealed class ConversationLoop : IDisposable
 
                 if (chunk.ToolCallDelta is not null)
                 {
+                    _output.ClearToolProgress();
                     var call = chunk.ToolCallDelta;
                     toolCalls.Add(call);
 
@@ -463,6 +472,7 @@ public sealed class ConversationLoop : IDisposable
                     indicatorCts.Cancel();
                 await indicatorTask;
                 _output.ClearWaitingIndicator();
+                _output.ClearToolProgress();
             }
 
             if (thinkingStarted && !thinkingCollapsed)
@@ -584,8 +594,9 @@ public sealed class ConversationLoop : IDisposable
                     else
                     {
                         // TUI: show the plan + options; the user types 1/2/3 to choose.
+                        _output.WriteInfo("📋 Plan ready — review below:");
                         _output.WriteMarkdown(planText);
-                        _output.WriteInfo($"\n{ModeInstructions.ProceedOptions}\n\n(reply 1/2/3, or keep typing to refine the plan)");
+                        _output.WriteInfo($"\n{ModeInstructions.ProceedOptions}\n\n(press 1, 2, or 3 — no Enter needed)");
                     }
                 }
                 _session.AddMessage(new Message

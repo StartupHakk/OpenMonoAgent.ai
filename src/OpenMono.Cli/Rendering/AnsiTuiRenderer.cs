@@ -32,6 +32,8 @@ public sealed class AnsiTuiRenderer : IRenderer
 
     public void AddUserMessage(string text) => _painter.AddUserMessage(text);
 
+    public char ReadMenuKey(params char[] allowed) => _inputReader.ReadMenuKey(allowed);
+
     public void OnTokensUpdated() => _painter.OnTokensUpdated();
 
     public string? DequeueMessage() => _painter.DequeueMessage();
@@ -93,6 +95,8 @@ public sealed class AnsiTuiRenderer : IRenderer
     public void ShowWaitingIndicator(string? label, string? agentLabel) => _painter.ShowWaitingIndicator(label, agentLabel);
     public void ClearWaitingIndicator()     => _painter.ClearWaitingIndicator(null);
     public void ClearWaitingIndicator(string? agentLabel) => _painter.ClearWaitingIndicator(agentLabel);
+    public void ShowToolProgress(string label) => _painter.ShowToolProgress(label);
+    public void ClearToolProgress()            => _painter.ClearToolProgress();
 
     private static readonly HashSet<string> _silentTools =
         ["Glob", "FileRead", "FileWrite", "ListDirectory", "ToolSearch", "Grep"];

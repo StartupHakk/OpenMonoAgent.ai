@@ -513,6 +513,7 @@ internal sealed class AnsiInputReader(
                 if (ctrlCBannerShown)
                 {
                     ctrlCBannerShown = false;
+                    painter.InvalidateFrameBuffer();
                     painter.PaintConvThrottled(force: true);
                 }
 
@@ -803,6 +804,40 @@ internal sealed class AnsiInputReader(
             painter.Write($"{AnsiPainter.E}[?2004l");
             AnsiPainter.Flush();
         }
+    }
+
+    internal char ReadMenuKey(params char[] allowed)
+    {
+        var prev = Console.TreatControlCAsInput;
+        Console.TreatControlCAsInput = true;
+        try
+        {
+            while (true)
+            {
+                var result = terminal.TryReadKey();
+                if (result is null) { Thread.Sleep(20); continue; }
+                var k = result.Value;
+
+                if (k.Key == ConsoleKey.Escape)
+                {
+                    if (!Console.KeyAvailable) { var ms = 0; while (!Console.KeyAvailable && ms < 50) { Thread.Sleep(1); ms++; } }
+                    if (Console.KeyAvailable) { TryReadEscapeSequence(); continue; }
+                    return '\0';
+                }
+
+                if (k.Key == ConsoleKey.C && k.Modifiers.HasFlag(ConsoleModifiers.Control))
+                {
+                    ProcessWatchdog.ScheduleHardKill();
+                    OnSafeExit();
+                    Environment.Exit(0);
+                }
+
+                var ch = char.ToLowerInvariant(k.KeyChar);
+                foreach (var a in allowed)
+                    if (ch == char.ToLowerInvariant(a)) return ch;
+            }
+        }
+        finally { Console.TreatControlCAsInput = prev; }
     }
 
     private PermissionResponse ReadPermissionKey()

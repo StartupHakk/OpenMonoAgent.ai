@@ -21,6 +21,7 @@ public sealed record StreamChunk
     public string? ThinkingDelta { get; init; }
     public string? TextDelta { get; init; }
     public ToolCall? ToolCallDelta { get; init; }
+    public string? ToolCallProgress { get; init; }
     public bool IsComplete { get; init; }
     public UsageInfo? Usage { get; init; }
 }

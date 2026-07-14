@@ -33,6 +33,9 @@ public interface IOutputSink
     void ClearWaitingIndicator() => ClearWaitingIndicator(null);
     void ClearWaitingIndicator(string? agentLabel);
 
+    void ShowToolProgress(string label) { }
+    void ClearToolProgress() { }
+
     void WriteWelcome(string model, string endpoint);
     void WriteMarkdown(string markdown);
     void WriteDebug(string message);

@@ -151,6 +151,18 @@ public sealed class TerminalRenderer : IRenderer
         }
     }
 
+    private string? _toolProgressLabel;
+
+    public void ShowToolProgress(string label)
+    {
+        if (_toolProgressLabel == label) return;
+        _toolProgressLabel = label;
+        Console.Write($"\n  [2;36m◈ {label}…[0m\n");
+        Console.Out.Flush();
+    }
+
+    public void ClearToolProgress() => _toolProgressLabel = null;
+
     public void AppendThinking(string text) => AppendThinking(text, null);
 
     public void AppendThinking(string text, string? agentLabel)

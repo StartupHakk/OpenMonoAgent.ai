@@ -170,6 +170,7 @@ internal sealed class AnsiSuggestionOverlay(AppConfig config, AnsiPainter painte
         _suggestionIdx = -1;
         _lastDrawnCount = 0;
         AnsiPainter.Flush();
+        painter.InvalidateFrameBuffer();
         painter.PaintConvThrottled(force: true);
     }
 
