@@ -13,7 +13,8 @@ public sealed class FileReadTool : ToolBase
     public override string Name => "FileRead";
     public override string Description => "Read a file from the filesystem. Returns the contents with line numbers. " +
         "For image files (png, jpg, jpeg, gif, webp), attaches the image directly so you can view and describe it. " +
-        "Can also read multiple files from a cursor (e.g., from Grep results).";
+        "Can also read multiple files from a cursor (e.g., from Grep results). " +
+        "Prefer reading the files that Grep/Glob surfaced — targeted reads beat scanning directories.";
     public override bool IsConcurrencySafe => true;
     public override bool IsReadOnly => true;
     public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;

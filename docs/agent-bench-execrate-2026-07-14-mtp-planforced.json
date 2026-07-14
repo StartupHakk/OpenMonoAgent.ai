@@ -1,0 +1,7 @@
+{
+ "Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL": {
+  "intents": 120,
+  "executed": 114,
+  "exec_rate": 95
+ }
+}

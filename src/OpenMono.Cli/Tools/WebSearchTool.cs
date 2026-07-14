@@ -8,7 +8,8 @@ namespace OpenMono.Tools;
 public sealed partial class WebSearchTool : ToolBase
 {
     public override string Name => "WebSearch";
-    public override string Description => "Search the web using DuckDuckGo. Returns titles, URLs, and snippets for the top results.";
+    public override string Description => "Search the web using DuckDuckGo. Returns titles, URLs, and snippets for the top results. " +
+        "Use for general or current information; for library/framework API documentation prefer the Context7 tools if available.";
     public override bool IsConcurrencySafe => true;
     public override bool IsReadOnly => true;
 

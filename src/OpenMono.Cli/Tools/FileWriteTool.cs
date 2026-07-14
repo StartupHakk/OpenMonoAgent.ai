@@ -7,7 +7,8 @@ namespace OpenMono.Tools;
 public sealed class FileWriteTool : ToolBase
 {
     public override string Name => "FileWrite";
-    public override string Description => "Create a new file or overwrite an existing file with the provided content.";
+    public override string Description => "Create a new file or overwrite an existing file with the provided content. " +
+        "Use for NEW files; to change an existing file use FileEdit so unchanged content cannot be lost.";
 
     protected override SchemaBuilder DefineSchema() => new SchemaBuilder()
         .AddString("file_path", "Absolute path to the file to write")

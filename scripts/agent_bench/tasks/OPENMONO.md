@@ -16,6 +16,13 @@
 - Commit .env or credentials files
 - Add dependencies without justification
 
+## Tool usage
+- Locate before reading: Grep/Glob first, then FileRead the hits — never browse blindly.
+- External library APIs (imports, version migrations, unfamiliar frameworks): query the
+  Context7 tools (`mcp__context7__*`) BEFORE writing the code. Never guess an API from memory.
+- Prefer FileEdit for changes to existing files; FileWrite only for new files.
+- After every change: run the affected code or tests before declaring it done.
+
 ## Minimalism (Ponytail ladder)
 Before writing any code, climb this ladder and stop at the first rung that holds:
 1. Does this need to exist at all? If not: skip it (YAGNI).

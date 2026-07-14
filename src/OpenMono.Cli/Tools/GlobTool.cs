@@ -8,7 +8,8 @@ namespace OpenMono.Tools;
 public sealed class GlobTool : ToolBase
 {
     public override string Name => "Glob";
-    public override string Description => "Find files matching a glob pattern. Returns paths sorted by modification time.";
+    public override string Description => "Find files matching a glob pattern. Returns paths sorted by modification time. " +
+        "Use when you know a file name or pattern but not its location; when searching by content, use Grep instead.";
     public override bool IsConcurrencySafe => true;
     public override bool IsReadOnly => true;
     public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;

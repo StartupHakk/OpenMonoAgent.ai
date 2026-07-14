@@ -8,7 +8,8 @@ namespace OpenMono.Tools;
 public sealed partial class WebFetchTool : ToolBase
 {
     public override string Name => "WebFetch";
-    public override string Description => "Fetch a web page and extract its text content. Returns the page text with HTML tags stripped.";
+    public override string Description => "Fetch a web page and extract its text content. Returns the page text with HTML tags stripped. " +
+        "Use to read a specific URL — one the user gave you or a WebSearch result worth opening.";
     public override bool IsConcurrencySafe => true;
     public override bool IsReadOnly => true;
 

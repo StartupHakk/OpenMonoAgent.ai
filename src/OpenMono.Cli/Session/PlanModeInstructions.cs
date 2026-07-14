@@ -21,8 +21,10 @@ internal static class PlanModeInstructions
         "Produce a numbered implementation plan with:\n" +
         "  1. One-sentence summary of the chosen approach\n" +
         "  2. Every file that changes and exactly what changes in each\n" +
-        "  3. Any risks, edge cases, or decisions the user needs to make\n" +
-        "  4. Complexity: trivial / moderate / large\n" +
+        "  3. For each step, the tool you will use and why it fits (e.g. Context7 for\n" +
+        "     external API docs, Grep to locate usages, FileEdit for the change itself)\n" +
+        "  4. Any risks, edge cases, or decisions the user needs to make\n" +
+        "  5. Complexity: trivial / moderate / large\n" +
         "Be specific. Someone else should be able to implement from your plan alone.\n\n" +
         "Step 4 — Call ExitPlanMode with the full plan as the `plan` argument.\n" +
         "Only after that may you write any code.";

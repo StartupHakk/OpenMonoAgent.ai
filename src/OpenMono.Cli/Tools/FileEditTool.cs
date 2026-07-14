@@ -7,7 +7,8 @@ namespace OpenMono.Tools;
 public sealed class FileEditTool : ToolBase
 {
     public override string Name => "FileEdit";
-    public override string Description => "Perform an exact string replacement in a file. The old_string must match exactly one location in the file.";
+    public override string Description => "Perform an exact string replacement in a file. The old_string must match exactly one location in the file. " +
+        "Prefer this over FileWrite when changing an existing file — it cannot silently drop the rest of the file.";
 
     protected override SchemaBuilder DefineSchema() => new SchemaBuilder()
         .AddString("file_path", "Absolute path to the file to edit")

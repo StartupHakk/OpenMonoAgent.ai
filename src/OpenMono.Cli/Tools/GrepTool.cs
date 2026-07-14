@@ -7,7 +7,8 @@ namespace OpenMono.Tools;
 public sealed class GrepTool : ToolBase
 {
     public override string Name => "Grep";
-    public override string Description => "Search file contents using regex patterns. Uses ripgrep for fast, recursive search.";
+    public override string Description => "Search file contents using regex patterns. Uses ripgrep for fast, recursive search. " +
+        "Use this FIRST to locate definitions, usages, or error strings before reading any file — do not browse files blindly.";
     public override bool IsConcurrencySafe => true;
     public override bool IsReadOnly => true;
     public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;

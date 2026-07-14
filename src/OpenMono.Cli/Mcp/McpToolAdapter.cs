@@ -31,6 +31,12 @@ public sealed class McpToolAdapter : ITool
 
         var registryName = $"mcp__{client.ServerName}__{mcpName}";
 
+        // ponytail: hardcoded usage hint for the one MCP server we ship; a per-server
+        // config field is the upgrade path if more servers need custom guidance.
+        if (client.ServerName.Contains("context7", StringComparison.OrdinalIgnoreCase))
+            description += " Use BEFORE writing code against any external library API — " +
+                           "look up the current API here instead of guessing from memory.";
+
         return new McpToolAdapter(registryName, $"[MCP:{client.ServerName}] {description}", inputSchema, client, mcpName);
     }
 

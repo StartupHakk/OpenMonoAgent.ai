@@ -13,7 +13,8 @@ public sealed class BashTool : ToolBase
         "For long-running processes that do not exit on their own (servers, watchers, " +
         "`dotnet run`, `npm start`, etc.) set background=true — that spawns the process " +
         "detached, writes stdout+stderr to a log file under ~/.openmono/bg/, and returns " +
-        "the PID immediately so the conversation can continue.";
+        "the PID immediately so the conversation can continue. " +
+        "Prefer the dedicated tools where one exists: FileRead over cat, Grep over grep, FileEdit over sed.";
 
     protected override SchemaBuilder DefineSchema() => new SchemaBuilder()
         .AddProperty("command", new { type = "string", minLength = 1, description = "The bash command to execute" })
