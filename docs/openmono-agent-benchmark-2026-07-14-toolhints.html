@@ -1,0 +1,178 @@
+<title>OpenMono · Agentic-Coding-Benchmark 14.07.2026 · Lauf 4 · Tool-Hints + Plan-Continue</title>
+<style>
+  :root {
+    --bg: #f6f7f2; --surface: #ffffff; --ink: #1d2418; --ink-soft: #55604b; --line: #dde2d3;
+    --accent: #3c7a1c; --accent-ink: #2e5f15; --warn-bg: #faf3e0; --warn-line: #e3cf9a;
+    --warn-ink: #6e5410; --chip-bg: #eaeee0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #13160f; --surface: #1a1f13; --ink: #e4ead8; --ink-soft: #9aa688;
+      --line: #2c3421; --accent: #a3ff66; --accent-ink: #b5ff85;
+      --warn-bg: #241d0c; --warn-line: #4a3c14; --warn-ink: #e0b64d; --chip-bg: #232a18;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #13160f; --surface: #1a1f13; --ink: #e4ead8; --ink-soft: #9aa688;
+    --line: #2c3421; --accent: #a3ff66; --accent-ink: #b5ff85;
+    --warn-bg: #241d0c; --warn-line: #4a3c14; --warn-ink: #e0b64d; --chip-bg: #232a18;
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f7f2; --surface: #ffffff; --ink: #1d2418; --ink-soft: #55604b;
+    --line: #dde2d3; --accent: #3c7a1c; --accent-ink: #2e5f15;
+    --warn-bg: #faf3e0; --warn-line: #e3cf9a; --warn-ink: #6e5410; --chip-bg: #eaeee0;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font-family: system-ui, "Segoe UI", Roboto, sans-serif; font-size: 16px; line-height: 1.6; }
+  .page { max-width: 980px; margin: 0 auto; padding: 48px 24px 80px; }
+  .eyebrow { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); margin: 0 0 12px; }
+  h1 { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: clamp(26px, 5vw, 34px);
+    font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; margin: 0 0 10px; text-wrap: balance; }
+  .lede { color: var(--ink-soft); margin: 0 0 20px; max-width: 68ch; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; }
+  .chip { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; padding: 4px 10px;
+    border-radius: 999px; background: var(--chip-bg); color: var(--ink-soft);
+    border: 1px solid var(--line); white-space: nowrap; }
+  .chip strong { color: var(--ink); font-weight: 600; }
+  hr.rule { border: 0; border-top: 1px solid var(--line); margin: 36px 0; }
+  h3.section { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-soft); margin: 0 0 14px; }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; background: var(--surface); }
+  th, td { text-align: left; padding: 7px 12px; border-top: 1px solid var(--line); vertical-align: top; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
+  thead th { border-top: 0; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+    letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft); font-weight: 600; }
+  td code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px;
+    color: var(--accent-ink); }
+  tr.top td { font-weight: 600; }
+  .tag { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; padding: 1px 7px;
+    border-radius: 999px; background: var(--chip-bg); border: 1px solid var(--line);
+    color: var(--warn-ink); white-space: nowrap; }
+  td.q100 { color: var(--accent-ink); font-weight: 600; }
+  td.qlow { color: var(--warn-ink); }
+  .note { background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 8px; padding: 10px 14px; font-size: 14.5px; color: var(--ink-soft); margin: 0 0 12px; }
+  .note strong { color: var(--ink); }
+  .warn { background: var(--warn-bg); border: 1px solid var(--warn-line);
+    border-left: 3px solid var(--warn-ink); border-radius: 8px; padding: 10px 14px;
+    font-size: 14.5px; color: var(--warn-ink); margin: 0 0 12px; }
+  code.inline { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.88em;
+    background: var(--chip-bg); border: 1px solid var(--line); border-radius: 5px;
+    padding: 1px 6px; white-space: nowrap; }
+  .foot { margin-top: 36px; font-size: 13px; color: var(--ink-soft);
+    font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .fazit p { margin: 0 0 12px; }
+  .fazit strong { color: var(--ink); }
+</style>
+
+<div class="page">
+  <p class="eyebrow">openmono.ai · Agentic-Coding-Benchmark · 14.07.2026 · Lauf 4 · Tool-Hints + Plan-Continue</p>
+  <h1>Welches lokale Modell codet im Agenten wirklich am besten?</h1>
+  <p class="lede">Der Benchmark vom 14.07. hat Modelle <em>direkt</em> gegen <code class="inline">llama-server</code> gemessen — ein Prompt, eine Antwort. Dieser Lauf misst etwas anderes: die vier besten Modelle arbeiten <strong>im openmono-Agenten</strong> (ACP, headless, alle Tools scharf) an echten Coding-Aufgaben in einem frischen Workspace — lesen Dateien, greppen, patchen, führen Tests aus, holen Doku über Context7. Bestanden ist eine Aufgabe nur, wenn ein <strong>versteckter Grader</strong> den Workspace hinterher ausführt und alle Checks grün sind. Den Grader sieht das Modell nie.</p>
+  <div class="chips"><span class="chip">Modelle <strong>4</strong></span><span class="chip">Aufgaben <strong>5 × agentisch</strong></span><span class="chip">Läufe <strong>20</strong></span><span class="chip">gelöst <strong>17/20</strong></span><span class="chip">Agent-Zeit <strong>48 min</strong></span></div>
+
+  <hr class="rule">
+
+  <h3 class="section">Die fünf Aufgaben</h3>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>ID</th><th>Typ</th><th>Was das Modell tun muss</th></tr></thead>
+      <tbody><tr><td><code>t1_bugfix</code></td><td>Bugfix</td><td>Root-Cause im geteilten Modul, Symptom nur auf einem Pfad gemeldet</td></tr><tr><td><code>t2_feature_test</code></td><td>Feature + Test</td><td>parse_duration() bauen, eigene Unit-Tests schreiben und laufen lassen</td></tr><tr><td><code>t3_refactor</code></td><td>Refactoring</td><td>Drei Copy-Paste-Exporter entdoppeln, Ausgabe byte-identisch</td></tr><tr><td><code>t4_context7</code></td><td>Context7-Doku</td><td>pydantic v1 -&gt; v2 portieren, aktuelle API per Context7 nachschlagen</td></tr><tr><td><code>t5_cli_feature</code></td><td>CLI-Feature</td><td>stats-Subcommand über mehrere Dateien verdrahten</td></tr></tbody>
+    </table>
+  </div>
+  <p class="note" style="margin-top:12px"><strong>Aufbau:</strong> pro Modell und Aufgabe ein frischer, git-initialisierter Workspace mit <code class="inline">OPENMONO.md</code> (Ponytail- und Caveman-Sektionen aktiv). Der Agent läuft headless im Container (<code class="inline">OPENMONO_ACP_ONLY=1</code>) gegen die Vulkan-Lane. Jede Permission-Anfrage wird über die Turn-API freigegeben — genau wie ein Mensch, der auf „allow“ klickt.</p>
+
+  <hr class="rule">
+
+  <h3 class="section">Gesamtwertung</h3>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>#</th><th>Modell</th><th class="num">gelöst</th><th class="num">Ø Score</th>
+        <th class="num">Zeit (min)</th><th class="num">LLM-Calls</th><th class="num">Tool-Calls</th>
+        <th class="num">Tool-Fehler</th><th class="num">Gen-Tokens</th><th class="num">Ø t/s</th>
+        <th class="num">HumanEval · t/s (14.07.)</th></tr>
+      </thead>
+      <tbody><tr class="top"><td>1</td><td><code>Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL</code></td><td class="num q100">5/5</td><td class="num">100,0 %</td><td class="num">7,8</td><td class="num">70</td><td class="num">77</td><td class="num">5 · 6,5 %</td><td class="num">10 552</td><td class="num">31,5</td><td class="num">8/8 · 37,0</td></tr><tr><td>2</td><td><code>ornith-1.0-35b-Q4_K_M</code></td><td class="num ">4/5</td><td class="num">97,1 %</td><td class="num">5,9</td><td class="num">47</td><td class="num">52</td><td class="num">4 · 7,7 %</td><td class="num">7 489</td><td class="num">26,7</td><td class="num">8/8 · 28,3</td></tr><tr><td>3</td><td><code>Qwen-AgentWorld-35B-A3B-UD-IQ3_S</code></td><td class="num ">4/5</td><td class="num">97,1 %</td><td class="num">13,1</td><td class="num">92</td><td class="num">82</td><td class="num">1 · 1,2 %</td><td class="num">15 567</td><td class="num">25,1</td><td class="num">7/8 · 26,1</td></tr><tr><td>4</td><td><code>Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL</code></td><td class="num ">4/5</td><td class="num">96,7 %</td><td class="num">20,9</td><td class="num">128</td><td class="num">116</td><td class="num">14 · 12,1 %</td><td class="num">25 574</td><td class="num">26,4</td><td class="num">8/8 · 33,4</td></tr></tbody>
+    </table>
+  </div>
+  <p class="note" style="margin-top:12px"><strong>Ø Score</strong> ist der Anteil bestandener Grader-Checks (Teilpunkte), <strong>gelöst</strong> zählt nur Aufgaben, bei denen <em>alle</em> Checks grün sind. <strong>Tool-Fehler</strong> = Tool-Calls, die der Agent als fehlgeschlagen zurückmeldet (falscher Pfad, kaputter Patch, fehlgeschlagenes Kommando).</p>
+
+  <hr class="rule">
+
+  <h3 class="section">Ergebnis pro Aufgabe (✔/✘ · Wanduhrzeit)</h3>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Modell</th><th class="num">Bugfix</th><th class="num">Feature + Test</th><th class="num">Refactoring</th><th class="num">Context7-Doku</th><th class="num">CLI-Feature</th></tr></thead>
+      <tbody><tr><td><code>Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL</code></td><td class="num q100">✔ 2,0 min</td><td class="num q100">✔ 1,4 min</td><td class="num q100">✔ 1,0 min</td><td class="num q100">✔ 2,0 min</td><td class="num q100">✔ 1,4 min</td></tr><tr><td><code>ornith-1.0-35b-Q4_K_M</code></td><td class="num q100">✔ 1,4 min</td><td class="num q100">✔ 1,0 min</td><td class="num qlow">✘ 1,2 min</td><td class="num q100">✔ 1,5 min</td><td class="num q100">✔ 0,8 min</td></tr><tr><td><code>Qwen-AgentWorld-35B-A3B-UD-IQ3_S</code></td><td class="num q100">✔ 2,0 min</td><td class="num q100">✔ 4,2 min</td><td class="num qlow">✘ 2,4 min</td><td class="num q100">✔ 2,6 min</td><td class="num q100">✔ 1,9 min</td></tr><tr><td><code>Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL</code></td><td class="num qlow">✘ 2,8 min</td><td class="num q100">✔ 12,6 min</td><td class="num q100">✔ 1,5 min</td><td class="num q100">✔ 2,7 min</td><td class="num q100">✔ 1,2 min</td></tr></tbody>
+    </table>
+  </div>
+
+  <hr class="rule">
+
+  <h3 class="section">Tool-Verhalten · Ausführungsrate</h3>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Modell</th><th class="num">ausgeführt / angefordert</th><th class="num">Permissions</th>
+      <th class="num">Context7-Calls</th><th>meistgenutzte Tools</th><th>fehlgeschlagene Tools</th></tr></thead>
+      <tbody><tr><td><code>Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL</code></td><td class="num q100">77/82 · 94 %</td><td class="num">32</td><td class="num">5</td><td><code>FileRead 21, Bash 21, TodoWrite 10, FileEdit 9</code></td><td><code>FileRead 4, Bash 1</code></td></tr><tr><td><code>ornith-1.0-35b-Q4_K_M</code></td><td class="num q100">52/55 · 95 %</td><td class="num">23</td><td class="num">4</td><td><code>FileRead 14, Bash 11, FileEdit 8, Glob 6</code></td><td><code>FileRead 2, Bash 1, ListDirectory 1</code></td></tr><tr><td><code>Qwen-AgentWorld-35B-A3B-UD-IQ3_S</code></td><td class="num q100">82/87 · 94 %</td><td class="num">41</td><td class="num">5</td><td><code>Bash 28, FileRead 19, FileEdit 11, FileWrite 9</code></td><td><code>Bash 1</code></td></tr><tr><td><code>Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL</code></td><td class="num q100">116/123 · 94 %</td><td class="num">60</td><td class="num">4</td><td><code>Bash 52, FileWrite 25, FileEdit 13, FileRead 11</code></td><td><code>Bash 8, ExitPlanMode 4, FileEdit 2</code></td></tr></tbody>
+    </table>
+  </div>
+  <p class="warn" style="margin-top:12px"><strong>Ausführungsrate stabil bei 94–95&nbsp;%.</strong>
+  „ausgeführt / angefordert“ zählt aus dem Agenten-Log, wie viele der vom Modell angeforderten Tool-Calls
+  tatsächlich gelaufen sind (<code class="inline">SSE tool_call:</code> gegen <code class="inline">Tool executing:</code>).
+  Im ersten Lauf (vor dem ACP-Fix) lag die Rate bei 47–60&nbsp;%; seit dem Fix führt ein erteiltes „allow“
+  den anhängigen Call direkt aus. Der Rest sind reguläre Abbrüche (Schema-Fehler, Denied-Regeln), kein
+  Handshake-Verlust.</p>
+
+  <hr class="rule">
+
+  <h3 class="section">Woran die Fehlschläge scheiterten</h3>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Modell</th><th>Aufgabe</th><th class="num">Score</th><th>Grader-Befund</th></tr></thead>
+      <tbody><tr><td><code>ornith-1.0-35b-Q4_K_M</code></td><td>Refactoring</td><td class="num">85,7 %</td><td>still duplicated: report.py has 34 code lines (want &lt;= 32)</td></tr><tr><td><code>Qwen-AgentWorld-35B-A3B-UD-IQ3_S</code></td><td>Refactoring</td><td class="num">85,7 %</td><td>still duplicated: report.py has 39 code lines (want &lt;= 32)</td></tr><tr><td><code>Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL</code></td><td>Bugfix</td><td class="num">83,3 %</td><td>checkout_total([(105, 1)], 50) = 52, want 53 [round half-up, not banker's]</td></tr></tbody>
+    </table>
+  </div>
+
+  <hr class="rule">
+
+  <h3 class="section">Fazit</h3>
+  <div class="fazit">
+<p><strong>Erster perfekter Lauf: das Produktivmodell Qwen3.6-35B-A3B-MTP löst 5/5 (100&nbsp;% aller
+Grader-Checks) in 7,8 Minuten.</strong> Dahinter drei Modelle mit 4/5 — insgesamt 17/20 gelöste Läufe
+gegenüber 11/20 vor den Fixes. Drei Eingriffe haben sich aufaddiert: der ACP-Permission-Fix (Lauf&nbsp;2,
+Ausführungsrate 47–60&nbsp;% → 92–97&nbsp;%), die Plan-Modus-Fortsetzung im Harness (Lauf&nbsp;3, rettet
+Qwen3-Coder und AgentWorld vor dem Stehenbleiben nach <code>ExitPlanMode</code>) und die
+„Wann benutzen“-Hinweise in den Tool-Beschreibungen plus Tool-Regeln in <code>OPENMONO.md</code>
+(dieser Lauf).</p>
+
+<p><strong>Die Tool-Hints wirken messbar.</strong> Das Refactoring (<code>t3</code>) war über drei Läufe
+die Vollsperre (0/4); jetzt lösen es Qwen3-Coder <em>und</em> MTP — MTP drückt <code>report.py</code>
+in 62&nbsp;Sekunden unter das 32-Zeilen-Limit, nachdem es in Lauf&nbsp;2 bei 41 Zeilen hängen blieb.
+Context7 wird von allen vier Modellen benutzt (Lauf&nbsp;1: zwei von vier), <code>t4</code> besteht
+durchgängig 4/4. Qwen3-Coder klettert von 1/5 (Lauf&nbsp;2) über 3/5 (Lauf&nbsp;3) auf 4/5 — bleibt aber
+mit Abstand das langsamste Modell (20,9&nbsp;min gegen 5,9–13,1&nbsp;min der anderen).</p>
+
+<p><strong>Was übrig bleibt, sind echte Modellgrenzen.</strong> ornith und AgentWorld scheitern weiter an
+<code>t3</code> (beide liefern funktionierende, aber nicht aggressiv genug entdoppelte Exporter),
+Qwen3-Coder an <code>t1</code> — es fixt den gemeldeten Pfad, übersieht aber das Banker's Rounding im
+Rundungsverhalten. Alle drei Reste haben Ø-Scores von 86–97&nbsp;%: knappe, inhaltliche Fehlschläge,
+keine Artefakte. Erzwungener Plan-Modus wurde separat gemessen und verworfen: MTP fällt damit auf 3/5
+bei doppelter Laufzeit, zwei Aufgaben enden im Read-only-Käfig, weil das Modell <code>ExitPlanMode</code>
+nicht sauber ruft.</p>
+
+<p class="warn"><strong>Empfehlung.</strong> <code>Qwen3.6-35B-A3B-MTP</code> ist jetzt in allen drei
+Disziplinen vorn — Rohdurchsatz (37&nbsp;t/s), HumanEval (8/8) und Agent-Betrieb (5/5) — und bleibt
+Produktivmodell ohne Einschränkung. <code>ornith-1.0-35b</code> bleibt der schnellste Agent (5,9&nbsp;min
+für 4/5) und damit erste Wahl für lange autonome Läufe. Tool-Beschreibungen mit Nutzungsregel,
+Plan-Continue im Harness und der ACP-Fix sind committed; erzwungener Plan-Modus bleibt als Option
+(<code>--plan-mode</code>) verfügbar, ist aber als Default abgelehnt.</p>
+</div>
+
+  <p class="foot">Harness: <code>scripts/agent_bench/run_agent_bench.py</code> · Aufgaben und Grader: <code>scripts/agent_bench/tasks/</code> · Rohdaten: <code>docs/agent-bench-results-2026-07-14.jsonl</code></p>
+</div>
