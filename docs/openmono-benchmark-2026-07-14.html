@@ -1,0 +1,163 @@
+<title>OpenMono · Modell-Benchmark 14.07.2026</title>
+<style>
+  :root {
+    --bg: #f6f7f2;
+    --surface: #ffffff;
+    --ink: #1d2418;
+    --ink-soft: #55604b;
+    --line: #dde2d3;
+    --accent: #3c7a1c;
+    --accent-ink: #2e5f15;
+    --warn-bg: #faf3e0;
+    --warn-line: #e3cf9a;
+    --warn-ink: #6e5410;
+    --chip-bg: #eaeee0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #13160f; --surface: #1a1f13; --ink: #e4ead8; --ink-soft: #9aa688;
+      --line: #2c3421; --accent: #a3ff66; --accent-ink: #b5ff85;
+      --warn-bg: #241d0c; --warn-line: #4a3c14; --warn-ink: #e0b64d; --chip-bg: #232a18;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #13160f; --surface: #1a1f13; --ink: #e4ead8; --ink-soft: #9aa688;
+    --line: #2c3421; --accent: #a3ff66; --accent-ink: #b5ff85;
+    --warn-bg: #241d0c; --warn-line: #4a3c14; --warn-ink: #e0b64d; --chip-bg: #232a18;
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f7f2; --surface: #ffffff; --ink: #1d2418; --ink-soft: #55604b;
+    --line: #dde2d3; --accent: #3c7a1c; --accent-ink: #2e5f15;
+    --warn-bg: #faf3e0; --warn-line: #e3cf9a; --warn-ink: #6e5410; --chip-bg: #eaeee0;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font-family: system-ui, "Segoe UI", Roboto, sans-serif; font-size: 16px; line-height: 1.6; }
+  .page { max-width: 860px; margin: 0 auto; padding: 48px 24px 80px; }
+  .eyebrow { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); margin: 0 0 12px; }
+  h1 { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: clamp(26px, 5vw, 34px);
+    font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; margin: 0 0 10px; text-wrap: balance; }
+  .lede { color: var(--ink-soft); margin: 0 0 20px; max-width: 62ch; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; }
+  .chip { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; padding: 4px 10px;
+    border-radius: 999px; background: var(--chip-bg); color: var(--ink-soft);
+    border: 1px solid var(--line); white-space: nowrap; }
+  .chip strong { color: var(--ink); font-weight: 600; }
+  hr.rule { border: 0; border-top: 1px solid var(--line); margin: 36px 0; }
+  h3.section { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-soft); margin: 0 0 14px; }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; background: var(--surface); }
+  th, td { text-align: left; padding: 7px 12px; border-top: 1px solid var(--line); vertical-align: top; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
+  thead th { border-top: 0; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+    letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft); font-weight: 600; }
+  td code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px;
+    color: var(--accent-ink); }
+  tr.top td { font-weight: 600; }
+  .tag { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; padding: 1px 7px;
+    border-radius: 999px; background: var(--chip-bg); border: 1px solid var(--line);
+    color: var(--ink-soft); white-space: nowrap; }
+  .tag.moe { color: var(--accent-ink); border-color: var(--accent); }
+  .note { background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 8px; padding: 10px 14px; font-size: 14.5px; color: var(--ink-soft); margin: 0 0 12px; }
+  .note strong { color: var(--ink); }
+  .warn { background: var(--warn-bg); border: 1px solid var(--warn-line);
+    border-left: 3px solid var(--warn-ink); border-radius: 8px; padding: 10px 14px;
+    font-size: 14.5px; color: var(--warn-ink); margin: 0 0 12px; }
+  code.inline { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.88em;
+    background: var(--chip-bg); border: 1px solid var(--line); border-radius: 5px;
+    padding: 1px 6px; white-space: nowrap; }
+  .foot { margin-top: 36px; font-size: 13px; color: var(--ink-soft);
+    font-family: ui-monospace, Menlo, Consolas, monospace; }
+</style>
+
+<div class="page">
+  <p class="eyebrow">openmono.ai · Benchmark-Bericht · 14.07.2026</p>
+  <h1>Tokens/s aller 36 Modelle auf der Vulkan-Lane</h1>
+  <p class="lede">Jedes Modell wurde über die echte OpenMono-Lane geladen (<code class="inline">openmono model use</code>, MoE-/MTP-Flags wie im Produktivbetrieb) und über <code class="inline">llama-server /completion</code> gemessen: ~2300-Token-Prompt für die Prompt-Verarbeitung, 128 erzwungene Tokens für die Generierung — Warmup plus zwei Messläufe, bester Wert zählt.</p>
+  <div class="chips">
+    <span class="chip">iGPU <strong>Radeon 780M · 96 GB GTT</strong></span>
+    <span class="chip">Kontext <strong>32768 (einheitlich)</strong></span>
+    <span class="chip">getestet <strong>36</strong></span>
+    <span class="chip">erfolgreich <strong>35</strong></span>
+    <span class="chip">Ladefehler <strong>1</strong></span>
+  </div>
+
+  <hr class="rule">
+
+  <h3 class="section">Ranking nach Generierung (tg&nbsp;t/s)</h3>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>#</th><th>Modell</th><th></th><th class="num">Größe</th><th class="num">Prompt t/s</th><th class="num">Gen t/s</th></tr>
+      </thead>
+      <tbody>
+        <tr class="top"><td>1</td><td><code>Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL</code></td><td><span class="tag moe">MoE + MTP</span></td><td class="num">22G</td><td class="num">319,2</td><td class="num">37,0</td></tr>
+        <tr class="top"><td>2</td><td><code>Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL</code></td><td><span class="tag moe">MoE</span></td><td class="num">17G</td><td class="num">403,3</td><td class="num">33,4</td></tr>
+        <tr class="top"><td>3</td><td><code>ornith-1.0-35b-Q4_K_M</code></td><td><span class="tag moe">MoE</span></td><td class="num">20G</td><td class="num">343,6</td><td class="num">28,3</td></tr>
+        <tr><td>4</td><td><code>gemma-3-4b-it-Q4_K_M</code></td><td><span class="tag">Vision</span></td><td class="num">3G</td><td class="num">473,7</td><td class="num">26,9</td></tr>
+        <tr><td>5</td><td><code>Qwen-AgentWorld-35B-A3B-UD-IQ3_S</code></td><td><span class="tag moe">MoE</span></td><td class="num">14G</td><td class="num">332,9</td><td class="num">26,1</td></tr>
+        <tr><td>6</td><td><code>Nemotron-3-Nano-30B-A3B-Q4_K_M</code></td><td><span class="tag moe">MoE</span></td><td class="num">23G</td><td class="num">421,3</td><td class="num">26,1</td></tr>
+        <tr><td>7</td><td><code>DeepSeek-Coder-V2-Lite-Instruct-Q8_0</code></td><td><span class="tag moe">MoE</span></td><td class="num">16G</td><td class="num">566,0</td><td class="num">24,3</td></tr>
+        <tr><td>8</td><td><code>gemma-4-26B-A4B-it-Claude-Opus-Distill.q4_k_m</code></td><td><span class="tag moe">MoE</span></td><td class="num">16G</td><td class="num">356,1</td><td class="num">23,8</td></tr>
+        <tr><td>9</td><td><code>VibeThinker-3B.Q8_0</code></td><td><span class="tag">dicht</span></td><td class="num">4G</td><td class="num">535,2</td><td class="num">22,8</td></tr>
+        <tr><td>10</td><td><code>Qwen3.6-35B-A3B-UD-Q4_K_XL</code></td><td><span class="tag moe">MoE</span></td><td class="num">21G</td><td class="num">339,4</td><td class="num">22,8</td></tr>
+        <tr><td>11</td><td><code>gpt-oss-20b-F16</code></td><td><span class="tag moe">MoE</span></td><td class="num">13G</td><td class="num">444,5</td><td class="num">20,3</td></tr>
+        <tr><td>12</td><td><code>GLM-4.7-Flash-UD-Q4_K_XL</code></td><td><span class="tag moe">MoE</span></td><td class="num">17G</td><td class="num">214,1</td><td class="num">20,3</td></tr>
+        <tr><td>13</td><td><code>Qwen3-Coder-Next-UD-Q4_K_XL</code></td><td><span class="tag moe">MoE</span></td><td class="num">47G</td><td class="num">242,2</td><td class="num">19,0</td></tr>
+        <tr><td>14</td><td><code>gemma-4-26B-A4B-it-UD-Q4_K_S</code></td><td><span class="tag moe">MoE</span></td><td class="num">16G</td><td class="num">352,2</td><td class="num">18,7</td></tr>
+        <tr><td>15</td><td><code>Qwen2.5-VL-7B-Instruct-Q4_K_M</code></td><td><span class="tag">Vision</span></td><td class="num">5G</td><td class="num">277,9</td><td class="num">17,3</td></tr>
+        <tr><td>16</td><td><code>Qwen3-VL-8B-Instruct-Q4_K_M</code></td><td><span class="tag">Vision</span></td><td class="num">5G</td><td class="num">243,1</td><td class="num">15,6</td></tr>
+        <tr><td>17</td><td><code>MiniMax-M2.5-UD-IQ1_S</code></td><td><span class="tag moe">MoE</span></td><td class="num">59G</td><td class="num">96,9</td><td class="num">15,0</td></tr>
+        <tr><td>18</td><td><code>GLM-4.6V-Flash-UD-Q4_K_XL</code></td><td><span class="tag">Vision</span></td><td class="num">6G</td><td class="num">241,4</td><td class="num">13,1</td></tr>
+        <tr><td>19</td><td><code>gemma-4-12B-it-qat-UD-Q4_K_XL</code></td><td><span class="tag">dicht</span></td><td class="num">7G</td><td class="num">160,5</td><td class="num">10,5</td></tr>
+        <tr><td>20</td><td><code>Qwen3.6-27B-MTP-UD-Q4_K_XL</code></td><td><span class="tag">dicht + MTP</span></td><td class="num">17G</td><td class="num">69,8</td><td class="num">10,4</td></tr>
+        <tr><td>21</td><td><code>OpenCoder-8B-Instruct-Q8_0</code></td><td><span class="tag">dicht</span></td><td class="num">8G</td><td class="num">235,6</td><td class="num">9,8</td></tr>
+        <tr><td>22</td><td><code>Seed-Coder-8B-Instruct-Q8_0</code></td><td><span class="tag">dicht</span></td><td class="num">9G</td><td class="num">237,8</td><td class="num">9,5</td></tr>
+        <tr><td>23</td><td><code>ornith-1.0-9b-Q8_0</code></td><td><span class="tag">dicht</span></td><td class="num">9G</td><td class="num">217,5</td><td class="num">9,0</td></tr>
+        <tr><td>24</td><td><code>Qwen3-235B-A22B-Thinking-2507-Q2_K</code></td><td><span class="tag moe">MoE</span></td><td class="num">80G</td><td class="num">63,4</td><td class="num">7,8</td></tr>
+        <tr><td>25</td><td><code>NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_XL</code></td><td><span class="tag moe">MoE</span></td><td class="num">79G</td><td class="num">89,9</td><td class="num">6,4</td></tr>
+        <tr><td>26</td><td><code>CursorCore-QW2.5-7B.fp16</code></td><td><span class="tag">dicht</span></td><td class="num">15G</td><td class="num">172,4</td><td class="num">5,7</td></tr>
+        <tr><td>27</td><td><code>Dolphin3.0-Mistral-24B-Q4_K_M</code></td><td><span class="tag">dicht</span></td><td class="num">14G</td><td class="num">80,6</td><td class="num">5,6</td></tr>
+        <tr><td>28</td><td><code>Devstral-Small-2-24B-Instruct-2512-UD-Q4_K_XL</code></td><td><span class="tag">dicht</span></td><td class="num">14G</td><td class="num">80,4</td><td class="num">5,5</td></tr>
+        <tr><td>29</td><td><code>Phi-4-reasoning-vision-15b-q8_0</code></td><td><span class="tag">Vision</span></td><td class="num">15G</td><td class="num">129,1</td><td class="num">5,0</td></tr>
+        <tr><td>30</td><td><code>QwQ-32B-UD-Q3_K_XL</code></td><td><span class="tag">dicht</span></td><td class="num">16G</td><td class="num">58,2</td><td class="num">4,8</td></tr>
+        <tr><td>31</td><td><code>Qwen3.5-27B.Q4_K_M</code></td><td><span class="tag">dicht</span></td><td class="num">16G</td><td class="num">70,4</td><td class="num">4,7</td></tr>
+        <tr><td>32</td><td><code>granite-4.1-30b-UD-Q4_K_XL</code></td><td><span class="tag">dicht</span></td><td class="num">17G</td><td class="num">62,9</td><td class="num">4,4</td></tr>
+        <tr><td>33</td><td><code>Qwen3.6-27B-UD-Q4_K_XL</code></td><td><span class="tag">dicht</span></td><td class="num">17G</td><td class="num">67,3</td><td class="num">4,4</td></tr>
+        <tr><td>34</td><td><code>gemma-4-31B-it-IQ4_XS</code></td><td><span class="tag">dicht</span></td><td class="num">16G</td><td class="num">59,2</td><td class="num">4,3</td></tr>
+        <tr><td>35</td><td><code>open-r1_OlympicCoder-32B-Q4_K_M</code></td><td><span class="tag">dicht</span></td><td class="num">19G</td><td class="num">57,7</td><td class="num">4,0</td></tr>
+        <tr><td>36</td><td><code>Qwen3.6-40B-Deck-Opus-NEO-…-Q8_0</code></td><td><span class="tag">dicht</span></td><td class="num">40G</td><td class="num">44,8</td><td class="num">1,8</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <hr class="rule">
+
+  <h3 class="section">Erkenntnisse</h3>
+  <div class="note"><strong>MoE schlägt dicht — deutlich.</strong> Auf der iGPU sind Mixture-of-Experts-Modelle (A3B/A4B-Signatur) bei gleicher Dateigröße 4–7× schneller in der Generierung als dichte Modelle. Ein dichtes 24–32B-Modell liefert 4–6 t/s, ein MoE gleicher Größe 20–33 t/s.</div>
+  <div class="note"><strong>MTP lohnt sich immer.</strong> Qwen3.6-35B-A3B: 22,8 → 37,0 t/s (+62 %). Qwen3.6-27B (dicht): 4,4 → 10,4 t/s (+136 %). Die MTP-Varianten sind bei identischer Qualität strikt vorzuziehen.</div>
+  <div class="note"><strong>Dein Produktivmodell ist die richtige Wahl.</strong> Qwen3.6-35B-A3B-MTP ist mit 37,0 t/s das schnellste Modell im gesamten Bestand — bei 35B-Qualität. Als Coding-Alternative: Qwen3-Coder-30B-A3B (33,4 t/s).</div>
+  <div class="note"><strong>Auch die Riesen laufen.</strong> Alle Modelle bis 80 GB passen ins 96-GB-GTT-Fenster (bei ctx 32768): Qwen3-Coder-Next (47G) schafft brauchbare 19,0 t/s, Qwen3-235B-Thinking (80G) noch 7,8 t/s.</div>
+  <div class="warn"><strong>Langsamste Kandidaten:</strong> Q8/F16-Quantisierungen dichter Modelle (CursorCore fp16, Qwen3.6-40B-Deck Q8 mit 1,8 t/s) — die Bandbreite der iGPU ist der Flaschenhals, große Bytes pro Parameter kosten direkt Geschwindigkeit. <strong>Ladefehler:</strong> Llama-3.2-11B-Vision (mllama-Architektur wird vom Vulkan-Build nicht unterstützt).</div>
+
+  <hr class="rule">
+
+  <h3 class="section">Messbedingungen</h3>
+  <div class="tablewrap">
+    <table>
+      <tbody>
+        <tr><td>Lane</td><td>Vulkan (llama.cpp server-vulkan, <code>-ngl 99</code>, flash-attn, KV q8_0, batch 4096/1024)</td></tr>
+        <tr><td>Kontext</td><td>einheitlich 32768 (Produktivbetrieb: 204800 — auf Durchsatz ohne messbaren Einfluss, aber nötig, damit die 80-GB-Modelle laden)</td></tr>
+        <tr><td>Prompt-Verarbeitung (pp)</td><td>~2300–3000 Tokens deterministischer Text, <code>cache_prompt: false</code></td></tr>
+        <tr><td>Generierung (tg)</td><td>128 Tokens erzwungen (<code>ignore_eos</code>), Temperatur 0; bei MTP-Modellen inkl. spekulativem Decoding wie im Produktivbetrieb</td></tr>
+        <tr><td>Läufe</td><td>1 Warmup + 2 Messläufe, bester Wert</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="foot">Rohdaten: docs/bench-results-2026-07-14.csv · Nach dem Benchmark wiederhergestellt: Qwen3.6-35B-A3B-MTP, ctx 204800, Server gestoppt</p>
+</div>

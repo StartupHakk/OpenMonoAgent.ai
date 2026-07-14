@@ -1,0 +1,426 @@
+<title>OpenMono · Vulkan-Lane starten</title>
+<style>
+  :root {
+    --bg: #f6f7f2;
+    --surface: #ffffff;
+    --ink: #1d2418;
+    --ink-soft: #55604b;
+    --line: #dde2d3;
+    --accent: #3c7a1c;
+    --accent-ink: #2e5f15;
+    --term-bg: #12160d;
+    --term-ink: #d9e4c8;
+    --term-green: #a3ff66;
+    --term-dim: #7a8a68;
+    --warn-bg: #faf3e0;
+    --warn-line: #e3cf9a;
+    --warn-ink: #6e5410;
+    --chip-bg: #eaeee0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #13160f;
+      --surface: #1a1f13;
+      --ink: #e4ead8;
+      --ink-soft: #9aa688;
+      --line: #2c3421;
+      --accent: #a3ff66;
+      --accent-ink: #b5ff85;
+      --term-bg: #0c0f08;
+      --term-ink: #d9e4c8;
+      --term-green: #a3ff66;
+      --term-dim: #6f7d5c;
+      --warn-bg: #241d0c;
+      --warn-line: #4a3c14;
+      --warn-ink: #e0b64d;
+      --chip-bg: #232a18;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #13160f;
+    --surface: #1a1f13;
+    --ink: #e4ead8;
+    --ink-soft: #9aa688;
+    --line: #2c3421;
+    --accent: #a3ff66;
+    --accent-ink: #b5ff85;
+    --term-bg: #0c0f08;
+    --term-ink: #d9e4c8;
+    --term-green: #a3ff66;
+    --term-dim: #6f7d5c;
+    --warn-bg: #241d0c;
+    --warn-line: #4a3c14;
+    --warn-ink: #e0b64d;
+    --chip-bg: #232a18;
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f7f2;
+    --surface: #ffffff;
+    --ink: #1d2418;
+    --ink-soft: #55604b;
+    --line: #dde2d3;
+    --accent: #3c7a1c;
+    --accent-ink: #2e5f15;
+    --term-bg: #12160d;
+    --term-ink: #d9e4c8;
+    --term-green: #a3ff66;
+    --term-dim: #7a8a68;
+    --warn-bg: #faf3e0;
+    --warn-line: #e3cf9a;
+    --warn-ink: #6e5410;
+    --chip-bg: #eaeee0;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+  }
+  .page {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 48px 24px 80px;
+  }
+  .mono { font-family: ui-monospace, "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace; }
+
+  /* Header */
+  .eyebrow {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 12px;
+  }
+  h1 {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: clamp(26px, 5vw, 34px);
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
+    margin: 0 0 10px;
+    text-wrap: balance;
+  }
+  .lede {
+    color: var(--ink-soft);
+    margin: 0 0 20px;
+    max-width: 58ch;
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; }
+  .chip {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--chip-bg);
+    color: var(--ink-soft);
+    border: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  .chip strong { color: var(--ink); font-weight: 600; }
+
+  hr.rule { border: 0; border-top: 1px solid var(--line); margin: 36px 0; }
+
+  /* Steps */
+  .step { display: grid; grid-template-columns: 44px 1fr; gap: 16px; margin: 0 0 36px; }
+  .step-no {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--accent);
+    border: 1.5px solid var(--accent);
+    border-radius: 8px;
+    width: 40px; height: 40px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .step h2 {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 19px;
+    font-weight: 700;
+    margin: 6px 0 8px;
+    letter-spacing: -0.01em;
+  }
+  .step p { margin: 0 0 12px; max-width: 60ch; }
+  .step p:last-child { margin-bottom: 0; }
+
+  /* Terminal blocks — always dark, in both themes */
+  .term {
+    position: relative;
+    background: var(--term-bg);
+    border-radius: 10px;
+    padding: 14px 52px 14px 16px;
+    margin: 0 0 12px;
+    overflow-x: auto;
+  }
+  .term pre {
+    margin: 0;
+    font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--term-ink);
+    white-space: pre;
+  }
+  .term .p { color: var(--term-green); user-select: none; }
+  .term .c { color: var(--term-dim); }
+  .term .o { color: var(--term-dim); }
+  .term .g { color: var(--term-green); }
+  .copy {
+    position: absolute; top: 8px; right: 8px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11px;
+    padding: 4px 9px;
+    border-radius: 6px;
+    border: 1px solid #3a4429;
+    background: transparent;
+    color: #8fa07a;
+    cursor: pointer;
+  }
+  .copy:hover { color: var(--term-green); border-color: var(--term-green); }
+  .copy:focus-visible { outline: 2px solid var(--term-green); outline-offset: 2px; }
+
+  code.inline {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 0.88em;
+    background: var(--chip-bg);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 1px 6px;
+    white-space: nowrap;
+  }
+
+  .note {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 14.5px;
+    color: var(--ink-soft);
+    margin: 0 0 12px;
+  }
+  .note strong { color: var(--ink); }
+  .warn {
+    background: var(--warn-bg);
+    border: 1px solid var(--warn-line);
+    border-left: 3px solid var(--warn-ink);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 14.5px;
+    color: var(--warn-ink);
+    margin: 0 0 12px;
+  }
+
+  /* Reference table */
+  h3.section {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 13px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin: 0 0 14px;
+  }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; background: var(--surface); }
+  th, td { text-align: left; padding: 10px 14px; border-top: 1px solid var(--line); vertical-align: top; }
+  thead th {
+    border-top: 0;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    font-weight: 600;
+  }
+  td code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; color: var(--accent-ink); white-space: nowrap; }
+
+  .foot {
+    margin-top: 36px;
+    font-size: 13px;
+    color: var(--ink-soft);
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  @media (max-width: 480px) {
+    .step { grid-template-columns: 1fr; gap: 6px; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .copy { transition: color .15s, border-color .15s; }
+  }
+</style>
+
+<div class="page">
+  <p class="eyebrow">openmono.ai · Setup-Guide</p>
+  <h1>Vulkan-Lane starten</h1>
+  <p class="lede">llama-server läuft auf deiner Radeon 780M iGPU — mit System-RAM als VRAM. Zwei Befehle, fertig.</p>
+  <div class="chips">
+    <span class="chip">CPU <strong>Ryzen 9 PRO 8945HS</strong></span>
+    <span class="chip">iGPU <strong>Radeon 780M</strong></span>
+    <span class="chip">GTT-Fenster <strong>96 GB</strong></span>
+    <span class="chip">Kernel-Parameter <strong>✓ aktiv</strong></span>
+  </div>
+
+  <hr class="rule">
+
+  <div class="step">
+    <div class="step-no">1</div>
+    <div>
+      <h2>Einmalig: Setup mit Vulkan-Option</h2>
+      <div class="term">
+        <button class="copy" data-cmd="cd /workspace/openmono.ai && ./openmono setup --vulkan">kopieren</button>
+        <pre><span class="p">$</span> cd /workspace/openmono.ai
+<span class="p">$</span> ./openmono setup --vulkan</pre>
+      </div>
+      <p>Das schreibt die Vulkan-Konfiguration nach <code class="inline">docker/docker-compose.override.yml</code> (Image <code class="inline">llama.cpp:server-vulkan</code>, iGPU-Zugriff über <code class="inline">/dev/dri</code>, 32&nbsp;GB shm).</p>
+      <div class="note"><strong>Kein Reboot nötig.</strong> Deine Kernel-Parameter (<code class="inline">amdgpu.gttsize=98304</code>) sind bereits aktiv — das Setup erkennt das und überspringt die Kernel-Optimierung. Dein Modell liegt schon in <code class="inline">models/</code>, es wird nichts neu heruntergeladen.</div>
+      <p>Alternativ ohne Flag: <code class="inline">openmono setup</code> erkennt deinen 8945HS jetzt automatisch und fragt — dann <strong>2) iGPU (Vulkan)</strong> wählen.</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-no">2</div>
+    <div>
+      <h2>Entwicklungsumgebung öffnen</h2>
+      <div class="term">
+        <button class="copy" data-cmd="openmono agent">kopieren</button>
+        <pre><span class="p">$</span> cd dein-projekt/
+<span class="p">$</span> openmono agent</pre>
+      </div>
+      <p>Mehr ist es nicht: <code class="inline">openmono agent</code> startet llama-server automatisch über die Vulkan-Lane, wartet bis er bereit ist, und öffnet dann den Agent im aktuellen Ordner.</p>
+      <div class="warn">Der erste Start dauert 1–2 Minuten — das 17,7-GB-Modell wird ins GTT-Fenster geladen. Danach bleibt der Server im Hintergrund laufen, weitere Starts sind sofort da.</div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-no">3</div>
+    <div>
+      <h2>Prüfen (optional)</h2>
+      <div class="term">
+        <button class="copy" data-cmd="openmono status">kopieren</button>
+        <pre><span class="p">$</span> openmono status
+<span class="o">  AMD iGPU (Vulkan mode): Phoenix3 [Radeon 780M]</span>
+<span class="o">  GTT window: 96GB system RAM available as VRAM</span>
+<span class="o">  ✓ Model loaded: Qwen3.6-35B-A3B-UD-Q4_K_XL</span></pre>
+      </div>
+      <p>Live-Logs des Servers: <code class="inline">openmono logs</code> &nbsp;·&nbsp; Stoppen: <code class="inline">openmono stop</code></p>
+    </div>
+  </div>
+
+  <hr class="rule">
+
+  <h3 class="section">Modelle wechseln</h3>
+  <p class="lede" style="margin-bottom:20px">36 Modelle liegen bereit (aus dem Model-Shelf verlinkt). <code class="inline">openmono model</code> listet sie und schaltet auf Knopfdruck um — <code class="inline">.env</code> und Server werden automatisch angepasst.</p>
+
+  <div class="term">
+    <button class="copy" data-cmd="openmono model">kopieren</button>
+    <pre><span class="p">$</span> openmono model
+<span class="o">── Models in /workspace/openmono.ai/models ──</span>
+<span class="o">    Dolphin3.0-Mistral-24B-Q4_K_M.gguf              14G</span>
+<span class="o">    GLM-4.6V-Flash-UD-Q4_K_XL.gguf                 5,8G</span>
+<span class="o">    Phi-4-reasoning-vision-15b-q8_0.gguf            15G</span>
+<span class="o">    QwQ-32B-UD-Q3_K_XL.gguf                         16G</span>
+<span class="g">  ▶ Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf                 21G</span>
+<span class="o">    …  (openmono model  zeigt alle 36)</span></pre>
+  </div>
+
+  <div class="term">
+    <button class="copy" data-cmd="openmono model use dolphin">kopieren</button>
+    <pre><span class="p">$</span> openmono model use dolphin
+<span class="o">[OK] Model set: Dolphin3.0-Mistral-24B-Q4_K_M.gguf</span>
+<span class="o">     alias: …  ·  vision: off  ·  ctx: 204800</span>
+<span class="o">[OK] llama-server is healthy — model 'Dolphin…' is live</span></pre>
+  </div>
+
+  <p>Der Name darf ein <strong>Teilstück</strong> sein (Groß/klein egal) — <code class="inline">glm-4.6v</code>, <code class="inline">phi-4</code>, <code class="inline">qwen3.6-27b</code>. Bei mehrdeutigem Namen zeigt der Befehl die Treffer an. Vision-Modelle bekommen ihren Projektor automatisch dazu, Text-Modelle laufen ohne.</p>
+
+  <div class="note"><strong>Große Modelle knapp im GTT-Fenster?</strong> Kontext beim Umschalten kleiner setzen: <code class="inline">openmono model use qwen3-235b --ctx 65536</code>. Lädt ein Modell nicht (OOM oder Absturz), ist das der erste Hebel.</div>
+
+  <div class="warn">Nicht jedes GGUF passt: <strong>Diffusion-Modelle</strong> (DiffuCoder, Dream-Coder, diffusiongemma – Architektur <code class="inline">dream</code>) brauchen einen speziellen Runner und stürzen auf dem normalen Server ab. Modelle über ~90&nbsp;GB sprengen das 96-GB-GTT-Fenster.</div>
+
+  <hr class="rule">
+
+  <h3 class="section">Doom-Loop-Detection ausschalten</h3>
+  <p class="lede" style="margin-bottom:20px">Der Agent bricht ab, wenn er dieselben Tool-Aufrufe 3× hintereinander macht — Schutz vor Endlosschleifen. Bei repetitiven Aufgaben wie <strong>Übersetzungen</strong> ist genau das aber gewollt. Dafür gibt es <code class="inline">/doomloop</code>.</p>
+
+  <div class="term">
+    <button class="copy" data-cmd="/doomloop off">kopieren</button>
+    <pre><span class="p">$</span> openmono agent
+<span class="p">›</span> /doomloop off
+<span class="o">Doom loop detection OFF — repetitive tool calls will NOT be aborted.</span>
+<span class="o">Useful for repetitive work like translations. Re-enable with /doomloop on.</span></pre>
+  </div>
+
+  <p>Der Befehl wird <strong>im Agent</strong> eingetippt (nicht im Terminal davor). Danach die Übersetzung ganz normal anstoßen — sie läuft jetzt ohne Abbruch durch.</p>
+
+  <div class="tablewrap" style="margin-bottom:12px">
+    <table>
+      <thead>
+        <tr><th>Befehl</th><th>Wirkung</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>/doomloop off</code></td><td>Detection aus (auch: <code>aus</code>, <code>false</code>, <code>0</code>)</td></tr>
+        <tr><td><code>/doomloop on</code></td><td>Detection wieder an (auch: <code>an</code>, <code>true</code>, <code>1</code>)</td></tr>
+        <tr><td><code>/doomloop</code></td><td>ohne Argument: umschalten (Toggle)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note"><strong>Gilt pro Session.</strong> Nach einem Neustart von <code class="inline">openmono agent</code> ist die Detection wieder an — bewusst so, damit der Schutz nicht versehentlich dauerhaft aus bleibt. Für jede neue Übersetzungs-Session also einmal <code class="inline">/doomloop off</code> eintippen.</div>
+
+  <hr class="rule">
+
+  <h3 class="section">Gut zu wissen</h3>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>Wenn du …</th><th>dann …</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>zurück zu CPU oder CUDA willst</td>
+          <td><code>openmono setup --cpu</code> bzw. <code>--gpu</code> — die Lanes überschreiben sich nicht, es zählt immer das zuletzt geschriebene Override.</td>
+        </tr>
+        <tr>
+          <td>die Kontextgröße ändern willst</td>
+          <td><code>docker/.env</code> → <code>CTX_SIZE=…</code> setzen, dann <code>openmono restart</code>. Aktuell: 204800 (mit Vision), bis 262144 möglich.</td>
+        </tr>
+        <tr>
+          <td>ein weiteres GGUF hinzufügen willst</td>
+          <td>Datei nach <code>models/</code> <strong>hardlinken</strong> (<code>ln quelle.gguf models/</code>, kein Symlink — der bricht im Container), dann taucht es in <code>openmono model</code> auf.</td>
+        </tr>
+        <tr>
+          <td>„Doom loop detected“ eine Aufgabe abbricht</td>
+          <td>Im Agent <code>/doomloop off</code> eintippen (siehe Abschnitt oben) — bei repetitiven Aufgaben wie Übersetzungen ist die Wiederholung gewollt.</td>
+        </tr>
+        <tr>
+          <td>„out of memory“ im Log siehst</td>
+          <td>Kleinere Quantisierung wählen (Q4_K_M → Q3_K_M / IQ3_XXS) oder <code>CTX_SIZE</code> reduzieren.</td>
+        </tr>
+        <tr>
+          <td>auf einem frischen System installierst</td>
+          <td>Das Setup richtet die Kernel-Parameter selbst ein und fragt nach <strong>einem</strong> Reboot — danach einfach <code>openmono setup</code> erneut ausführen.</td>
+        </tr>
+        <tr>
+          <td>Updates vom offiziellen Repo holen willst</td>
+          <td>Updates sind absichtlich blockiert — deine Vulkan-Anpassungen liegen auf dem lokalen Branch <code>vulkan-lane</code>, und <code>re-install.sh</code> bricht bei lokalen Änderungen ab. Bewusst updaten: <code>git fetch origin && git rebase origin/main</code> — deine Commits bleiben dabei erhalten.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="foot">Konfiguration: docker/docker-compose.override.yml · docker/.env &nbsp;—&nbsp; Doku: docs/SETUP.md</p>
+</div>
+
+<script>
+  document.querySelectorAll('.copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      navigator.clipboard.writeText(btn.dataset.cmd).then(function () {
+        var old = btn.textContent;
+        btn.textContent = 'kopiert ✓';
+        setTimeout(function () { btn.textContent = old; }, 1500);
+      });
+    });
+  });
+</script>
