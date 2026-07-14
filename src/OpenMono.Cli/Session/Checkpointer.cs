@@ -109,6 +109,9 @@ public sealed class Checkpointer
         if (latest is null)
             return session.Messages;
 
+        if (latest.CutoffMessageIndex < 0 || latest.CutoffMessageIndex > session.Messages.Count)
+            return session.Messages;
+
         var system = session.Messages.Where(m => m.Role == MessageRole.System).ToList();
         var recent = session.Messages.Skip(latest.CutoffMessageIndex).ToList();
 
@@ -153,21 +156,49 @@ public sealed class Checkpointer
     private static int FindRecentStartIndex(List<Message> messages, int keepTurns)
     {
         var userTurnsSeen = 0;
+        var startIndex = 0;
         for (var i = messages.Count - 1; i >= 0; i--)
         {
             if (messages[i].Role == MessageRole.User)
             {
                 userTurnsSeen++;
                 if (userTurnsSeen >= keepTurns)
-                    return i;
+                {
+                    startIndex = i;
+                    break;
+                }
             }
         }
-        return 0;
+
+        // A pending tool call awaiting a permission decision can outlive several user turns
+        // (queued permissions). Never let it fall before the checkpoint cutoff — resolving it
+        // later needs to find this exact message still in history.
+        var pendingIndex = FindEarliestUnansweredToolCallIndex(messages);
+        return pendingIndex is int p && p < startIndex ? p : startIndex;
+    }
+
+    private static int? FindEarliestUnansweredToolCallIndex(List<Message> messages)
+    {
+        var answered = messages
+            .Where(m => m.Role == MessageRole.Tool && m.ToolCallId is not null)
+            .Select(m => m.ToolCallId!)
+            .ToHashSet();
+
+        for (var i = 0; i < messages.Count; i++)
+        {
+            if (messages[i].Role == MessageRole.Assistant
+                && messages[i].ToolCalls is { Count: > 0 } calls
+                && calls.Any(c => !answered.Contains(c.Id)))
+                return i;
+        }
+        return null;
     }
 
     internal static int EstimateTokens(IReadOnlyList<Message> messages)
     {
-        var chars = messages.Sum(m => (m.Content?.Length ?? 0) + 20);
+        var chars = messages.Sum(m => (m.Content?.Length ?? 0)
+            + (m.ToolCalls?.Sum(c => c.Arguments?.Length ?? 0) ?? 0)
+            + 20);
         return chars / 4;
     }
 

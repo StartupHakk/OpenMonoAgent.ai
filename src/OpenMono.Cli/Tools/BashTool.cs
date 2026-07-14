@@ -29,7 +29,7 @@ public sealed class BashTool : ToolBase
         return SanityCheck.IsDestructiveCommand(command) ? PermissionLevel.Deny : PermissionLevel.Ask;
     }
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
     {
         var command = input.TryGetProperty("command", out var cmd) ? cmd.GetString() : null;
         if (string.IsNullOrWhiteSpace(command))

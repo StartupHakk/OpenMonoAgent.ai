@@ -15,7 +15,7 @@ public sealed class AskUserTool : ToolBase
         .AddArray("options", "Optional list of choices for the user to pick from", new { type = "string" })
         .Require("question");
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input) => [];
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input) => [];
 
     protected override async Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
     {

@@ -8,6 +8,12 @@ public sealed record TurnMetrics
     public int CompletionTokens { get; init; }
     public TimeSpan TimeToFirstToken { get; init; }
     public TimeSpan TotalElapsed { get; init; }
+
+    // Server-reported generation rate from llama.cpp's `timings` (tok/s). More accurate than the
+    // wall-clock estimate because it excludes transport/scheduling overhead. 0 when unavailable —
+    // renderers fall back to the wall-clock figure in that case.
+    public double GenTokensPerSecond { get; init; }
+    public double AvgGenTokensPerSecond { get; init; }
 }
 
 public interface IOutputSink
@@ -18,10 +24,14 @@ public interface IOutputSink
     void StreamText(string text);
     void EndAssistantResponse(TurnMetrics? metrics = null);
 
-    void AppendThinking(string text);
-    void CollapseThinking(int charCount);
-    void ShowWaitingIndicator();
-    void ClearWaitingIndicator();
+    void AppendThinking(string text) => AppendThinking(text, null);
+    void AppendThinking(string text, string? agentLabel);
+    void CollapseThinking(int charCount) => CollapseThinking(charCount, null);
+    void CollapseThinking(int charCount, string? agentLabel);
+    void ShowWaitingIndicator(string? label = null) => ShowWaitingIndicator(label, null);
+    void ShowWaitingIndicator(string? label, string? agentLabel);
+    void ClearWaitingIndicator() => ClearWaitingIndicator(null);
+    void ClearWaitingIndicator(string? agentLabel);
 
     void WriteWelcome(string model, string endpoint);
     void WriteMarkdown(string markdown);

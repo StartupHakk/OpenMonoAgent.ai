@@ -29,22 +29,9 @@ public sealed class EnterPlanModeTool : ToolBase
         - The user gave specific, detailed instructions and the path is clear
         - Pure research/exploration (use the Agent tool with Explore type instead)
         - The user said "just do it" or "go ahead" — start working
-
-        ## Examples
-
-        GOOD — use EnterPlanMode:
-          "Add user authentication" — session vs JWT, middleware structure, many files
-          "Improve performance" — need to profile first, multiple strategies possible
-          "Refactor the data layer" — architectural decisions, high impact
-
-        BAD — do not use EnterPlanMode:
-          "Fix the typo in the README"
-          "Add a console.log to debug this"
-          "What files handle routing?" — this is research, not implementation
         """;
 
     public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;
-
     public override bool IsReadOnly => true;
 
     protected override SchemaBuilder DefineSchema() => new SchemaBuilder()
@@ -56,52 +43,121 @@ public sealed class EnterPlanModeTool : ToolBase
         var reason = input.GetProperty("reason").GetString()!;
 
         if (context.Session.Meta.PlanMode)
-            return Task.FromResult(ToolResult.Error("Already in plan mode. Use ExitPlanMode to leave."));
+            return Task.FromResult(ToolResult.Error(
+                "Already in plan mode. Investigate, then call CreatePlan to present your plan."));
 
         context.Session.Meta.PlanMode = true;
-
-        return Task.FromResult(ToolResult.Success(PlanModeInstructions.Activation(reason)));
+        Utils.Log.Info("<---SWITCHED-TO-PLAN-MODE--->");
+        return Task.FromResult(ToolResult.Success(ModeInstructions.Activation(reason)));
     }
 }
 
-public sealed class ExitPlanModeTool : ToolBase
+/// <summary>
+/// Presents a completed plan to the user. Stays in Plan mode — the plan is for review,
+/// not yet implementation. The user approves, then the agent calls ImplementPlan to switch
+/// to Build mode and execute. Replaces the old ExitPlanMode, which conflated "present the
+/// plan" with "drop to Build" and let the agent start writing before the user approved.
+/// </summary>
+public sealed class CreatePlanTool : ToolBase
 {
-    public override string Name => "ExitPlanMode";
+    public override string Name => "CreatePlan";
     public override string Description =>
         """
-        Exit plan mode and present the implementation plan to the user for approval.
-        Call this when your plan is complete and ready for the user to review.
+        Present your completed implementation plan to the user for approval.
+        Call this when your plan is ready. You STAY in Plan mode (read-only) — this only
+        presents the plan. After the user approves, call ImplementPlan to switch to Build
+        mode and execute. Do NOT start writing files from this tool.
 
         The `plan` argument must be a structured numbered plan — not vague prose.
         It should list: the approach, every file that changes, risks, and complexity.
         """;
 
     public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;
-
-
     public override bool IsReadOnly => true;
 
     protected override SchemaBuilder DefineSchema() => new SchemaBuilder()
         .AddString("plan", "The full numbered implementation plan to present to the user")
         .Require("plan");
 
-    protected override Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
+    protected override async Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
     {
         var plan = input.GetProperty("plan").GetString()!;
 
         if (!context.Session.Meta.PlanMode)
-            return Task.FromResult(ToolResult.Error(
-                "Plan mode is not currently active — the previous plan was already presented to the user. " +
-                "If you need to plan again, call EnterPlanMode first, then call ExitPlanMode with the new plan."));
+            return ToolResult.Error(
+                "Not in plan mode — call EnterPlanMode first to plan, then CreatePlan to present it.");
+
+        context.Session.Meta.LastPlanContent = plan;
+
+        // Persist the plan to a discoverable plans/ directory. CreatePlan writes it server-side
+        // (control tool), so plan mode stays read-only for the agent's own tools — no FileWrite
+        // gate carve-out. The saved file is reviewable/editable and feeds later implementation.
+        var savedPath = await TryWritePlanFileAsync(plan, context, ct);
+        context.Session.Meta.LastPlanPath = savedPath;
+
+        // The user sees the formatted plan + option buttons in the plan_ready card (extension)
+        // / the loop renderer (TUI). This result is a brief agent-facing status; the "wait,
+        // then ImplementPlan" instruction comes from the PlanPresented message.
+        return ToolResult.Success("Plan presented to the user — awaiting their choice (Auto implement / Ask before edits / Keep planning).")
+            .WithBreakTurn();
+    }
+
+    // Writes the plan under <workspace>/.openmono/plans/ with a timestamped filename so
+    // revisions are kept. Best-effort: a write failure must not break plan presentation.
+    private static async Task<string?> TryWritePlanFileAsync(string plan, ToolContext context, CancellationToken ct)
+    {
+        try
+        {
+            var dir = Path.Combine(context.WorkingDirectory, ".openmono", "plans");
+            Directory.CreateDirectory(dir);
+            var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+            var path = Path.Combine(dir, $"{stamp}-plan.md");
+            var content = $"# Plan — {stamp} UTC\n\nSession: {context.Session.Id}\n\n{plan}\n";
+            await File.WriteAllTextAsync(path, content, ct);
+            return Path.GetRelativePath(context.WorkingDirectory, path);
+        }
+        catch (Exception ex)
+        {
+            context.OnDebug?.Invoke($"[CreatePlan] failed to persist plan file: {ex.Message}");
+            return null;
+        }
+    }
+}
+
+/// <summary>
+/// Switches from Plan to Build mode to implement the approved plan. Call only after the
+/// user has approved. Build tools become available on the same turn (the loop rebuilds the
+/// tool set after the mode flip), and the flip is pushed to the UI/TUI automatically.
+/// </summary>
+public sealed class ImplementPlanTool : ToolBase
+{
+    public override string Name => "ImplementPlan";
+    public override string Description =>
+        """
+        Switch to Build mode and implement the plan the user just approved.
+        Call this ONLY after the user has approved the plan presented by CreatePlan.
+        After calling it you have full tool access — proceed to implement the plan.
+        """;
+
+    public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;
+    public override bool IsReadOnly => true;
+
+    protected override SchemaBuilder DefineSchema() => new SchemaBuilder();
+
+    protected override Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
+    {
+        var plan = context.Session.Meta.LastPlanContent is { Length: > 0 } p ? $"\n\nThe approved plan:\n{p}" : "";
+
+        // Idempotent: when the approval already flipped to Build (deterministic plan_decision
+        // routing), a redundant ImplementPlan call must SUCCEED, not error — just proceed.
+        if (!context.Session.Meta.PlanMode)
+            return Task.FromResult(ToolResult.Success(
+                "Already in Build mode with full tool access. Implement the approved plan now." + plan));
 
         context.Session.Meta.PlanMode = false;
-        context.Session.Meta.LastPlan = plan;
-
-        context.WriteOutput($"\n## Plan\n\n{plan}\n");
-
+        Utils.Log.Info("<---SWITCHED-TO-BUILD-MODE--->");
         return Task.FromResult(ToolResult.Success(
-            $"Exited plan mode. Present the plan below to the user, then stop — " +
-            $"write tools will be available on the next turn.\n\n{plan}")
-            .WithBreakTurn());
+            "Switched to Build mode — you now have full tool access (FileWrite, FileEdit, Bash, etc.). " +
+            "Implement the approved plan now." + plan));
     }
 }

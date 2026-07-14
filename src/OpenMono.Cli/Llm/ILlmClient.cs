@@ -30,6 +30,13 @@ public sealed record UsageInfo
     public int PromptTokens { get; init; }
     public int CompletionTokens { get; init; }
     public int TotalTokens => PromptTokens + CompletionTokens;
+
+    // Generation throughput from llama.cpp's `timings` block (when present on the response).
+    // PredictedTokens/PredictedMs are accumulated for a rolling average; PredictedPerSecond is
+    // the server's own live decode rate for this turn. All default to 0 on providers that omit timings.
+    public int PredictedTokens { get; init; }
+    public double PredictedMs { get; init; }
+    public double PredictedPerSecond { get; init; }
 }
 
 public interface ILlmClient : IDisposable

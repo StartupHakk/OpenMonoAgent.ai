@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="430" viewBox="0 0 800 430" role="img" aria-label="OpenMono Roadmap 2026">
+  <defs>
+    <style>
+      .mono { font-family: 'JetBrains Mono','Cascadia Code','Fira Code',ui-monospace,monospace; }
+      .item { font-size: 11px; fill: #C9D2C6; }
+      .item-dim { font-size: 11px; fill: #8C968A; }
+      .sub { font-size: 10px; fill: #7E887C; }
+    </style>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0B0F0A"/>
+      <stop offset="1" stop-color="#070807"/>
+    </linearGradient>
+    <linearGradient id="accentGreen" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ADFF8F"/>
+      <stop offset="1" stop-color="#92D678"/>
+    </linearGradient>
+  </defs>
+
+  <!-- canvas -->
+  <rect x="0.5" y="0.5" width="799" height="429" rx="10" fill="url(#bg)" stroke="#1C231A" stroke-width="1"/>
+
+  <!-- ===== header band ===== -->
+  <!-- terminal mark -->
+  <rect x="22" y="20" width="30" height="30" rx="5" fill="none" stroke="#ADFF8F" stroke-width="1.6"/>
+  <path d="M31 30 l6 5 -6 5" fill="none" stroke="#ADFF8F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="39" y1="40" x2="45" y2="40" stroke="#ADFF8F" stroke-width="1.8" stroke-linecap="round"/>
+  <!-- title -->
+  <text x="64" y="34" class="mono" font-size="14" font-weight="700" fill="#DAE5D8">OpenMono<tspan fill="#ADFF8F">Agent</tspan></text>
+  <text x="64" y="48" class="mono" font-size="9.5" fill="#7E887C" letter-spacing="2.5">ROADMAP · 2026</text>
+  <line x1="22" y1="68" x2="778" y2="68" stroke="#1C231A" stroke-width="1"/>
+
+  <!-- ===== column 1 · IN PROGRESS ===== -->
+  <rect x="22" y="84" width="240" height="324" rx="8" fill="#0E140C" stroke="#243020" stroke-width="1"/>
+  <rect x="22" y="84" width="240" height="3" rx="1.5" fill="url(#accentGreen)"/>
+  <circle cx="38" cy="108" r="3.5" fill="#ADFF8F"/>
+  <text x="50" y="112" class="mono" font-size="10.5" font-weight="700" fill="#ADFF8F" letter-spacing="1">IN PROGRESS</text>
+  <text x="186" y="112" class="mono sub" text-anchor="end">6</text>
+  <line x1="38" y1="122" x2="246" y2="122" stroke="#1C231A" stroke-width="1"/>
+  <g class="mono">
+    <text x="38" y="148" class="item">VS Code extension v2</text>
+    <text x="38" y="172" class="item">Colored diff display</text>
+    <text x="38" y="196" class="item">Git branch + status in prompt</text>
+    <text x="38" y="220" class="item">Built-in playbooks</text>
+    <text x="38" y="234" class="item-dim">commit · review · explain · debug</text>
+    <text x="38" y="258" class="item"><tspan fill="#92D678">/doctor</tspan> diagnostics check</text>
+    <text x="38" y="282" class="item">Antigravity store extension</text>
+  </g>
+
+  <!-- ===== column 2 · COMING NEXT ===== -->
+  <rect x="280" y="84" width="240" height="324" rx="8" fill="#0E140C" stroke="#243020" stroke-width="1"/>
+  <rect x="280" y="84" width="240" height="3" rx="1.5" fill="#5C9A38"/>
+  <circle cx="296" cy="108" r="3.5" fill="#7BC247"/>
+  <text x="308" y="112" class="mono" font-size="10.5" font-weight="700" fill="#7BC247" letter-spacing="1">COMING NEXT</text>
+  <text x="504" y="112" class="mono sub" text-anchor="end">8</text>
+  <line x1="296" y1="122" x2="504" y2="122" stroke="#1C231A" stroke-width="1"/>
+  <g class="mono">
+    <text x="296" y="148" class="item">Parallel sub-agent coordination</text>
+    <text x="296" y="172" class="item">Playwright MCP — browser</text>
+    <text x="296" y="196" class="item">MCP manager — in-agent setup</text>
+    <text x="296" y="220" class="item">Thinking budget token cap</text>
+    <text x="296" y="244" class="item"><tspan fill="#92D678">/commit</tspan> and <tspan fill="#92D678">/review</tspan> commands</text>
+    <text x="296" y="268" class="item">Background agents + streaming</text>
+    <text x="296" y="292" class="item">Micro-compaction</text>
+    <text x="296" y="316" class="item">Session revert — roll back turns</text>
+  </g>
+
+  <!-- ===== column 3 · ON THE HORIZON ===== -->
+  <rect x="538" y="84" width="240" height="324" rx="8" fill="#0C100B" stroke="#1F271C" stroke-width="1"/>
+  <rect x="538" y="84" width="240" height="3" rx="1.5" fill="#33402E"/>
+  <circle cx="554" cy="108" r="3.5" fill="#6E7A6A"/>
+  <text x="566" y="112" class="mono" font-size="10.5" font-weight="700" fill="#9AA496" letter-spacing="1">ON THE HORIZON</text>
+  <text x="762" y="112" class="mono sub" text-anchor="end">14</text>
+  <line x1="554" y1="122" x2="762" y2="122" stroke="#1C231A" stroke-width="1"/>
+  <g class="mono item-dim" font-size="10.5">
+    <text x="554" y="144">Desktop app — Tauri</text>
+    <text x="554" y="162">Web frontend (remote)</text>
+    <text x="554" y="180">Theme system</text>
+    <text x="554" y="198">Vim keybinding mode</text>
+    <text x="554" y="216">More providers — Vertex, Azure</text>
+    <text x="554" y="234">Slack + GitHub App</text>
+    <text x="554" y="252">Session tagging &amp; forking</text>
+    <text x="554" y="270">File watching in sessions</text>
+    <text x="554" y="288">ACP — Zed + editors</text>
+    <text x="554" y="306">Auto-dreaming — memory</text>
+    <text x="554" y="324">OpenTelemetry tracing</text>
+    <text x="554" y="342">Multi-repo workspaces</text>
+    <text x="554" y="360">Voice input mode</text>
+    <text x="554" y="378">Agent marketplace</text>
+  </g>
+</svg>

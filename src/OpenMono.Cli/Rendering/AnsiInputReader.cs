@@ -3,6 +3,7 @@ using System.Text;
 using OpenMono.Commands;
 using OpenMono.Config;
 using OpenMono.Permissions;
+using OpenMono.Playbooks;
 using OpenMono.Utils;
 
 namespace OpenMono.Rendering;
@@ -44,19 +45,48 @@ internal sealed class AnsiInputReader(
                 if (s == "O" && Console.KeyAvailable)
                     continue;
 
+                if ((ch == 'M' || ch == 'm') && s.Length > 3 && s[0] == '[' && s[1] == '<')
+                {
+                    var body  = s.Substring(2, s.Length - 3);
+                    var semi  = body.IndexOf(';');
+                    var cbStr = semi >= 0 ? body[..semi] : body;
+                    if (int.TryParse(cbStr, out var cb) && (cb & 0x40) != 0)
+                    {
+                        var dir = cb & 0x3;
+                        if (dir == 0) return (+2, null, 0, 0);
+                        if (dir == 1) return (-2, null, 0, 0);
+                    }
+                    return (0, null, 0, 0);
+                }
+
                 return s switch
                 {
                     "b" or "[1;3D" or "[1;5D" => (0, null, -1,  0),
                     "f" or "[1;3C" or "[1;5C" => (0, null, +1,  0),
                     "[1;9D" or "[H" or "OH"   => (0, null,  0, -1),
                     "[1;9C" or "[F" or "OF"   => (0, null,  0, +1),
-                    "[5~"  or "[1;2A"         => (+1, null,  0,  0),
-                    "[6~"  or "[1;2B"         => (-1, null,  0,  0),
+                    "[5~"                      => (+1, null,  0,  0),
+                    "[6~"                      => (-1, null,  0,  0),
+                    "[1;2A"                    => (+2, null,  0,  0),
+                    "[1;2B"                    => (-2, null,  0,  0),
                     _                          => (0, null,  0,  0),
                 };
             }
         }
         return (0, null, 0, 0);
+    }
+
+    private void ApplyScroll(int scroll)
+    {
+        switch (scroll)
+        {
+            case  1: painter.ScrollPageUp();   break;
+            case -1: painter.ScrollPageDown(); break;
+            case  2: painter.ScrollBy(+3);     break;
+            case -2: painter.ScrollBy(-3);     break;
+            default: return;
+        }
+        painter.Paint();
     }
 
     private static int MoveWordBackward(string text, int cursor)
@@ -154,16 +184,15 @@ internal sealed class AnsiInputReader(
                         _bgInputBuf.Append(paste.Replace("\r\n", "\n").Replace('\r', '\n'));
                         if (!painter.PaintInProgress) painter.DrawInputText(_bgInputBuf.ToString(), _bgInputBuf.Length);
                     }
-                    else if (scroll > 0) { painter.ScrollBy(+3); painter.Paint(); }
-                    else if (scroll < 0) { painter.ScrollBy(-3); painter.Paint(); }
+                    else if (scroll != 0) { ApplyScroll(scroll); }
                     continue;
                 }
                 CurrentTurnCts?.Cancel();
                 continue;
             }
 
-            if (k.Key == ConsoleKey.PageUp)   { painter.ScrollBy(+3); painter.Paint(); continue; }
-            if (k.Key == ConsoleKey.PageDown) { painter.ScrollBy(-3); painter.Paint(); continue; }
+            if (k.Key == ConsoleKey.PageUp)   { painter.ScrollPageUp(); painter.Paint(); continue; }
+            if (k.Key == ConsoleKey.PageDown) { painter.ScrollPageDown(); painter.Paint(); continue; }
 
             if (k.Key == ConsoleKey.C && k.Modifiers.HasFlag(ConsoleModifiers.Control))
             {
@@ -210,14 +239,14 @@ internal sealed class AnsiInputReader(
 
             if (k.Key == ConsoleKey.PageUp)
             {
-                painter.ScrollBy(+3);
+                painter.ScrollPageUp();
                 painter.Paint();
                 continue;
             }
 
             if (k.Key == ConsoleKey.PageDown)
             {
-                painter.ScrollBy(-3);
+                painter.ScrollPageDown();
                 painter.Paint();
                 continue;
             }
@@ -318,10 +347,59 @@ internal sealed class AnsiInputReader(
             $"  {AnsiPainter.B}{AnsiPainter.Fr}[!]{AnsiPainter.R}{AnsiPainter.BgInput}  Deny all"
         );
 
-        var response = ReadPermissionKey();
+        PermissionResponse response;
+        try { response = ReadPermissionKey(); }
+        finally { painter.ClearLane(); }
         painter.Paint();
         StartBackgroundInput();
         return Task.FromResult(response);
+    }
+
+    public Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct)
+    {
+        StopBackgroundInput();
+        painter.AddMessage(new AnsiPainter.Msg("sys",
+            $"{AnsiPainter.Fy}▶ Playbook approval: {plan.PlaybookName}{AnsiPainter.R}"));
+
+        var stepsStr = string.Join(", ", plan.Steps.Select(s => s.Id));
+        var toolsStr = string.Join(", ", plan.Tools.Select(t => t.Name));
+
+        painter.Sz();
+        var maxLineLen = painter.ComputeLayout("").MainW - 4;
+        var truncatedSteps = stepsStr.Length > maxLineLen
+            ? stepsStr[..(maxLineLen - 3)] + "..."
+            : stepsStr;
+        var truncatedTools = toolsStr.Length > maxLineLen
+            ? toolsStr[..(maxLineLen - 3)] + "..."
+            : toolsStr;
+
+        painter.PaintPermissionLane(
+            $"{AnsiPainter.Fy}{AnsiPainter.B}▸ Approve playbook: {plan.PlaybookName}{AnsiPainter.R}",
+            $"{AnsiPainter.Fw}Steps: {truncatedSteps}\nTools: {truncatedTools}{AnsiPainter.R}",
+            $"  {AnsiPainter.B}{AnsiPainter.Fg}[y]{AnsiPainter.R}{AnsiPainter.BgInput}  Allow",
+            $"  {AnsiPainter.B}{AnsiPainter.Fy}[n]{AnsiPainter.R}{AnsiPainter.BgInput}  Deny",
+            "",
+            ""
+        );
+
+        bool approved;
+        try
+        {
+            while (true)
+            {
+                var result = terminal.TryReadKey();
+                if (result is null) { Thread.Sleep(20); continue; }
+                var k = result.Value;
+
+                if (k.KeyChar is 'y' or 'Y') { approved = true; break; }
+                if (k.KeyChar is 'n' or 'N') { approved = false; break; }
+            }
+        }
+        finally { painter.ClearLane(); }
+
+        painter.Paint();
+        StartBackgroundInput();
+        return Task.FromResult(approved);
     }
 
     private string ReadInputCore(bool interactive)
@@ -371,8 +449,8 @@ internal sealed class AnsiInputReader(
                     painter.PaintConvThrottled(force: true);
                 }
 
-                if (k.Key == ConsoleKey.PageUp)   { painter.ScrollBy(+3); painter.Paint(); continue; }
-                if (k.Key == ConsoleKey.PageDown) { painter.ScrollBy(-3); painter.Paint(); continue; }
+                if (k.Key == ConsoleKey.PageUp)   { painter.ScrollPageUp(); painter.Paint(); continue; }
+                if (k.Key == ConsoleKey.PageDown) { painter.ScrollPageDown(); painter.Paint(); continue; }
 
                 if (k.Key == ConsoleKey.C && k.Modifiers.HasFlag(ConsoleModifiers.Control))
                 {
@@ -439,8 +517,7 @@ internal sealed class AnsiInputReader(
                         else if (wordMove > 0) { cur = MoveWordForward(buf.ToString(), cur);  painter.DrawInputText(buf.ToString(), cur); }
                         else if (lineMove < 0) { cur = 0;           painter.DrawInputText(buf.ToString(), cur); }
                         else if (lineMove > 0) { cur = buf.Length;  painter.DrawInputText(buf.ToString(), cur); }
-                        else if (scroll > 0) { painter.ScrollBy(+3); painter.Paint(); }
-                        else if (scroll < 0) { painter.ScrollBy(-3); painter.Paint(); }
+                        else if (scroll != 0) { ApplyScroll(scroll); }
                         continue;
                     }
                     if (atVis) { suggestions.HideAtSuggestions(buf.ToString()); atVis = false; continue; }
@@ -569,13 +646,13 @@ internal sealed class AnsiInputReader(
 
                 if (k.Key == ConsoleKey.PageUp)
                 {
-                    painter.ScrollBy(+3);
+                    painter.ScrollPageUp();
                     painter.PaintConvThrottled(force: true);
                     continue;
                 }
                 if (k.Key == ConsoleKey.PageDown)
                 {
-                    painter.ScrollBy(-3);
+                    painter.ScrollPageDown();
                     painter.PaintConvThrottled(force: true);
                     continue;
                 }

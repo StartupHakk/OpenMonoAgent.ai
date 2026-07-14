@@ -1,63 +1,17 @@
-# Roadmap 
+# Roadmap
 
-<p align="center">
- <code>May 2026</code>
-</p>
-
----
-
-## In Progress
-
-- [ ] Colored diff display for file edits
-- [ ] Git branch + status injected into system prompt
-- [ ] Built-in playbooks — commit, review, explain, debug
-- [ ] VS Code extension — quick-access agent from the editor
+<div align="center">
+  <img src="docs/assets/roadmap.svg" alt="OpenMono roadmap 2026 — In progress, Coming next, and On the horizon" width="800" />
+</div>
 
 ---
 
-## Coming Next
+## Shipped
 
-- [ ] Parallel sub-agent management — spawn and coordinate multiple agents concurrently
-- [ ] Playwright MCP — browser automation as a native tool
-- [ ] MCP manager — discover, add, and configure MCP servers from within the agent
-- [ ] Extended thinking + budget token support
-- [ ] `/commit` and `/review` slash commands
-- [ ] Background agent system with output streaming
-- [ ] Micro-compaction before full compaction triggers
+<div align="center">
+  <img src="docs/assets/roadmap-shipped.svg" alt="Shipped — completed OpenMono features" width="800" />
+</div>
 
 ---
 
-## On the Horizon
-
-- [ ] Session revert — roll back conversation and file state to any prior turn
-- [ ] Improved CLI — richer file read/write primitives, MultiEdit batch operations
-- [ ] Theme system — light/dark, custom colour schemes
-- [ ] Vim keybinding mode
-- [ ] `/doctor` — diagnostics and connectivity check
-- [ ] More providers — Google Vertex, Azure OpenAI, Bedrock, Groq
-- [ ] Autocomplete with frecency scoring
-- [ ] Session tagging and forking
-- [ ] File watching during active sessions
-- [ ] ACP (Agent Client Protocol) support for editor integrations such as Zed
-- [ ] Desktop app — Tauri or Electron wrapper
-- [ ] Web frontend for remote access
-- [ ] Slack and GitHub App integrations
-- [ ] Auto-dreaming — background memory consolidation
-- [ ] Opt-in OpenTelemetry tracing
-
----
-
----
-
-## Done
-
-- [x] `openmono stop` now reliably stops llama-server — services sit behind compose profiles, so a bare `stop`/`down` silently no-op'd; `cmd_stop` now activates the profile, verifies the container is really down against the daemon (raw `docker stop` fallback), and removes only the inference container without touching running agent sessions
-- [x] Agent iteration limit raised to 1000 and is now configurable — previously capped at 25 in [`ConversationLoop.cs`](https://github.com/StartupHakk/OpenMonoAgent.ai/blob/main/src/OpenMono.Cli/Session/ConversationLoop.cs)
-- [x] Doom loop detection improved — aborts early if the same tool sequence repeats, preventing runaway agent loops
-- [x] Plan mode integrated — restricts the agent to read-only tools for safe exploration before making changes
-- [x] 12 GB and 16 GB GPU support — installer now detects VRAM tier and selects the appropriate model automatically
-- [x] Vision / multimodal input — `@image.png` syntax in chat, `FileRead` for images, mmproj auto-downloaded at setup, smart resize to fit VRAM budget
-
----
-
-*[Contributing](CONTRIBUTING.md)*
+*[Contributing](CONTRIBUTING.md) · [Architecture](docs/ARCHITECTURE.md)*

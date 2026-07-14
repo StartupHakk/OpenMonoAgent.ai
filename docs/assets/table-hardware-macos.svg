@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="234" viewBox="0 0 800 234" role="img" aria-label="macOS Apple Silicon support">
+  <defs>
+    <style>
+      .mono { font-family: 'JetBrains Mono','Cascadia Code','Fira Code',ui-monospace,monospace; }
+      .col { font-size: 9.5px; fill: #7E887C; letter-spacing: 1px; }
+      .spec { font-size: 11px; font-weight: 600; }
+      .val { font-size: 10.5px; fill: #C9D2C6; }
+      .val-dim { font-size: 10.5px; fill: #8C968A; }
+    </style>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0B0F0A"/>
+      <stop offset="1" stop-color="#070807"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0.5" y="0.5" width="799" height="233" rx="10" fill="url(#bg)" stroke="#1C231A" stroke-width="1"/>
+
+  <!-- header (Apple logo, standard path scaled into the mark area) -->
+  <g transform="translate(24,18) scale(0.0655)">
+    <path fill="#ADFF8F" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5c0 26.2 4.8 53.3 14.4 81.2 12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/>
+  </g>
+  <text x="64" y="34" class="mono" font-size="14" font-weight="700" fill="#DAE5D8">macOS</text>
+  <text x="64" y="48" class="mono" font-size="9.5" fill="#7E887C" letter-spacing="2">APPLE SILICON · METAL · NO DOCKER</text>
+  <line x1="22" y1="68" x2="778" y2="68" stroke="#1C231A" stroke-width="1"/>
+
+  <!-- column headers -->
+  <text x="34"  y="88" class="mono col">MEMORY</text>
+  <text x="150" y="88" class="mono col">MODEL</text>
+  <text x="430" y="88" class="mono col">CONTEXT</text>
+  <text x="560" y="88" class="mono col">SPEED</text>
+  <text x="680" y="88" class="mono col">STATUS</text>
+
+  <!-- row 1 · 64 GB recommended -->
+  <rect x="22" y="98" width="756" height="34" rx="6" fill="#13200E" stroke="#3A5C28" stroke-width="1"/>
+  <rect x="22" y="98" width="3" height="34" rx="1.5" fill="#ADFF8F"/>
+  <text x="34"  y="119" class="mono spec" fill="#ADFF8F">64 GB+</text>
+  <text x="150" y="119" class="mono val">Qwen3.6-35B-A3B-UD-Q4_K_XL</text>
+  <text x="430" y="119" class="mono val">192k (168k)</text>
+  <text x="560" y="119" class="mono val">~45–48 tok/s</text>
+  <rect x="676" y="108" width="96" height="15" rx="7.5" fill="#ADFF8F"/>
+  <text x="724" y="119" class="mono" font-size="8.5" font-weight="700" fill="#0A1207" text-anchor="middle">✓ RECOMMENDED</text>
+
+  <!-- row 2 · 32 GB -->
+  <text x="34"  y="155" class="mono val-dim">32 GB</text>
+  <text x="150" y="155" class="mono val-dim">Qwen3.5-9B-Q4_K_M</text>
+  <text x="430" y="155" class="mono val-dim">64k (48k)</text>
+  <text x="560" y="155" class="mono val-dim">~22–27 tok/s</text>
+  <rect x="668" y="144" width="104" height="15" rx="7.5" fill="none" stroke="#C8922E" stroke-width="1"/>
+  <text x="720" y="155" class="mono" font-size="8.5" font-weight="700" fill="#E0B341" text-anchor="middle">⚠ NOT ENCOURAGED</text>
+  <line x1="22" y1="168" x2="778" y2="168" stroke="#141A12" stroke-width="1"/>
+
+  <!-- row 3 · 16 GB -->
+  <text x="34"  y="191" class="mono val-dim">16 GB</text>
+  <text x="150" y="191" class="mono val-dim">Qwen3.5-9B-Q4_K_M</text>
+  <text x="430" y="191" class="mono val-dim">16k (12k)</text>
+  <text x="560" y="191" class="mono val-dim">~12–16 tok/s</text>
+  <rect x="668" y="180" width="104" height="15" rx="7.5" fill="none" stroke="#C8922E" stroke-width="1"/>
+  <text x="720" y="191" class="mono" font-size="8.5" font-weight="700" fill="#E0B341" text-anchor="middle">⚠ NOT ENCOURAGED</text>
+</svg>

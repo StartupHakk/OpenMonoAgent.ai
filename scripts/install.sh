@@ -526,6 +526,7 @@ services:
       --jinja
       --reasoning off
       --metrics \${MODEL_MMPROJ:+--mmproj /models/\${MODEL_MMPROJ} --image-min-tokens 1024 --image-max-tokens 1280}
+      \${LLAMA_API_KEY:+--api-key \${LLAMA_API_KEY}}
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility

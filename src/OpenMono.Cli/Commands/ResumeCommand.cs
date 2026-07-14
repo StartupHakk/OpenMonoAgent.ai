@@ -31,14 +31,14 @@ public sealed class ResumeCommand : ICommand
             for (var i = 0; i < sessions.Count; i++)
             {
                 var s = sessions[i];
-                var preview = s.FirstMessage.Length > 60
-                    ? s.FirstMessage[..60] + "..."
-                    : s.FirstMessage;
+                var title = !string.IsNullOrWhiteSpace(s.Title) ? s.Title : s.FirstMessage;
+                if (title.Length > 60) title = title[..60] + "...";
+                var model = string.IsNullOrWhiteSpace(s.Model) ? "" : $"  model={s.Model}";
                 context.Renderer.WriteInfo(
-                    $"  [{i + 1}] {s.StartedAt:yyyy-MM-dd HH:mm} UTC  " +
-                    $"turns={s.TurnCount}  tokens={s.TotalTokens:N0}  id={s.Id}");
-                if (!string.IsNullOrWhiteSpace(preview))
-                    context.Renderer.WriteInfo($"      \"{preview}\"");
+                    $"  [{i + 1}] {s.LastActivityAt:yyyy-MM-dd HH:mm} UTC  " +
+                    $"turns={s.TurnCount}  msgs={s.MessageCount}{model}  id={s.Id}");
+                if (!string.IsNullOrWhiteSpace(title))
+                    context.Renderer.WriteInfo($"      \"{title}\"");
             }
 
             context.Renderer.WriteInfo("");
@@ -65,31 +65,15 @@ public sealed class ResumeCommand : ICommand
             return;
         }
 
-        var currentSystemMsg = context.Session.Messages
-            .FirstOrDefault(m => m.Role == MessageRole.System);
+        SessionReattach.Apply(context.Session, loaded);
 
-        context.Session.Messages.Clear();
-
-        if (currentSystemMsg is not null)
-            context.Session.Messages.Add(currentSystemMsg);
-
-        foreach (var msg in loaded.Messages.Where(m => m.Role != MessageRole.System))
-            context.Session.AddMessage(msg);
-
-        context.Session.TurnCount = loaded.TurnCount;
-        context.Session.TotalTokensUsed = loaded.TotalTokensUsed;
-
-        context.Session.Checkpoints.Clear();
-        foreach (var cp in loaded.Checkpoints)
-            context.Session.Checkpoints.Add(cp);
-        context.Session.CheckpointCutoffIndex = loaded.CheckpointCutoffIndex;
-
-        var cpInfo = loaded.Checkpoints.Count > 0
-            ? $", {loaded.Checkpoints.Count} checkpoint(s) restored (cutoff=msg {loaded.CheckpointCutoffIndex})"
+        var cpInfo = context.Session.Checkpoints.Count > 0
+            ? $", {context.Session.Checkpoints.Count} checkpoint(s) restored " +
+              $"(cutoff=msg {context.Session.CheckpointCutoffIndex})"
             : "";
 
         context.Renderer.WriteInfo(
-            $"Resumed session {sessionId} — {loaded.TurnCount} turns, " +
+            $"Resumed session {context.Session.Id} — {context.Session.TurnCount} turns, " +
             $"{context.Session.Messages.Count} messages loaded{cpInfo}.");
     }
 }

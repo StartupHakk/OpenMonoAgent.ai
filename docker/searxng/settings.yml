@@ -1,0 +1,17 @@
+# OpenMono.ai — SearXNG settings (internal, behind the Caddy gateway).
+# Inherits SearXNG's shipped defaults; only the deltas we need are set here.
+use_default_settings: true
+
+server:
+  # The official searxng image replaces this literal with the SEARXNG_SECRET
+  # env value at container start.
+  secret_key: "ultrasecretkey"
+  # No rate limiter: traffic is internal-only and already gated by Caddy auth.
+  limiter: false
+  image_proxy: false
+
+search:
+  # The JSON format is OFF by default — the agent's WebSearch tool needs it.
+  formats:
+    - html
+    - json

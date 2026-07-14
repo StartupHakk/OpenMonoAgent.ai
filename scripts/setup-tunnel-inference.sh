@@ -17,6 +17,21 @@ RELAY_CACHE="$HOME/.openmono/relay.json"
 API_BASE="https://app.openmonoagent.ai"
 RELAY_PUBLIC_HOST="relay.openmonoagent.ai"
 
+# If the Caddy web gateway is installed, tunnel it instead of llama directly —
+# the single remote port then reaches llama + search + scrape via path routing.
+GATEWAY_PORT="$(grep '^GATEWAY_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true)"
+GATEWAY_PORT="${GATEWAY_PORT:-47480}"
+# Tunnel the gateway (which fronts llama + any web services) whenever it's
+# installed; otherwise fall back to tunneling llama-server directly.
+if grep -q '^GATEWAY_ENABLED=true' "$ENV_FILE" 2>/dev/null || grep -qE '^WEB_(SEARCH|SCRAPE)_ENABLED=true' "$ENV_FILE" 2>/dev/null; then
+    TUNNEL_LOCAL_PORT="$GATEWAY_PORT"
+else
+    TUNNEL_LOCAL_PORT=7474
+fi
+# The agent box probes the gateway's /services registry (same relay URL as
+# llm.endpoint) and routes WebSearch/WebFetch through whatever this box exposes,
+# so the agent-box instructions only ever need llm.endpoint + llm.api_key.
+
 _SETUP_OS=$(uname -s)
 _SETUP_ARCH=$(uname -m)
 NATIVE_INFERENCE=false
@@ -310,7 +325,7 @@ log.level = "info"
 name              = "${PROXY_PREFIX}llama"
 type              = "tcp"
 localIP           = "127.0.0.1"
-localPort         = 7474
+localPort         = $TUNNEL_LOCAL_PORT
 remotePort        = $REMOTE_PORT
 metadatas.token   = "$RELAY_TOKEN"
 EOF

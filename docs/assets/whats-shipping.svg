@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="348" viewBox="0 0 800 348" role="img" aria-label="What's shipping">
+  <defs>
+    <style>
+      .mono { font-family: 'JetBrains Mono','Cascadia Code','Fira Code',ui-monospace,monospace; }
+      .title { font-size: 13px; font-weight: 700; fill: #ADFF8F; }
+      .desc { font-size: 10.5px; fill: #9AA496; }
+      .code { font-size: 10px; fill: #C9D2C6; }
+    </style>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0B0F0A"/>
+      <stop offset="1" stop-color="#070807"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0F160C"/>
+      <stop offset="1" stop-color="#0A0F08"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0.5" y="0.5" width="799" height="347" rx="10" fill="url(#bg)" stroke="#1C231A" stroke-width="1"/>
+
+  <!-- header -->
+  <rect x="22" y="20" width="30" height="30" rx="5" fill="none" stroke="#ADFF8F" stroke-width="1.6"/>
+  <path d="M31 30 l6 5 -6 5" fill="none" stroke="#ADFF8F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="39" y1="40" x2="45" y2="40" stroke="#ADFF8F" stroke-width="1.8" stroke-linecap="round"/>
+  <text x="64" y="34" class="mono" font-size="14" font-weight="700" fill="#DAE5D8">What's shipping</text>
+  <text x="64" y="48" class="mono" font-size="9.5" fill="#7E887C" letter-spacing="2">4 FEATURES · LIVE NOW</text>
+  <line x1="22" y1="68" x2="778" y2="68" stroke="#1C231A" stroke-width="1"/>
+
+  <!-- ===== card 1 · Web Search ===== -->
+  <rect x="22" y="84" width="370" height="124" rx="8" fill="url(#card)" stroke="#243020" stroke-width="1"/>
+  <rect x="22" y="84" width="370" height="3" rx="1.5" fill="#ADFF8F"/>
+  <rect x="36" y="100" width="116" height="16" rx="8" fill="#ADFF8F"/>
+  <text x="94" y="111" class="mono" font-size="8.5" font-weight="700" fill="#0A1207" text-anchor="middle">✓ SHIPPED · JUN 2026</text>
+  <text x="36" y="138" class="mono title">Web Search &amp; Scraping</text>
+  <text x="36" y="158" class="mono desc">Private, self-hosted search via SearXNG +</text>
+  <text x="36" y="172" class="mono desc">anti-bot scraping. Queries never leave the box.</text>
+  <text x="36" y="186" class="mono code">$ openmono setup search</text>
+
+  <!-- ===== card 2 · Vision ===== -->
+  <rect x="408" y="84" width="370" height="124" rx="8" fill="url(#card)" stroke="#243020" stroke-width="1"/>
+  <rect x="408" y="84" width="370" height="3" rx="1.5" fill="#ADFF8F"/>
+  <rect x="422" y="100" width="116" height="16" rx="8" fill="#ADFF8F"/>
+  <text x="480" y="111" class="mono" font-size="8.5" font-weight="700" fill="#0A1207" text-anchor="middle">✓ SHIPPED · JUN 2026</text>
+  <text x="422" y="138" class="mono title">Vision</text>
+  <text x="422" y="158" class="mono desc">Attach images in chat with @screenshot.png.</text>
+  <text x="422" y="172" class="mono desc">mmproj auto-downloads. PNG · JPG · GIF · WebP.</text>
+  <text x="422" y="186" class="mono code">$ OPENMONO_VISION_ENABLED=1</text>
+
+  <!-- ===== card 3 · Mobile App ===== -->
+  <rect x="22" y="200" width="370" height="124" rx="8" fill="url(#card)" stroke="#243020" stroke-width="1"/>
+  <rect x="22" y="200" width="370" height="3" rx="1.5" fill="#ADFF8F"/>
+  <rect x="36" y="216" width="74" height="16" rx="8" fill="#ADFF8F"/>
+  <text x="73" y="227" class="mono" font-size="8.5" font-weight="700" fill="#0A1207" text-anchor="middle">✓ SHIPPED</text>
+  <text x="36" y="254" class="mono title">Mobile App</text>
+  <text x="36" y="274" class="mono desc">Control your inference server from anywhere.</text>
+  <text x="36" y="288" class="mono desc">Full agentic loop on iOS &amp; Android — no cloud.</text>
+  <text x="36" y="302" class="mono code" fill="#92D678">App Store  ·  Google Play</text>
+
+  <!-- ===== card 4 · VS Code Extension ===== -->
+  <rect x="408" y="200" width="370" height="124" rx="8" fill="url(#card)" stroke="#243020" stroke-width="1"/>
+  <rect x="408" y="200" width="370" height="3" rx="1.5" fill="#ADFF8F"/>
+  <rect x="422" y="216" width="74" height="16" rx="8" fill="#ADFF8F"/>
+  <text x="459" y="227" class="mono" font-size="8.5" font-weight="700" fill="#0A1207" text-anchor="middle">✓ SHIPPED</text>
+  <text x="422" y="254" class="mono title">VS Code &amp; Cursor Extension</text>
+  <text x="422" y="274" class="mono desc">Chat panel in your editor. Runs workspace tools</text>
+  <text x="422" y="288" class="mono desc">locally while your .NET agent drives the LLM.</text>
+  <text x="422" y="302" class="mono code" fill="#92D678">VS Code Marketplace</text>
+</svg>

@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="430" viewBox="0 0 800 430" role="img" aria-label="How OpenMono compares">
+  <defs>
+    <style>
+      .mono { font-family: 'JetBrains Mono','Cascadia Code','Fira Code',ui-monospace,monospace; }
+      .row-label { font-size: 11px; fill: #8C968A; }
+      .own { font-size: 11px; fill: #DAE5D8; }
+      .other { font-size: 11px; fill: #9AA496; }
+    </style>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0B0F0A"/>
+      <stop offset="1" stop-color="#070807"/>
+    </linearGradient>
+    <linearGradient id="ownCard" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#13200E"/>
+      <stop offset="1" stop-color="#0D150A"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ADFF8F"/>
+      <stop offset="1" stop-color="#92D678"/>
+    </linearGradient>
+  </defs>
+
+  <!-- canvas -->
+  <rect x="0.5" y="0.5" width="799" height="429" rx="10" fill="url(#bg)" stroke="#1C231A" stroke-width="1"/>
+
+  <!-- ===== header ===== -->
+  <rect x="22" y="20" width="30" height="30" rx="5" fill="none" stroke="#ADFF8F" stroke-width="1.6"/>
+  <path d="M31 30 l6 5 -6 5" fill="none" stroke="#ADFF8F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="39" y1="40" x2="45" y2="40" stroke="#ADFF8F" stroke-width="1.8" stroke-linecap="round"/>
+  <text x="64" y="34" class="mono" font-size="14" font-weight="700" fill="#DAE5D8">How it compares</text>
+  <text x="64" y="48" class="mono" font-size="9.5" fill="#7E887C" letter-spacing="2">LOCAL-FIRST · PRIVATE · ZERO PER-TOKEN COST</text>
+  <line x1="22" y1="68" x2="778" y2="68" stroke="#1C231A" stroke-width="1"/>
+
+  <!-- ===== OpenMono highlight card (spans rows) ===== -->
+  <rect x="250" y="80" width="190" height="334" rx="8" fill="url(#ownCard)" stroke="#3A5C28" stroke-width="1"/>
+  <rect x="250" y="80" width="190" height="3" rx="1.5" fill="url(#accent)"/>
+
+  <!-- column headers -->
+  <text x="345" y="104" class="mono" font-size="12" font-weight="700" fill="#ADFF8F" text-anchor="middle">OpenMono</text>
+  <text x="560" y="104" class="mono" font-size="11" font-weight="600" fill="#9AA496" text-anchor="middle">Claude Code</text>
+  <text x="700" y="104" class="mono" font-size="11" font-weight="600" fill="#9AA496" text-anchor="middle">OpenCode</text>
+
+  <!-- rows: label | own | claude | opencode -->
+  <!-- y positions: 138,170,202,234,266,298,330,362,394 -->
+  <g class="mono">
+    <!-- Inference cost -->
+    <line x1="22" y1="150" x2="778" y2="150" stroke="#141A12" stroke-width="1"/>
+    <text x="34" y="142" class="row-label">Inference cost</text>
+    <text x="345" y="142" class="own" font-weight="600" text-anchor="middle">Zero / token</text>
+    <text x="560" y="142" class="other" text-anchor="middle">Per-token</text>
+    <text x="700" y="142" class="other" text-anchor="middle">Per-token</text>
+
+    <line x1="22" y1="182" x2="778" y2="182" stroke="#141A12" stroke-width="1"/>
+    <text x="34" y="174" class="row-label">Data privacy</text>
+    <text x="345" y="174" class="own" font-weight="600" text-anchor="middle">Fully offline</text>
+    <text x="560" y="174" class="other" text-anchor="middle">Cloud only</text>
+    <text x="700" y="174" class="other" text-anchor="middle">Provider-dep.</text>
+
+    <line x1="22" y1="214" x2="778" y2="214" stroke="#141A12" stroke-width="1"/>
+    <text x="34" y="206" class="row-label">Default inference</text>
+    <text x="345" y="206" class="own" font-weight="600" text-anchor="middle">llama.cpp bundled</text>
+    <text x="560" y="206" class="other" text-anchor="middle">Anthropic API</text>
+    <text x="700" y="206" class="other" text-anchor="middle">BYO provider</text>
+
+    <line x1="22" y1="246" x2="778" y2="246" stroke="#141A12" stroke-width="1"/>
+    <text x="34" y="238" class="row-label">Sandboxing</text>
+    <text x="345" y="238" class="own" font-weight="600" text-anchor="middle">Docker-native</text>
+    <text x="560" y="238" class="other" text-anchor="middle">Host process</text>
+    <text x="700" y="238" class="other" text-anchor="middle">Host process</text>
+
+    <line x1="22" y1="278" x2="778" y2="278" stroke="#141A12" stroke-width="1"/>
+    <text x="34" y="270" class="row-label">Code intelligence</text>
+    <text x="345" y="270" class="own" font-weight="600" text-anchor="middle">LSP + Roslyn + MCP</text>
+    <text x="560" y="270" class="other" text-anchor="middle">File reads</text>
+    <text x="700" y="270" class="other" text-anchor="middle">LSP (30+)</text>
+
+    <line x1="22" y1="310" x2="778" y2="310" stroke="#141A12" stroke-width="1"/>
+    <text x="34" y="302" class="row-label">Extensibility</text>
+    <text x="345" y="302" class="own" font-weight="600" text-anchor="middle">Typed playbooks</text>
+    <text x="560" y="302" class="other" text-anchor="middle">Skills (md)</text>
+    <text x="700" y="302" class="other" text-anchor="middle">Plugins (TS)</text>
+
+    <line x1="22" y1="342" x2="778" y2="342" stroke="#141A12" stroke-width="1"/>
+    <text x="34" y="334" class="row-label">MCP</text>
+    <text x="345" y="334" class="own" font-weight="600" text-anchor="middle">Client (stdio)</text>
+    <text x="560" y="334" class="other" text-anchor="middle">Full client</text>
+    <text x="700" y="334" class="other" text-anchor="middle">Full client</text>
+
+    <line x1="22" y1="374" x2="778" y2="374" stroke="#141A12" stroke-width="1"/>
+    <text x="34" y="366" class="row-label">UI</text>
+    <text x="345" y="366" class="own" font-weight="600" text-anchor="middle">TUI · CLI · Mobile</text>
+    <text x="560" y="366" class="other" text-anchor="middle">Web · IDE · CLI</text>
+    <text x="700" y="366" class="other" text-anchor="middle">TUI · Desktop</text>
+
+    <text x="34" y="398" class="row-label">Hardware</text>
+    <text x="345" y="398" class="own" font-weight="600" text-anchor="middle">GPU · Apple · CPU</text>
+    <text x="560" y="398" class="other" text-anchor="middle">None (cloud)</text>
+    <text x="700" y="398" class="other" text-anchor="middle">None (cloud)</text>
+  </g>
+</svg>

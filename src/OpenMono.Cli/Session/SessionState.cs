@@ -2,8 +2,9 @@ namespace OpenMono.Session;
 
 public sealed class SessionState
 {
-    public string Id { get; } = Guid.NewGuid().ToString("N")[..12];
-    public DateTime StartedAt { get; } = DateTime.UtcNow;
+    public string Id { get; set; } = Guid.NewGuid().ToString("N")[..12];
+    public DateTime StartedAt { get; set; } = DateTime.UtcNow;
+    public string? Model { get; set; }
     public List<Message> Messages { get; } = [];
     public SessionMetadata Meta { get; } = new();
     public List<TodoItem> Todos { get; } = [];

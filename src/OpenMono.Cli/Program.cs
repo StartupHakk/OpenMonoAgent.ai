@@ -24,9 +24,6 @@ var noAcp = false;
 int? acpPort = null;
 var acpOnly = false;
 
-// Env-var fallback for --acp-only (set by the VS Code extension for headless
-// detached containers). The OPENMONO_ACP_ENABLED counterpart is consumed
-// inside RunAgentAsync where AcpServerSettings.Enabled lives.
 if (EnvFlag_Truthy(Environment.GetEnvironmentVariable("OPENMONO_ACP_ONLY")))
     acpOnly = true;
 
@@ -48,12 +45,12 @@ for (var i = 0; i < args.Length; i++)
         case "--no-acp": noAcp = true; break;
         case "--acp-port" when next is not null && int.TryParse(next, out var p): acpPort = p; i++; break;
         case "--acp-only":
-        {
-            var (val, consumed) = AcpOnlyArg.Parse(next);
-            acpOnly = val;
-            if (consumed) i++;
-            break;
-        }
+            {
+                var (val, consumed) = AcpOnlyArg.Parse(next);
+                acpOnly = val;
+                if (consumed) i++;
+                break;
+            }
         case "--help" or "-h":
             Console.WriteLine("OpenMono.ai — Local Coding Agent");
             Console.WriteLine();
@@ -80,13 +77,13 @@ for (var i = 0; i < args.Length; i++)
             Console.WriteLine("  /help              List all commands");
             Console.WriteLine("  /status            Current session info (turns, tokens, model)");
             Console.WriteLine("  /stats             Token usage and tool analytics");
-            Console.WriteLine("  /model <name>      Switch model mid-session");
             Console.WriteLine("  /compact           Summarize history to free context space");
             Console.WriteLine("  /clear             Wipe conversation and start fresh");
             Console.WriteLine("  /retry             Resend the last message");
             Console.WriteLine("  /undo [n]          Revert last n file modification(s)");
             Console.WriteLine("  /checkpoint        Checkpoint conversation to free context");
             Console.WriteLine("  /think             Toggle step-by-step reasoning mode");
+            Console.WriteLine("  /mode              Toggle between Plan mode (read-only) and Build mode (write)");
             Console.WriteLine("  /init              Auto-generate OPENMONO.md from project");
             Console.WriteLine("  /resume [id]       Restore a previous session");
             Console.WriteLine("  /export            Export conversation (markdown/json/html)");
@@ -103,7 +100,7 @@ for (var i = 0; i < args.Length; i++)
             Console.WriteLine("  PgUp / PgDn        Scroll conversation");
             return 0;
         case "--version":
-            Console.WriteLine("OpenMono.ai v1.6.0");
+            Console.WriteLine("OpenMono.ai v1.7.0");
             return 0;
     }
 }
@@ -184,7 +181,8 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     tools.Register(new ListDirectoryTool());
     tools.Register(new ApplyPatchTool());
     tools.Register(new EnterPlanModeTool());
-    tools.Register(new ExitPlanModeTool());
+    tools.Register(new CreatePlanTool());
+    tools.Register(new ImplementPlanTool());
     tools.Register(new LspTool(lspManager));
 
     var refDir = ResolveRefDirectory(config);
@@ -207,7 +205,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     var playbookExecutor = new PlaybookExecutor(llm, tools, renderer, config, permissions);
     tools.Register(new PlaybookTool(playbookRegistry, playbookExecutor));
 
-    var systemPrompt = await BuildSystemPrompt(config, memoryStore, playbookRegistry);
+    var systemPrompt = await SystemPrompt.BuildAsync(config, memoryStore, playbookRegistry);
     session.AddMessage(new Message { Role = MessageRole.System, Content = systemPrompt });
 
     using var mcpManager = new McpServerManager(msg => renderer.WriteInfo(msg));
@@ -237,9 +235,6 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
 
 
     if (acpOnly) acp.Enabled = true;
-    // OPENMONO_ACP_ENABLED=1 turns on the ACP server alongside the TUI without
-    // forcing headless mode (compose's agent service uses this to expose a
-    // local ACP endpoint while the user interacts with the TUI).
     if (EnvFlag_Truthy(Environment.GetEnvironmentVariable("OPENMONO_ACP_ENABLED")))
         acp.Enabled = true;
 
@@ -285,14 +280,22 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
         acpServices.AddSingleton(new AcpSessionStore(config, acp));
         var lockFileWriter = new AcpLockFileWriter(acp, lockWorkspaceMount);
         acpServices.AddSingleton(lockFileWriter);
+        acpServices.AddSingleton(playbookRegistry);
+        acpServices.AddSingleton(memoryStore);
         acpServices.AddSingleton(sp => new ConversationLoopFactory(
             sp.GetRequiredService<ILlmClient>(),
             sp.GetRequiredService<ToolRegistry>(),
             sp.GetRequiredService<AppConfig>(),
             sp.GetRequiredService<IOutputSink>(),
             sp.GetRequiredService<IInputReader>(),
-            sp.GetRequiredService<ILiveFeedback>()));
-        acpServices.AddSingleton<AcpTurnRunnerFactory>();
+            sp.GetRequiredService<ILiveFeedback>(),
+            sp.GetRequiredService<PlaybookRegistry>(),
+            sp.GetRequiredService<MemoryStore>()));
+        acpServices.AddSingleton(sp => new AcpTurnRunnerFactory(
+            sp.GetRequiredService<ConversationLoopFactory>(),
+            sp.GetRequiredService<AcpServerSettings>(),
+            sp.GetRequiredService<PlaybookRegistry>(),
+            sp.GetRequiredService<MemoryStore>()));
 
         acpCts = new CancellationTokenSource();
         acpHost = new AcpHostedService(acp, acpServices, lockFileWriter);
@@ -357,7 +360,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     commands.Register(new ClearCommand());
     commands.Register(new CheckpointCommand(checkpointer));
     commands.Register(new ThinkCommand());
-    commands.Register(new PlanCommand());
+    commands.Register(new ModeCommand());
     commands.Register(new DoomLoopCommand());
 
     var compactor = new Compactor(llm, config.Llm.ContextSize);
@@ -366,7 +369,6 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
 
     commands.Register(new RetryCommand(loop));
     commands.Register(new CompactCommand(compactor));
-    commands.Register(new ModelCommand());
 
     renderer.EnableCommandSuggestions(commands);
 
@@ -409,7 +411,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
 
 
             try { acpHost?.StopAsync(CancellationToken.None).GetAwaiter().GetResult(); }
-            catch {  }
+            catch { }
             ProcessWatchdog.ScheduleHardKill();
             ansiTui?.SafeExit();
             Environment.Exit(0);
@@ -502,7 +504,37 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
             continue;
         }
 
-        var (resolvedInput, imageParts) = ResolveAtReferences(input, config.WorkingDirectory);
+        // Transform relative @ file references to absolute paths
+        // The agent will call FileRead to load files (per system prompt)
+        var transformedInput = FileReferenceResolver.TransformRelativeReferences(input, config.WorkingDirectory);
+
+        // TUI plan-decision menu: when a plan is awaiting a decision (CreatePlan presented one
+        // and we're still in Plan mode), map 1/2/3 to the same routing the extension buttons use.
+        if (session.Meta.PlanMode && session.Meta.LastPlanContent is { Length: > 0 })
+        {
+            var choice = input.Trim().ToLowerInvariant() switch
+            {
+                "1" or "auto" or "implement" => "auto",
+                "2" or "ask" or "gated" => "gated",
+                "3" or "keep" => "keep",
+                _ => null,
+            };
+            if (choice == "keep")
+            {
+                renderer.WriteInfo("Staying in Plan mode — refine the plan, or pick 1 (auto) / 2 (ask before edits).");
+                continue;
+            }
+            if (choice is "auto" or "gated")
+            {
+                var (_, autoApprove, instruction) = ModeInstructions.ResolvePlanDecision(choice);
+                session.Meta.PlanMode = false;
+                session.Meta.AutoApproveWrites = autoApprove;
+                session.Meta.LastPlanContent = null;
+                renderer.WriteInfo($"Switched to Build mode — implementing{(autoApprove ? "" : " (you'll be prompted before edits)")}.");
+                transformedInput = instruction;
+            }
+            // else: unrecognized input → treat as a plan refinement (fall through normally).
+        }
 
         ansiTui?.AddUserMessage(input);
         using var turnCts = new CancellationTokenSource();
@@ -518,7 +550,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
 
         try
         {
-            await loop.RunTurnAsync(resolvedInput, imageParts, turnCts.Token);
+            await loop.RunTurnAsync(transformedInput, imageParts: null, turnCts.Token);
         }
         catch (OperationCanceledException)
         {
@@ -606,7 +638,7 @@ static async Task<bool> IsServerWarmAsync(string endpoint)
 static async Task SendWarmupAsync(string endpoint, string systemPrompt, System.Text.Json.JsonElement toolDefs, string model)
 {
     var baseUrl = endpoint.TrimEnd('/');
-    var apiKey  = Environment.GetEnvironmentVariable("OPENMONO_API_KEY")
+    var apiKey = Environment.GetEnvironmentVariable("OPENMONO_API_KEY")
                ?? Environment.GetEnvironmentVariable("LLAMA_API_KEY")
                ?? "";
 
@@ -654,9 +686,9 @@ static async Task TryRecoverLlamaServerAsync(IRenderer renderer, string workingD
 {
     renderer.WriteWarning($"llama-server isn't reachable at {endpoint}");
 
-    var healthUrl   = $"{endpoint.TrimEnd('/')}/health";
+    var healthUrl = $"{endpoint.TrimEnd('/')}/health";
     var composeFile = Path.Combine(workingDirectory, "docker", "docker-compose.yml");
-    var composeDir  = Path.GetDirectoryName(composeFile)!;
+    var composeDir = Path.GetDirectoryName(composeFile)!;
 
     var dockerBin = OperatingSystem.IsWindows() ? "docker.exe" : "docker";
     var dockerAvailable = (Environment.GetEnvironmentVariable("PATH") ?? "")
@@ -716,8 +748,8 @@ static async Task TryRecoverLlamaServerAsync(IRenderer renderer, string workingD
 static async Task PollHealthAsync(IRenderer renderer, string healthUrl, int timeoutSeconds)
 {
     using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
-    var started    = DateTime.UtcNow;
-    var deadline   = started.AddSeconds(timeoutSeconds);
+    var started = DateTime.UtcNow;
+    var deadline = started.AddSeconds(timeoutSeconds);
     var lastStatus = "";
 
     while (DateTime.UtcNow < deadline)
@@ -727,17 +759,17 @@ static async Task PollHealthAsync(IRenderer renderer, string healthUrl, int time
         bool ready, isHttpResponse;
         try
         {
-            var resp    = await http.GetAsync(healthUrl);
-            var body    = (await resp.Content.ReadAsStringAsync()).Trim();
+            var resp = await http.GetAsync(healthUrl);
+            var body = (await resp.Content.ReadAsStringAsync()).Trim();
             var snippet = body.Length > 120 ? body[..120] + "…" : body;
-            status         = $"HTTP {(int)resp.StatusCode} — {snippet}";
-            ready          = resp.IsSuccessStatusCode;
+            status = $"HTTP {(int)resp.StatusCode} — {snippet}";
+            ready = resp.IsSuccessStatusCode;
             isHttpResponse = true;
         }
         catch (Exception pollEx)
         {
-            status         = pollEx.InnerException?.Message ?? pollEx.Message;
-            ready          = false;
+            status = pollEx.InnerException?.Message ?? pollEx.Message;
+            ready = false;
             isHttpResponse = false;
         }
 
@@ -761,50 +793,6 @@ static async Task PollHealthAsync(IRenderer renderer, string healthUrl, int time
 
     renderer.WriteWarning($"Timed out after {timeoutSeconds}s. Last response: {lastStatus}");
     renderer.WriteInfo("Check logs: docker logs llama-server --tail 20");
-}
-
-static async Task<string> BuildSystemPrompt(AppConfig config, MemoryStore memoryStore, PlaybookRegistry? playbookRegistry = null)
-{
-    var parts = new List<string>();
-
-    parts.Add(SystemPrompt.Base);
-
-    var projectInstructions = ProjectConfig.Load(config.WorkingDirectory);
-    if (projectInstructions is not null)
-        parts.Add($"# Project Instructions\n\nContents of OPENMONO.md (project instructions, checked into the codebase):\n\n{projectInstructions}");
-
-    var memoryIndex = memoryStore.LoadIndex();
-    if (memoryIndex is not null)
-        parts.Add($"# Memory\n\n{memoryIndex}");
-
-    var gitContext = await GitHelper.GetContextAsync(config.WorkingDirectory);
-    if (gitContext is not null)
-        parts.Add($"# Git\n\n{gitContext}");
-
-    parts.Add($"""
-        # Environment
-        - Working directory: {config.WorkingDirectory}
-        - Platform: {Environment.OSVersion.Platform}
-        - Date: {DateTime.UtcNow:yyyy-MM-dd}
-        - Model: {config.Llm.Model}
-        """);
-
-    if (playbookRegistry is not null)
-    {
-        var all = playbookRegistry.All;
-        if (all.Count > 0)
-        {
-            var lines = all.Select(p =>
-            {
-                var hint = p.ArgumentHint is not null ? $" {p.ArgumentHint}" : "";
-                var trigger = p.Trigger == TriggerMode.Manual ? "manual" : "auto";
-                return $"- **{p.Name}**{hint} ({trigger}) — {p.Description}";
-            });
-            parts.Add($"# Available Playbooks\n\nWhen the user's request matches one of these, you MUST call `Playbook {{ name: \"<name>\" }}` — do NOT execute the steps yourself.\n\n{string.Join("\n", lines)}");
-        }
-    }
-
-    return string.Join("\n\n", parts);
 }
 
 static async Task TryDetectActualModelAsync(AppConfig config)
@@ -912,60 +900,6 @@ static string DisplayNameFromPath(string modelPath)
         System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 }
 
-static (string text, List<ImagePart>? images) ResolveAtReferences(string input, string workDir)
-{
-    var matches = System.Text.RegularExpressions.Regex.Matches(input, @"@([\w/\\.\-]+)");
-    if (matches.Count == 0) return (input, null);
-
-    var workDirNorm = Path.GetFullPath(workDir).TrimEnd(Path.DirectorySeparatorChar);
-
-    var injections = new System.Text.StringBuilder();
-    List<ImagePart>? images = null;
-    var resolved = 0;
-    foreach (System.Text.RegularExpressions.Match m in matches)
-    {
-        var relPath = m.Groups[1].Value.Replace('\\', '/');
-
-        var fullPath = Path.IsPathRooted(relPath)
-            ? Path.GetFullPath(relPath)
-            : Path.GetFullPath(Path.Combine(workDir, relPath));
-
-        if (!fullPath.StartsWith(workDirNorm + Path.DirectorySeparatorChar,
-                StringComparison.OrdinalIgnoreCase)
-            && !fullPath.Equals(workDirNorm, StringComparison.OrdinalIgnoreCase))
-            continue;
-
-        if (!File.Exists(fullPath)) continue;
-        try
-        {
-            var ext = Path.GetExtension(relPath).TrimStart('.').ToLower();
-            if (ext is "png" or "jpg" or "jpeg" or "gif" or "webp")
-            {
-                var (imageBytes, mime) = ImageUtils.SmartResize(File.ReadAllBytes(fullPath), ImageUtils.MimeFromExt(ext));
-                var b64 = Convert.ToBase64String(imageBytes);
-                (images ??= []).Add(new ImagePart($"data:{mime};base64,{b64}"));
-                input = input.Replace(m.Value, "");
-                resolved++;
-            }
-            else
-            {
-                var contents = File.ReadAllText(fullPath);
-                injections.AppendLine($"<file path=\"{relPath}\">");
-                if (!string.IsNullOrEmpty(ext)) injections.AppendLine($"```{ext}");
-                injections.AppendLine(contents);
-                if (!string.IsNullOrEmpty(ext)) injections.AppendLine("```");
-                injections.AppendLine("</file>");
-                resolved++;
-            }
-        }
-        catch { }
-    }
-
-    if (resolved == 0) return (input, null);
-    var text = injections.Length > 0 ? injections.ToString() + "\n" + input : input;
-    return (text, images);
-}
-
 static string? ResolveRefDirectory(AppConfig config)
 {
 
@@ -1028,151 +962,4 @@ static async Task AutoDetectCodeGraphAsync(AppConfig config, IRenderer renderer)
     {
 
     }
-}
-
-static class SystemPrompt
-{
-
-    public static readonly string Base = """
-        You are OpenMono.ai, a .NET full-stack coding agent that runs locally.
-        Your primary domain is C# / ASP.NET Core / Entity Framework, with working knowledge of
-        frontend technologies that integrate with .NET stacks: React, TypeScript, HTML/CSS.
-        You help with: writing and refactoring code across the full stack, fixing bugs, designing APIs,
-        managing NuGet and npm dependencies, running dotnet CLI commands, and code review.
-
-        # Core Principles
-
-        1. READ before modifying. Understand existing code before suggesting changes.
-        2. Before writing code that uses a library or pattern, check that it already exists in the codebase. Never assume a dependency is available — verify it first.
-        3. Make the smallest change that solves the problem. Do not refactor, clean up, or improve code beyond what was asked.
-        4. Match the existing code style, naming, and formatting — even if you would do it differently. Do not reformat code you did not change.
-        5. Do not add comments, docstrings, or type annotations to code you did not change.
-        6. Do not add error handling or validation for scenarios that cannot happen.
-        7. Prefer editing existing files over creating new ones.
-        8. Do not add features or abstractions the user did not ask for.
-        9. If a simpler approach exists than what was asked for, say so before implementing.
-        10. Never leave the codebase in a broken state between tool calls. Each write must leave code compilable.
-        11. Never introduce security vulnerabilities: no injection, path traversal, or hardcoded secrets.
-        12. For destructive or irreversible operations (deleting files, force-pushing, dropping tables), ALWAYS confirm with the user first.
-        13. If uncertain about intent, state your assumptions explicitly and ask rather than proceeding silently.
-
-        # Agentic Task Handling
-
-        For complex multi-step tasks:
-        - Explore first: read relevant files and understand the current state before making any changes.
-        - For tasks touching more than 2 files, outline your approach before writing anything.
-        - Implement incrementally: make one logical change at a time.
-        - If a tool call fails or returns unexpected output, diagnose the cause before retrying.
-        - If stuck after 3 attempts on the same problem, STOP. Explain what you tried and ask for guidance.
-        - Do not loop on the same approach. If something is not working, change strategy or ask.
-        - After completing a task, run the build and any available lint/typecheck commands to confirm nothing is broken. Report pass/fail.
-
-        # Tool Usage
-
-        ALWAYS use file-specific tools instead of Bash for file operations:
-        - FileRead   — read any file (NOT cat, head, tail via Bash)
-        - FileEdit   — exact string replacement (NOT sed, awk via Bash)
-        - FileWrite  — create or overwrite a file (NOT echo/heredoc via Bash)
-        - Glob       — find files by pattern (NOT find via Bash)
-        - Grep       — search file contents (NOT grep/rg via Bash)
-
-        Reserve Bash for: git commands, build tools (dotnet, npm, cargo), running tests, system operations.
-
-        PARALLELISM: call multiple independent tools in a single response. Never serialize lookups that can run simultaneously.
-        - CORRECT: call FileRead, Glob, and Grep together when they are independent
-        - WRONG: call FileRead, wait for result, then call Glob, wait, then call Grep
-
-        Use Lsp for hover info, go-to-definition, and find references when you need semantic code intelligence.
-        Use RoslynTool for C# semantic analysis: find all usages of a symbol, get type information, resolve
-        overloads, and navigate call hierarchies. ALWAYS prefer RoslynTool over chained Grep for .NET symbol work.
-        If code-graph MCP tools appear in your tool list (names like graph_search, graph_query, graph_callers),
-        use them for call-graph traversal, dependency analysis, and finding all callers of a method across the
-        solution — they are more accurate than Grep for .NET symbol resolution at scale.
-        If graphify-out/graph.json exists in the working directory, use Bash to run graphify CLI commands
-        for semantic codebase questions BEFORE falling back to Grep. Key commands:
-          graphify query "question"          — semantic search across the knowledge graph
-          graphify path "NodeA" "NodeB"      — shortest connection between two concepts
-          graphify explain "NodeName"        — plain-language explanation of a node
-        graphify-out/graph.html is an interactive visualization — tell the user to open it in a browser.
-        Use ListDirectory to browse a folder's structure at a glance. Prefer Glob when you know a file pattern;
-        use ListDirectory when you want a human-readable overview of what's in a directory.
-        Use ApplyPatch to apply a unified diff (git format) across one or more files. Prefer FileEdit for
-        targeted single-location changes; use ApplyPatch when a change spans many locations or arrives as a patch.
-        Use WebSearch to find NuGet packages, library docs, error messages, or anything requiring a web lookup.
-        Follow with WebFetch on the most relevant URL when you need the full page content.
-        Use Todo to track progress on multi-step tasks — create todos at the start of a complex task, mark each
-        done as you go. Do NOT use Todo for simple single-step requests.
-        Use Playbook to invoke a named multi-step workflow. When the user's request matches a playbook
-        listed in the # Available Playbooks section, you MUST call the Playbook tool with that name.
-        Never attempt to execute playbook steps manually — the Playbook tool handles sequencing, gates,
-        state, and constraints. If no playbooks are listed, proceed normally.
-        Use AskUser when you need a decision from the user before proceeding — not to confirm routine steps.
-        Use MemorySave for user preferences, project conventions, and important architectural decisions.
-        DO NOT save ephemeral task state or things derivable from the code to memory.
-        CURSOR WORKFLOW: Grep returns a cursor_id. Pass it to FileRead via the from_cursor parameter to read
-        all matched files in one call — faster than reading each file individually.
-
-        # .NET Development
-
-        - Before using any NuGet package or namespace, verify it exists: check `.csproj` files and existing `using` statements.
-        - After non-trivial changes, run `dotnet build` to confirm the solution compiles cleanly. Report errors before declaring done.
-        - Run tests with `dotnet test` when the task involves logic changes. Report pass/fail counts.
-        - Use `dotnet add package` to add NuGet dependencies — never edit `.csproj` XML by hand.
-        - When changing a method signature, use RoslynTool to find all callers before modifying the signature.
-        - Before editing a `.cs` file, call `Roslyn capture-baseline target=<filepath>` to snapshot existing diagnostics.
-        - After finishing all edits to that file, call `Roslyn diagnostics target=<filepath>` — it reports only errors introduced by your changes, not pre-existing ones. Fix any new errors before declaring done.
-        - The project uses C# nullable reference types. Never assign `null` to a non-nullable field — add `?` to the type instead.
-        - Async all the way: methods that touch I/O return `Task` or `Task<T>`. Never use `.Result` or `.Wait()` — always `await`.
-        - Prefer `IReadOnlyList<T>` / `IReadOnlyDictionary<K,V>` for return types that callers should not mutate.
-        - Match the existing DI registration pattern in `Program.cs` when adding new services.
-
-        # Sub-Agent Delegation
-
-        Use the Agent tool when a task is self-contained and does not need your current conversation context:
-        - agent_type="general-purpose" — full tool access for complex multi-step tasks (default)
-        - agent_type="Explore"  — read-only codebase search, runs efficiently and reports findings
-        - agent_type="Plan"     — produces an implementation plan for a complex change
-        - agent_type="Coder"    — implements an isolated sub-task (single file, single function)
-        - agent_type="Verify"   — adversarial verification: runs build, tests, Roslyn diagnostics, and probes edge cases; cannot modify project files
-
-        Sub-agents do NOT see this conversation. Write their prompts as self-contained briefings:
-        include what to do, which files are relevant, and what format to return results in.
-
-        # Git Workflow
-
-        - Always know the current branch before committing (see Git section above).
-        - Before committing: run `git diff --staged` to confirm exactly what is staged.
-        - NEVER use `git push --force` unless the user explicitly requests it.
-        - NEVER use `git reset --hard` without confirming with the user.
-        - Write commit messages that explain WHY, not just what changed.
-        - Stage only files relevant to the current task — never stage unrelated changes.
-        - NEVER commit unless the user explicitly asks. Do not commit as a side effect of completing a task.
-
-        # Long-running processes (servers, watchers, daemons)
-        Commands that do not exit on their own will ALWAYS hit the Bash timeout
-        and burn one iteration per attempt — retrying does not help. Do not run
-        any of the following in the foreground: `dotnet run`, `dotnet watch`,
-        `npm start`, `npm run dev`, `yarn start`, `vite`, `python -m http.server`,
-        `flask run`, `rails server`, `docker compose up` (without `-d`),
-        `tail -f`, or any other process that runs until killed.
-
-        Instead, launch them with the Bash tool's `background: true` flag.
-        That spawns the process detached, writes stdout+stderr to a log file
-        under `~/.openmono/bg/`, and returns the PID immediately. Then:
-          - Wait briefly with a foreground `sleep 2` if you need the server up.
-          - Verify with a foreground `curl` against the expected port.
-          - Tail the log with a foreground `tail -n 50 <logpath>` if something looks wrong.
-          - Stop the process when done with a foreground `kill <pid>`.
-        If you already got a timeout from a foreground long-running command,
-        do not retry it foreground — retry it with `background: true`.
-
-        # Response Style
-
-        - Prioritize technical accuracy over agreement. Push back when something is wrong or overcomplicated, even if it is not what the user wants to hear.
-        - Be concise. Short answers for simple questions. No preamble.
-        - When referencing code, include the file path and line number: `src/Foo.cs:42`
-        - Do NOT summarize what you just did at the end of a response. The result speaks for itself.
-        - Use markdown code blocks for all code snippets.
-        - If you cannot complete a task, say so clearly and explain why.
-        """;
 }

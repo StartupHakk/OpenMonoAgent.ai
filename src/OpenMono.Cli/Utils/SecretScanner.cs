@@ -1,9 +1,43 @@
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace OpenMono.Utils;
 
+[JsonConverter(typeof(JsonStringEnumConverter<SecretWritePolicy>))]
+public enum SecretWritePolicy
+{
+    Warn,
+    Block,
+    Redact,
+}
+
 public static class SecretScanner
 {
+    public sealed record GuardResult(bool Blocked, string Content, string Message);
+
+    public static GuardResult Guard(string content, SecretWritePolicy policy)
+    {
+        var secrets = Scan(content);
+        if (secrets.Count == 0)
+            return new GuardResult(false, content, string.Empty);
+
+        var labels = string.Join(", ", secrets.Select(RuleIdToLabel));
+        return policy switch
+        {
+            SecretWritePolicy.Block => new GuardResult(true, content,
+                $"Refusing to write: potential secret(s) detected: {labels}. " +
+                "Remove the credential (use an environment variable or secret manager). " +
+                "To override, set \"secret_writes\" to \"warn\" or \"redact\" in settings."),
+
+            SecretWritePolicy.Redact => new GuardResult(false, Redact(content),
+                $"\n⚠ Potential secret(s) detected and REDACTED: {labels}."),
+
+            _ => new GuardResult(false, content,
+                $"\n⚠ Potential secret(s) detected: {labels}. " +
+                "Verify this file should contain credentials before committing."),
+        };
+    }
+
 
     private static readonly string AntKeyPfx = string.Join("-", "sk", "ant", "api");
 

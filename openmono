@@ -106,6 +106,210 @@ _ensure_docker() {
     exit 1
 }
 
+# ── docker/.env helpers (server-side service registry) ──────────────────────────
+
+_env_get() {
+    local key="$1" env_file="$DOCKER_DIR/.env"
+    [[ -f "$env_file" ]] || return 0
+    local line
+    line="$(grep "^${key}=" "$env_file" 2>/dev/null | head -1 || true)"
+    [[ -n "$line" ]] && printf '%s' "${line#*=}"
+}
+
+_env_set() {
+    local key="$1" val="$2" env_file="$DOCKER_DIR/.env"
+    mkdir -p "$(dirname "$env_file")"; touch "$env_file"
+    local tmp="$env_file.tmp"
+    grep -v "^${key}=" "$env_file" > "$tmp" 2>/dev/null || true
+    printf '%s=%s\n' "$key" "$val" >> "$tmp"
+    mv "$tmp" "$env_file"
+    chmod 0600 "$env_file"
+}
+
+# Reuse the existing LLAMA_API_KEY as the gateway's shared bearer; generate one
+# if absent. Sets _LLAMA_KEY_GENERATED so callers can restart llama to apply it.
+_ensure_llama_key() {
+    local key; key="$(_env_get LLAMA_API_KEY)"
+    if [[ -z "$key" ]]; then
+        key="$(openssl rand -hex 24)"
+        _env_set LLAMA_API_KEY "$key"
+        _LLAMA_KEY_GENERATED=1
+        info "Generated LLAMA_API_KEY (shared gateway bearer)" >&2
+    fi
+    printf '%s' "$key"
+}
+
+_apply_llama_key_restart() {
+    [[ "${_LLAMA_KEY_GENERATED:-0}" == "1" ]] || return 0
+    info "Restarting llama-server to apply the new API key..."
+    if [[ "$NATIVE_INFERENCE" == "true" ]]; then
+        command -v native_cmd_restart &>/dev/null && native_cmd_restart || \
+            warn "Restart llama-server manually: openmono restart"
+    else
+        if (cd "$DOCKER_DIR" && docker compose ps --services 2>/dev/null | grep -q '^llama-server$'); then
+            (cd "$DOCKER_DIR" && docker compose up -d llama-server) || \
+                warn "Restart manually: cd $DOCKER_DIR && docker compose up -d llama-server"
+        fi
+    fi
+}
+
+# Bring up the gateway + whichever web services are installed (used by cmd_start
+# and after 'openmono stop', which tears the whole stack down). Caddy is named
+# explicitly so llama-server (also in the server profile) isn't touched here.
+_start_web_services() {
+    [[ "$(_env_get GATEWAY_ENABLED)" == "true" ]] || return 0
+    _ensure_docker
+    local profiles=(--profile server) names=(caddy)
+    [[ "$(_env_get WEB_SEARCH_ENABLED)" == "true" ]] && { profiles+=(--profile search); names+=(searxng); }
+    [[ "$(_env_get WEB_SCRAPE_ENABLED)" == "true" ]] && { profiles+=(--profile scraper); names+=(scrapling); }
+    info "Starting gateway (${names[*]})..."
+    (cd "$DOCKER_DIR" && docker compose "${profiles[@]}" up -d "${names[@]}") || \
+        warn "Failed to start gateway services. Check: docker compose ps"
+}
+
+# Install/refresh the Caddy gateway baseline — the single front door the frpc
+# tunnel routes through, whether or not SearXNG/Scrapling are added.
+_setup_gateway() {
+    _ensure_docker
+    info "Setting up the Caddy gateway..."
+    _ensure_llama_key >/dev/null
+    [[ "$NATIVE_INFERENCE" == "true" ]] && _env_set LLAMA_UPSTREAM "host.docker.internal:7474"
+    _env_set GATEWAY_ENABLED true
+    (cd "$DOCKER_DIR" && docker compose --profile server up -d caddy) || {
+        err "Failed to start the gateway. Check: docker compose ps"; return 1
+    }
+    _apply_llama_key_restart
+    local gw_port; gw_port="$(_env_get GATEWAY_PORT)"; gw_port="${gw_port:-7480}"
+    _retarget_tunnel_to_gateway "$gw_port"
+    _sync_agent_web_config "$gw_port"
+    ok "Caddy gateway running on port ${gw_port}"
+}
+
+# Mirror the server-side registry (WEB_*_ENABLED) into the local agent config so
+# a tool whose service isn't installed skips the gateway entirely (no wasted
+# request) rather than trying and falling back. Idempotent; safe to re-run.
+_sync_agent_web_config() {
+    local gw_port="$1"
+    cmd_config set web.gateway "http://host.docker.internal:${gw_port}" >/dev/null
+    if [[ "$(_env_get WEB_SEARCH_ENABLED)" == "true" ]]; then
+        cmd_config set web.search true >/dev/null
+    else
+        cmd_config set web.search false >/dev/null
+    fi
+    if [[ "$(_env_get WEB_SCRAPE_ENABLED)" == "true" ]]; then
+        cmd_config set web.scrape true >/dev/null
+    else
+        cmd_config set web.scrape false >/dev/null
+    fi
+    local key; key="$(_env_get LLAMA_API_KEY)"
+    [[ -n "$key" ]] && cmd_config set llm.api_key "$key" >/dev/null
+}
+
+# If an frpc tunnel already exists, re-point it at the gateway so the single
+# remote port now reaches llama + web services. No-op when no tunnel is set up
+# (fresh installs configure the gateway target directly in tunnel setup).
+_retarget_tunnel_to_gateway() {
+    local gw_port="$1" changed=false cfg brew_etc
+    brew_etc="$(brew --prefix 2>/dev/null)/etc/frp/frpc.toml"
+    for cfg in "$HOME/.config/frp/frpc.toml" "$brew_etc" "/etc/frp/frpc.toml"; do
+        [[ -f "$cfg" ]] || continue
+        grep -q '^localPort' "$cfg" || continue
+        grep -q "^localPort[[:space:]]*=[[:space:]]*${gw_port}\b" "$cfg" && continue
+        sed -i.bak -E "s/^(localPort[[:space:]]*=[[:space:]]*).*/\1${gw_port}/" "$cfg" 2>/dev/null && rm -f "$cfg.bak" || continue
+        changed=true
+        info "Re-pointed frpc tunnel ($cfg) at the gateway port ${gw_port}"
+    done
+    [[ "$changed" == "true" ]] || return 0
+    if [[ "$NATIVE_INFERENCE" == "true" ]]; then
+        brew services restart frpc >/dev/null 2>&1 && info "Restarted frpc" || \
+            warn "Restart the tunnel to apply: openmono tunnel restart"
+    else
+        sudo systemctl restart frpc >/dev/null 2>&1 && info "Restarted frpc" || \
+            warn "Restart the tunnel to apply: openmono tunnel restart"
+    fi
+}
+
+# ── Optional web services (opt-in, run entirely in Docker) ──────────────────────
+
+cmd_setup_search() {
+    _ensure_docker
+    info "Installing SearXNG (private web search)..."
+    local key; key="$(_ensure_llama_key)"
+    [[ -z "$(_env_get SEARXNG_SECRET)" ]] && _env_set SEARXNG_SECRET "$(openssl rand -hex 32)"
+    [[ "$NATIVE_INFERENCE" == "true" ]] && _env_set LLAMA_UPSTREAM "host.docker.internal:7474"
+    _env_set WEB_SEARCH_ENABLED true
+
+    info "Starting SearXNG + gateway..."
+    (cd "$DOCKER_DIR" && docker compose --profile search up -d searxng caddy) || {
+        err "Failed to start SearXNG. Check: docker compose ps"; return 1
+    }
+    _apply_llama_key_restart
+
+    # Point a local (full-mode) agent at the gateway; reuse the shared key.
+    local gw_port; gw_port="$(_env_get GATEWAY_PORT)"; gw_port="${gw_port:-7480}"
+    _retarget_tunnel_to_gateway "$gw_port"
+    _sync_agent_web_config "$gw_port"
+
+    ok "SearXNG installed — WebSearch now routes through the gateway"
+}
+
+cmd_setup_scraper() {
+    _ensure_docker
+    info "Installing Scrapling (web scraper). First build downloads a browser — this can take a few minutes."
+    local key; key="$(_ensure_llama_key)"
+    [[ "$NATIVE_INFERENCE" == "true" ]] && _env_set LLAMA_UPSTREAM "host.docker.internal:7474"
+    _env_set WEB_SCRAPE_ENABLED true
+
+    (cd "$DOCKER_DIR" && docker compose --profile scraper build scrapling) || {
+        err "Failed to build the Scrapling image."; return 1
+    }
+    info "Starting Scrapling + gateway..."
+    (cd "$DOCKER_DIR" && docker compose --profile scraper up -d scrapling caddy) || {
+        err "Failed to start Scrapling. Check: docker compose ps"; return 1
+    }
+    _apply_llama_key_restart
+
+    local gw_port; gw_port="$(_env_get GATEWAY_PORT)"; gw_port="${gw_port:-7480}"
+    _retarget_tunnel_to_gateway "$gw_port"
+    _sync_agent_web_config "$gw_port"
+
+    ok "Scrapling installed — WebFetch now routes through the gateway"
+}
+
+# Offered at the end of a fresh full/inference install. Skipped when stdin is
+# not a TTY (e.g. piped installers) — the one-liners are printed instead.
+prompt_optional_services() {
+    # Web services (SearXNG/Scrapling) live on the inference box only. An
+    # agent-only box consumes them remotely through the relay, so never offer to
+    # install them here — it auto-detects what the inference box exposes.
+    case "${OPENMONO_ROLE:-}" in
+        full|inference) ;;
+        *) return 0 ;;
+    esac
+
+    # Inference (server) box: Caddy is the single front door the frpc tunnel
+    # routes through, so install it regardless of which web services are added.
+    if [[ "${OPENMONO_ROLE:-}" == "inference" ]]; then
+        _setup_gateway || warn "Gateway setup hit an issue; retry: openmono setup gateway"
+    fi
+
+    echo ""
+    echo -e "${BLUE}── Optional web services (private, run in Docker) ───────────${NC}"
+    if [[ ! -t 0 ]]; then
+        echo "  Add them any time with:"
+        echo -e "    ${BOLD}openmono setup search${NC}    # private web search (SearXNG)"
+        echo -e "    ${BOLD}openmono setup scraper${NC}   # anti-bot web scraping (Scrapling)"
+        return 0
+    fi
+    # Guard each install so a hiccup in one doesn't abort the rest under 'set -e'.
+    local ans
+    printf "  Install private web search (SearXNG)? [y/N] "; read -r ans || true
+    [[ "$ans" =~ ^[Yy] ]] && { cmd_setup_search || warn "SearXNG setup failed; retry: openmono setup search"; }
+    printf "  Install web scraper (Scrapling, downloads a browser)? [y/N] "; read -r ans || true
+    [[ "$ans" =~ ^[Yy] ]] && { cmd_setup_scraper || warn "Scrapling setup failed; retry: openmono setup scraper"; }
+    echo ""
+}
+
 # ── Commands ──────────────────────────────────────────────────────────────────
 
 cmd_version() {
@@ -144,6 +348,11 @@ cmd_help() {
     printf "  %-14s %s\n" "status"  "Show container + GPU + model status"
     printf "  %-14s %s\n" "model"   "List models / switch model (openmono model use <name>)"
     echo ""
+    echo "Optional web services (inference box, run in Docker):"
+    printf "  %-14s %s\n" "setup gateway"  "Install the Caddy gateway only (single tunnel front door)"
+    printf "  %-14s %s\n" "setup search"   "Install SearXNG — private web search (backs WebSearch)"
+    printf "  %-14s %s\n" "setup scraper"  "Install Scrapling — anti-bot web scraping (backs WebFetch)"
+    echo ""
     echo "Inference box (frpc tunnel to the relay — dual-box only):"
     printf "  %-14s %s\n" "tunnel setup"      "Install frpc + systemd unit (prompts for relay signup values)"
     printf "  %-14s %s\n" "tunnel rotate-key" "Rotate LLAMA_API_KEY and restart llama-server"
@@ -173,6 +382,13 @@ cmd_help() {
 }
 
 cmd_setup() {
+    # Sub-targets: install an individual optional service onto an existing box.
+    case "${1:-}" in
+        gateway)           shift; _setup_gateway "$@"; return $? ;;
+        search)            shift; cmd_setup_search "$@"; return $? ;;
+        scraper|scrapper)  shift; cmd_setup_scraper "$@"; return $? ;;
+    esac
+
     # Parse flags
     for arg in ${1+"$@"}; do
         case "$arg" in
@@ -320,6 +536,43 @@ cmd_setup() {
     INSTALL_DIR="${INSTALL_DIR:-$HOME/openmono.ai}"
     LLAMA_PORT="${LLAMA_PORT:-7474}"
 
+    # Initialize settings.json with role-appropriate defaults if it doesn't exist.
+    # Must run before prompt_optional_services: the gateway setup writes
+    # web.gateway here via cmd_config, and this block only seeds defaults when the
+    # file is still absent.
+    local settings_dir="$HOME/.openmono"
+    local settings_file="$settings_dir/settings.json"
+    mkdir -p "$settings_dir"
+    if [[ ! -f "$settings_file" ]]; then
+        if [[ "${OPENMONO_ROLE:-}" == "agent" ]]; then
+            # Agent-only: leave endpoint empty (user must configure a remote server)
+            cat > "$settings_file" <<'EOF'
+{
+  "llm": {
+    "endpoint": "",
+    "api_key": ""
+  }
+}
+EOF
+            detail "Created $settings_file for agent-only role (configure endpoint with: openmono config set llm.endpoint <url>)"
+        else
+            # Full/inference roles: default to localhost (install_macos.sh will override on macOS)
+            cat > "$settings_file" <<'EOF'
+{
+  "llm": {
+    "endpoint": "http://localhost:7474",
+    "api_key": ""
+  }
+}
+EOF
+            detail "Created $settings_file with defaults"
+        fi
+    fi
+
+    # Offer the optional web services (inference/full roles only). Runs before
+    # the completion banner so "Setup Complete" is the last thing the user sees.
+    prompt_optional_services
+
     # Print role-specific setup complete message
     echo ""
     printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
@@ -404,36 +657,6 @@ cmd_setup() {
     echo ""
     show_log_location
 
-    # Initialize settings.json with role-appropriate defaults if it doesn't exist
-    local settings_dir="$HOME/.openmono"
-    local settings_file="$settings_dir/settings.json"
-    mkdir -p "$settings_dir"
-    if [[ ! -f "$settings_file" ]]; then
-        if [[ "${OPENMONO_ROLE:-}" == "agent" ]]; then
-            # Agent-only: leave endpoint empty (user must configure a remote server)
-            cat > "$settings_file" <<'EOF'
-{
-  "llm": {
-    "endpoint": "",
-    "api_key": ""
-  }
-}
-EOF
-            detail "Created $settings_file for agent-only role (configure endpoint with: openmono config set llm.endpoint <url>)"
-        else
-            # Full/inference roles: default to localhost (install_macos.sh will override on macOS)
-            cat > "$settings_file" <<'EOF'
-{
-  "llm": {
-    "endpoint": "http://localhost:7474",
-    "api_key": ""
-  }
-}
-EOF
-            detail "Created $settings_file with defaults"
-        fi
-    fi
-
     # Clear saved setup preferences so next setup starts fresh
     rm -f "$HOME/.openmono/.setup_prefs"
 
@@ -453,6 +676,7 @@ EOF
 cmd_start() {
     if [[ "$NATIVE_INFERENCE" == "true" ]]; then
         native_cmd_start || return $?
+        _start_web_services || true
         echo ""
         echo "  Run the agent: openmono agent"
         return 0
@@ -494,6 +718,8 @@ cmd_start() {
         echo ""
         echo "  Run the agent: openmono agent"
     fi
+
+    _start_web_services || true
 }
 
 cmd_stop() {
@@ -569,15 +795,38 @@ cmd_agent() {
     _ensure_docker
     WORKSPACE="${WORKSPACE:-$(pwd)}"
     export WORKSPACE
+
+    # Ensure ~/.openmono exists and is writable so the bind-mount inside the
+    # container doesn't get created by Docker as root:root (which causes the
+    # UnauthorizedAccessException crash in ArtifactStore).
+    mkdir -p "${HOME}/.openmono"
+
     cd "$DOCKER_DIR"
 
     # Read endpoint and API key from settings
     local settings="$HOME/.openmono/settings.json"
-    local cfg_endpoint cfg_key
+    local cfg_endpoint cfg_key cfg_web_gateway cfg_web_search cfg_web_scrape
     if [[ -f "$settings" ]] && command -v jq &>/dev/null; then
         cfg_endpoint=$(jq -r '.llm.endpoint // empty' "$settings")
         cfg_key=$(jq -r '.llm.api_key // empty' "$settings")
         [[ -n "$cfg_key" ]] && export OPENMONO_API_KEY="$cfg_key"
+        cfg_web_gateway=$(jq -r '.web.gateway // empty' "$settings")
+        cfg_web_search=$(jq -r '.web.search // empty' "$settings")
+        cfg_web_scrape=$(jq -r '.web.scrape // empty' "$settings")
+    fi
+
+    # Forward web-gateway routing into the container. A local gateway is reached
+    # by the Caddy compose service name over openmono-network; a remote (relay)
+    # gateway is passed through as-is.
+    if [[ -n "${cfg_web_gateway:-}" ]]; then
+        case "$cfg_web_gateway" in
+            http://localhost:* | http://127.0.0.1:* | http://host.docker.internal:*)
+                export OPENMONO_WEB_GATEWAY="http://caddy:8080" ;;
+            *)
+                export OPENMONO_WEB_GATEWAY="$cfg_web_gateway" ;;
+        esac
+        [[ -n "${cfg_web_search:-}" ]] && export OPENMONO_WEB_SEARCH="$cfg_web_search"
+        [[ -n "${cfg_web_scrape:-}" ]] && export OPENMONO_WEB_SCRAPE="$cfg_web_scrape"
     fi
 
     # Endpoint must be configured

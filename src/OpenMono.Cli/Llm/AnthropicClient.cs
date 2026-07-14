@@ -14,19 +14,29 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
     private readonly string _apiKey;
 
     private const int MaxRetries = 3;
-    private static readonly TimeSpan[] RetryDelays = [
-        TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(16)
-    ];
 
     public Action<string>? OnDebug { get; set; }
 
     public AnthropicClient(ProviderConfig config)
+        : this(config, CreateDefaultHttpClient(config))
+    {
+    }
+
+    // Test seam: inject a pre-built HttpClient (e.g. over a stub handler) to exercise SSE parsing.
+    internal AnthropicClient(ProviderConfig config, HttpClient http)
     {
         _endpoint = (config.Endpoint ?? "https://api.anthropic.com").TrimEnd('/');
         _apiKey = config.ApiKey ?? Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY") ?? "";
-        _http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-        _http.DefaultRequestHeaders.Add("x-api-key", _apiKey);
-        _http.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01");
+        _http = http;
+    }
+
+    private static HttpClient CreateDefaultHttpClient(ProviderConfig config)
+    {
+        var apiKey = config.ApiKey ?? Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY") ?? "";
+        var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        http.DefaultRequestHeaders.Add("x-api-key", apiKey);
+        http.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01");
+        return http;
     }
 
     public async IAsyncEnumerable<StreamChunk> StreamChatAsync(
@@ -43,14 +53,16 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
         OnDebug?.Invoke($"[LLM] Model: {options.Model} | Messages: {messages.Count} | Tools: {toolCount} | MaxTokens: {options.MaxTokens}");
         Log.Debug($"Anthropic request: model={options.Model} messages={messages.Count} tools={toolCount}");
 
+        TimeSpan? pendingRetryAfter = null;
+
         for (var attempt = 0; attempt <= MaxRetries; attempt++)
         {
             ct.ThrowIfCancellationRequested();
             if (attempt > 0)
             {
-                var delay = RetryDelays[Math.Min(attempt - 1, RetryDelays.Length - 1)];
-                OnDebug?.Invoke($"[LLM] Retry {attempt}/{MaxRetries} after {delay.TotalSeconds}s");
-                Log.Warn($"Anthropic retry {attempt}/{MaxRetries}");
+                var delay = RetryPolicy.NextDelay(attempt, pendingRetryAfter, Random.Shared.NextDouble());
+                OnDebug?.Invoke($"[LLM] Retry {attempt}/{MaxRetries} after {delay.TotalSeconds:F1}s");
+                Log.Warn($"Anthropic retry {attempt}/{MaxRetries} after {delay.TotalSeconds:F1}s");
                 await Task.Delay(delay, ct);
             }
 
@@ -66,6 +78,7 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
 
                 if ((int)response.StatusCode is 429 or 500 or 502 or 503 or 529)
                 {
+                    pendingRetryAfter = RetryPolicy.ParseRetryAfter(response);
                     response.Dispose(); response = null; continue;
                 }
                 response.EnsureSuccessStatusCode();
@@ -73,6 +86,7 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
             }
             catch (HttpRequestException) when (attempt < MaxRetries)
             {
+                pendingRetryAfter = null;
                 response?.Dispose(); response = null;
             }
         }
@@ -108,6 +122,21 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
 
                     switch (type)
                     {
+                        case "message_start":
+                            if (root.TryGetProperty("message", out var startMsg) &&
+                                startMsg.TryGetProperty("usage", out var startUsage) &&
+                                startUsage.TryGetProperty("input_tokens", out var inputTokens))
+                            {
+                                var promptTokens = inputTokens.GetInt32();
+                                OnDebug?.Invoke($"[SSE] usage: prompt={promptTokens}");
+                                Log.Debug($"SSE usage: prompt={promptTokens}");
+                                yield return new StreamChunk
+                                {
+                                    Usage = new UsageInfo { PromptTokens = promptTokens }
+                                };
+                            }
+                            break;
+
                         case "content_block_start":
                             if (root.TryGetProperty("content_block", out var block) &&
                                 block.TryGetProperty("type", out var blockType) &&
@@ -159,6 +188,18 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
                             break;
 
                         case "message_delta":
+                            if (root.TryGetProperty("delta", out var msgDelta) &&
+                                msgDelta.TryGetProperty("stop_reason", out var stopReasonEl) &&
+                                stopReasonEl.ValueKind == JsonValueKind.String)
+                            {
+                                var stopReason = stopReasonEl.GetString();
+                                if (stopReason is "max_tokens" or "refusal")
+                                {
+                                    OnDebug?.Invoke($"[LLM] stop_reason={stopReason}");
+                                    Log.Warn($"Anthropic stop_reason={stopReason} — response may be truncated or refused");
+                                }
+                            }
+
                             if (root.TryGetProperty("usage", out var usage))
                             {
                                 var completionTokens = usage.TryGetProperty("output_tokens", out var ot) ? ot.GetInt32() : 0;
@@ -203,6 +244,11 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
             .Where(m => m.Role != MessageRole.System)
             .Select<Message, object>(m => m.Role switch
             {
+                MessageRole.User when m.ContentParts is { Count: > 0 } => (object)new
+                {
+                    role = "user",
+                    content = m.ContentParts.Select(MapContentBlock).ToArray()
+                },
                 MessageRole.User => new { role = "user", content = m.Content },
                 MessageRole.Assistant when m.ToolCalls is { Count: > 0 } => new
                 {
@@ -224,12 +270,25 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
                     .ToArray()
                 },
                 MessageRole.Assistant => new { role = "assistant", content = m.Content },
+                MessageRole.Tool when m.ContentParts is { Count: > 0 } => (object)new
+                {
+                    role = "user",
+                    content = new object[]
+                    {
+                        new
+                        {
+                            type = "tool_result",
+                            tool_use_id = m.ToolCallId,
+                            content = m.ContentParts.Select(MapContentBlock).ToArray()
+                        }
+                    }
+                },
                 MessageRole.Tool => (object)new
                 {
                     role = "user",
                     content = new[]
                     {
-                        new { type = "tool_result", tool_use_id = m.ToolCallId, content = m.Content }
+                        new { type = "tool_result", tool_use_id = m.ToolCallId, content = m.Content, is_error = m.IsError }
                     }
                 },
                 _ => new { role = "user", content = m.Content },
@@ -265,6 +324,30 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
         }
 
         return body;
+    }
+
+    private static object MapContentBlock(ContentPart part) => part switch
+    {
+        TextPart t => new { type = "text", text = t.Text },
+        ImagePart i => MapImageBlock(i),
+        _ => new { type = "text", text = "" },
+    };
+
+    private static object MapImageBlock(ImagePart img)
+    {
+        const string dataPrefix = "data:";
+        if (img.Url.StartsWith(dataPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            // data:image/png;base64,XXXX  ->  { source: { type: base64, media_type, data } }
+            var comma = img.Url.IndexOf(',');
+            var meta = comma >= 0 ? img.Url[dataPrefix.Length..comma] : "";
+            var data = comma >= 0 ? img.Url[(comma + 1)..] : "";
+            var mediaType = meta.Split(';')[0];
+            if (string.IsNullOrEmpty(mediaType)) mediaType = "image/png";
+            return new { type = "image", source = new { type = "base64", media_type = mediaType, data } };
+        }
+
+        return new { type = "image", source = new { type = "url", url = img.Url } };
     }
 
     public void Dispose() => _http.Dispose();

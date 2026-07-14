@@ -244,6 +244,7 @@ main() {
         echo "  1) CPU only — standard inference (no kernel changes)"
         echo "  2) iGPU accelerated — Vulkan on Radeon iGPU (modifies kernel)"
         echo ""
+        flush_stdin  # drop keystrokes buffered during earlier long steps
         printf "  Choose mode [1=cpu, 2=igpu] [default: 1]: "
         read -r -n 1 choice
         echo ""
@@ -264,6 +265,7 @@ main() {
         printf "This will modify your kernel configuration.\n"
         printf "Recommended for dedicated inference setups only!\n"
         echo ""
+        flush_stdin  # else a buffered Enter skips this deliberate pause
         printf "Press ENTER to continue or Ctrl+C to abort: "
         read -r _confirm
         echo ""

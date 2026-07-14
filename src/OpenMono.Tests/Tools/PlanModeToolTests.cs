@@ -25,17 +25,63 @@ public class PlanModeToolTests
     }
 
     [Fact]
-    public async Task ExitPlanMode_Succeeds()
+    public async Task CreatePlan_presents_plan_and_STAYS_in_plan_mode()
     {
         var context = CreateContext();
         context.Session.Meta.PlanMode = true;
 
-        var tool = new ExitPlanModeTool();
+        var tool = new CreatePlanTool();
         var input = JsonDocument.Parse("""{"plan": "Step 1: Read files\nStep 2: Edit code"}""").RootElement;
         var result = await tool.ExecuteAsync(input, context, CancellationToken.None);
 
         result.IsError.Should().BeFalse();
-        result.Content.Should().Contain("Step 1");
+        // The plan content is stored for the card/TUI to render; the brief result names the
+        // proceed-options and must not leak agent-facing instructions to the user.
+        context.Session.Meta.LastPlanContent.Should().Contain("Step 1");
+        result.Content.Should().Contain("Auto implement");
+        result.Content.Should().Contain("Ask before edits");
+        result.Content.Should().Contain("Keep planning");
+        result.Content.Should().NotContain("do not write");
+        context.Session.Meta.PlanMode.Should().BeTrue("CreatePlan only presents — it must NOT drop to Build");
+    }
+
+    [Fact]
+    public async Task CreatePlan_NotInPlanMode_ReturnsError()
+    {
+        var tool = new CreatePlanTool();
+        var context = CreateContext(); // build mode
+
+        var input = JsonDocument.Parse("""{"plan": "some plan"}""").RootElement;
+        var result = await tool.ExecuteAsync(input, context, CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ImplementPlan_switches_to_build_mode()
+    {
+        var context = CreateContext();
+        context.Session.Meta.PlanMode = true;
+        context.Session.Meta.LastPlanContent = "Step 1: do the thing";
+
+        var tool = new ImplementPlanTool();
+        var result = await tool.ExecuteAsync(JsonDocument.Parse("{}").RootElement, context, CancellationToken.None);
+
+        result.IsError.Should().BeFalse();
+        context.Session.Meta.PlanMode.Should().BeFalse("ImplementPlan flips Plan → Build");
+        result.Content.Should().Contain("Build mode");
+    }
+
+    [Fact]
+    public async Task ImplementPlan_AlreadyBuildMode_is_idempotent_success()
+    {
+        var tool = new ImplementPlanTool();
+        var context = CreateContext(); // already build mode
+
+        var result = await tool.ExecuteAsync(JsonDocument.Parse("{}").RootElement, context, CancellationToken.None);
+
+        // A redundant call (the approval already flipped to Build) must succeed, not error.
+        result.IsError.Should().BeFalse();
         context.Session.Meta.PlanMode.Should().BeFalse();
     }
 
@@ -53,36 +99,46 @@ public class PlanModeToolTests
     }
 
     [Fact]
-    public async Task ExitPlanMode_NotInPlanMode_ReturnsError()
+    public void Plan_tools_are_AutoAllow_and_read_only()
     {
-        var tool = new ExitPlanModeTool();
-        var context = CreateContext();
-
-        var input = JsonDocument.Parse("""{"plan": "some plan"}""").RootElement;
-        var result = await tool.ExecuteAsync(input, context, CancellationToken.None);
-
-        result.IsError.Should().BeTrue();
+        var input = JsonDocument.Parse("{}").RootElement;
+        foreach (var tool in new ToolBase[] { new EnterPlanModeTool(), new CreatePlanTool(), new ImplementPlanTool() })
+        {
+            tool.RequiredPermission(input).Should().Be(PermissionLevel.AutoAllow);
+            tool.IsReadOnly.Should().BeTrue($"{tool.Name} is a mode-control tool and must be callable in plan mode");
+        }
     }
 
     [Fact]
-    public void EnterPlanMode_IsAutoAllow()
+    public async Task CreatePlan_persists_plan_file_and_records_its_path()
     {
-        var tool = new EnterPlanModeTool();
-        var input = JsonDocument.Parse("{}").RootElement;
-        tool.RequiredPermission(input).Should().Be(PermissionLevel.AutoAllow);
+        var workDir = Path.Combine(Path.GetTempPath(), "openmono-plan-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(workDir);
+        try
+        {
+            var context = CreateContext(workDir);
+            context.Session.Meta.PlanMode = true;
+
+            var tool = new CreatePlanTool();
+            var input = JsonDocument.Parse("""{"plan": "Step 1: Do the thing"}""").RootElement;
+            var result = await tool.ExecuteAsync(input, context, CancellationToken.None);
+
+            result.IsError.Should().BeFalse();
+            context.Session.Meta.LastPlanPath.Should().NotBeNull("the plan must be persisted to a file");
+            var fullPath = Path.Combine(workDir, context.Session.Meta.LastPlanPath!);
+            File.Exists(fullPath).Should().BeTrue();
+            (await File.ReadAllTextAsync(fullPath)).Should().Contain("Step 1: Do the thing");
+            context.Session.Meta.LastPlanPath!.Replace('\\', '/').Should().StartWith(".openmono/plans/");
+        }
+        finally
+        {
+            Directory.Delete(workDir, recursive: true);
+        }
     }
 
-    [Fact]
-    public void ExitPlanMode_IsAutoAllow()
+    private static ToolContext CreateContext(string? workDir = null)
     {
-        var tool = new ExitPlanModeTool();
-        var input = JsonDocument.Parse("{}").RootElement;
-        tool.RequiredPermission(input).Should().Be(PermissionLevel.AutoAllow);
-    }
-
-    private static ToolContext CreateContext()
-    {
-        var workDir = Path.GetTempPath();
+        workDir ??= Path.GetTempPath();
         return new()
         {
             ToolRegistry = new ToolRegistry(),

@@ -70,6 +70,30 @@ public class SanityCheckTests
     }
 
     [Theory]
+    [InlineData("cat /workspace/notes.txt")]
+    [InlineData("head -n 20 /workspace/app.log")]
+    [InlineData("tail -f /workspace/app.log")]
+    [InlineData("echo \\\"hello\\\" >> /workspace/notes.txt")]
+    [InlineData("printf '%s' done > /workspace/status.txt")]
+    [InlineData("echo data | tee /workspace/out.txt")]
+    public void Bash_FileOpsViaShell_RefusedAndSteeredToFileTools(string command)
+    {
+        var input = Input($$"""{"command": "{{command}}"}""");
+        SanityCheck.Check("Bash", input, _workDir).Should().NotBeNull();
+    }
+
+    [Theory]
+    [InlineData("cat")]                                  // stdin, no file operand
+    [InlineData("echo hello")]                           // stdout, no redirect
+    [InlineData("echo hi > /dev/stderr")]                // device target, not a regular file
+    [InlineData("dotnet build > /workspace/build.log")]  // output capture, not content authoring
+    public void Bash_NonFileToolShellUsage_Allowed(string command)
+    {
+        var input = Input($$"""{"command": "{{command}}"}""");
+        SanityCheck.Check("Bash", input, _workDir).Should().BeNull();
+    }
+
+    [Theory]
     [InlineData("ls")]
     [InlineData("echo hello")]
     public void IsDestructiveCommand_ReturnsFalse(string command)

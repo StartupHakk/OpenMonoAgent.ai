@@ -34,13 +34,62 @@ services:
       - ../models:/models:ro
     ports:
       - "${LLAMA_PORT:-7474}:7474"
-    restart: unless-stopped
+    restart: always
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:7474/health"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 30s
+
+  # ── Inference-side web services (optional, opt-in per service) ──────────────
+  # Caddy is the single front door tunneled by frpc. It path-routes to llama
+  # (pass-through), SearXNG (/search) and Scrapling (/scrape), enforcing the
+  # shared LLAMA_API_KEY bearer on the two services that have no auth of their
+  # own. It starts whenever either the `search` or `scraper` profile is active.
+  caddy:
+    image: caddy:2-alpine
+    container_name: openmono-gateway
+    profiles: ["full", "server", "search", "scraper"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "${GATEWAY_PORT:-47480}:8080"
+    environment:
+      - LLAMA_API_KEY=${LLAMA_API_KEY:-}
+      - LLAMA_UPSTREAM=${LLAMA_UPSTREAM:-llama-server:7474}
+      - SEARXNG_UPSTREAM=${SEARXNG_UPSTREAM:-searxng:8080}
+      - SCRAPLING_UPSTREAM=${SCRAPLING_UPSTREAM:-scrapling:5000}
+      - WEB_SEARCH_ENABLED=${WEB_SEARCH_ENABLED:-false}
+      - WEB_SCRAPE_ENABLED=${WEB_SCRAPE_ENABLED:-false}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: always
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: openmono-searxng
+    profiles: ["full", "server", "search"]
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-}
+      - SEARXNG_BASE_URL=http://localhost:47480
+    restart: always
+
+  scrapling:
+    build:
+      context: ./scrapling
+    image: openmono-scrapling:latest
+    container_name: openmono-scrapling
+    profiles: ["full", "server", "scraper"]
+    restart: always
 
   agent:
     image: openmono-agent:latest
@@ -66,6 +115,14 @@ services:
       # 7475 so IDE clients and the VS Code extension can connect to the same
       # session. Disable with OPENMONO_ACP_ENABLED=0.
       - OPENMONO_ACP_ENABLED=${OPENMONO_ACP_ENABLED:-1}
+      # Web gateway: when set, WebSearch/WebFetch route through Caddy to
+      # SearXNG/Scrapling; the per-service flags let the agent fall back to its
+      # built-in DuckDuckGo/direct-fetch behaviour when a service isn't installed.
+      - OPENMONO_WEB_GATEWAY=${OPENMONO_WEB_GATEWAY:-}
+      - OPENMONO_WEB_SEARCH=${OPENMONO_WEB_SEARCH:-}
+      - OPENMONO_WEB_SCRAPE=${OPENMONO_WEB_SCRAPE:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     stdin_open: true
     tty: true
     working_dir: /workspace

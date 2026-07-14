@@ -27,6 +27,7 @@ publish/
 *.nupkg
 
 # --- IDE and editor files ---
+.kilo/
 .vs/
 .vscode/
 *.sln.DotSettings.user

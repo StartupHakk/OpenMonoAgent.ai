@@ -32,10 +32,11 @@ ENDPOINT = os.environ.get("OPENMONO_ENDPOINT", "http://host.docker.internal:7474
 # costs one extra LLM call. Cap it so a permission-thrashing model can't hang.
 MAX_RESUMES = 300
 
-# Plan mode ends the turn after ExitPlanMode so a human can approve the plan.
-# Headless there is no human, so the harness plays the approving user — capped,
-# so a model that re-plans forever still terminates.
-PLAN_CONTINUE_MSG = "Yes, proceed. Implement the plan now and do not stop until the task is fully done."
+# Plan mode ends the turn after the plan is presented (`plan_ready`) so a human can
+# approve it. Headless there is no human, so the harness plays the approving user via
+# the plan_decision API ("ask" keeps the normal per-write permission flow measurable) —
+# capped, so a model that re-plans forever still terminates.
+PLAN_DECISION = "ask"
 MAX_PLAN_CONTINUES = 2
 
 
@@ -180,7 +181,7 @@ def drive(base, prompt, budget, plan_mode=False):
              in_tokens=0, out_tokens=0, tools={}, failed_tools={}, resumes=0,
              status="done", assistant_chars=0, plan_continues=0)
     pending = None          # (kind, id) the agent is blocked on
-    plan_pending = False    # ExitPlanMode succeeded; expect the turn to break for approval
+    plan_pending = False    # plan_ready seen; the turn breaks for approval
     body = {"message": prompt}
     t0 = time.time()
 
@@ -201,9 +202,9 @@ def drive(base, prompt, budget, plan_mode=False):
                     m["tool_calls"] += 1
                     n = d.get("name", "?")
                     m["tools"][n] = m["tools"].get(n, 0) + 1
+                elif ev == "plan_ready":
+                    plan_pending = True
                 elif ev == "tool_end":
-                    if d.get("name") == "ExitPlanMode" and d.get("ok", True):
-                        plan_pending = True
                     if not d.get("ok", True):
                         m["tool_fail"] += 1
                         n = d.get("name", "?")
@@ -230,7 +231,7 @@ def drive(base, prompt, budget, plan_mode=False):
             if plan_pending and m["plan_continues"] < MAX_PLAN_CONTINUES:
                 plan_pending = False
                 m["plan_continues"] += 1
-                body = {"message": PLAN_CONTINUE_MSG}
+                body = {"plan_decision": PLAN_DECISION}
                 continue
             m["status"] = "done"
             break

@@ -36,18 +36,64 @@ public static class ConfigLoader
 
         ApplyActiveModelPreset(config);
 
-        try
-        {
-            Directory.CreateDirectory(config.DataDirectory);
-            Directory.CreateDirectory(Path.Combine(config.DataDirectory, "sessions"));
-            Directory.CreateDirectory(Path.Combine(config.DataDirectory, "memory"));
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            warn?.Invoke($"Cannot create data directory {config.DataDirectory}: {ex.Message}");
-        }
+        EnsureWritableDataDirectory(config, warn);
 
         return config;
+    }
+
+    private static readonly string[] DataSubdirectories = ["sessions", "memory", "artifacts"];
+
+    private static void EnsureWritableDataDirectory(AppConfig config, Action<string>? warn)
+    {
+        if (TryInitDataDirectory(config.DataDirectory))
+            return;
+
+        var fallback = Path.Combine(Path.GetTempPath(), "openmono");
+        var fallbackIsConfigured = string.Equals(
+            Path.GetFullPath(fallback), Path.GetFullPath(config.DataDirectory), StringComparison.Ordinal);
+
+        if (fallbackIsConfigured || !TryInitDataDirectory(fallback))
+        {
+            warn?.Invoke(
+                $"Data directory '{config.DataDirectory}' is not writable and no fallback could be created. " +
+                "Sessions, memory, and artifacts will not be saved this run.");
+            return;
+        }
+
+        warn?.Invoke(
+            $"Data directory '{config.DataDirectory}' is not writable — falling back to '{fallback}'. " +
+            "Sessions, memory, and artifacts will not persist across runs " +
+            "(in Docker, mount a writable volume at the data dir or fix ~/.openmono ownership).");
+        config.DataDirectory = fallback;
+    }
+
+    private static bool TryInitDataDirectory(string dataDirectory)
+    {
+        try
+        {
+            Directory.CreateDirectory(dataDirectory);
+            ProbeWritable(dataDirectory);
+
+            foreach (var sub in DataSubdirectories)
+            {
+                var path = Path.Combine(dataDirectory, sub);
+                Directory.CreateDirectory(path);
+                ProbeWritable(path);
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            return false;
+        }
+    }
+
+    private static void ProbeWritable(string directory)
+    {
+        var probe = Path.Combine(directory, $".writable-{Guid.NewGuid():N}");
+        File.WriteAllText(probe, string.Empty);
+        File.Delete(probe);
     }
 
     private static void MergeFromFile(AppConfig config, string path, Action<string>? warn)
@@ -61,6 +107,8 @@ public static class ConfigLoader
             if (overrides is null) return;
 
             config.Llm.MergeFrom(overrides.Llm);
+            config.Agents.MergeFrom(overrides.Agents);
+            config.Web.MergeFrom(overrides.Web);
 
             foreach (var (tool, rules) in overrides.Permissions.Tools)
             {
@@ -122,6 +170,18 @@ public static class ConfigLoader
         var apiKey = Environment.GetEnvironmentVariable("OPENMONO_API_KEY");
         if (!string.IsNullOrEmpty(apiKey))
             config.Llm.ApiKey = apiKey;
+
+        var webGateway = Environment.GetEnvironmentVariable("OPENMONO_WEB_GATEWAY");
+        if (!string.IsNullOrEmpty(webGateway))
+            config.Web.Gateway = webGateway;
+
+        var webSearch = Environment.GetEnvironmentVariable("OPENMONO_WEB_SEARCH");
+        if (!string.IsNullOrEmpty(webSearch))
+            config.Web.Search = webSearch;
+
+        var webScrape = Environment.GetEnvironmentVariable("OPENMONO_WEB_SCRAPE");
+        if (!string.IsNullOrEmpty(webScrape))
+            config.Web.Scrape = webScrape;
 
         var workspace = Environment.GetEnvironmentVariable("OPENMONO_WORKSPACE");
         if (!string.IsNullOrEmpty(workspace))

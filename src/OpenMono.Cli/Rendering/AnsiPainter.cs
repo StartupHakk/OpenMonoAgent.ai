@@ -24,11 +24,11 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
     internal const string Fw   = "\x1b[37m";
     internal const string Fk   = "\x1b[90m";
     internal const string Fbb  = "\x1b[38;2;163;255;102m";
-    internal const string BgMain   = "\x1b[40m";
-    internal const string BgInput  = "\x1b[40m";
-    internal const string BgStatus = "\x1b[40m";
-    internal const string BgSide   = "\x1b[40m";
-    internal const string BgSugg   = "\x1b[40m";
+    internal const string BgMain   = "\x1b[49m";
+    internal const string BgInput  = "\x1b[49m";
+    internal const string BgStatus = "\x1b[49m";
+    internal const string BgSide   = "\x1b[49m";
+    internal const string BgSugg   = "\x1b[49m";
 
     internal const int MaxCachedLines           = 5000;
     internal const int TrimThreshold            = 6000;
@@ -70,13 +70,21 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
     private int _th;
     private int _sideW;
 
-    private string _thinking = "";
-    private int _thinkingFrame;
+    private sealed class ThinkingStream
+    {
+        public string Mode = "";
+        public string WaitingLabel = "Thinking";
+        public int Frame;
+        public readonly StringBuilder Buffer = new();
+        public readonly object BufferLock = new();
+        public bool Collapsed;
+        public int CollapseChars;
+        public long LastActivityTick;
+    }
+    private const string MainAgentKey = "";
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, ThinkingStream> _thinkingStreams = new();
     private System.Threading.Timer? _thinkingTimer;
-    private readonly StringBuilder _thinkingBuf = new();
-    private readonly object _thinkingBufLock = new();
-    private bool _thinkingCollapsed;
-    private int _thinkingCollapseChars;
+    private readonly object _thinkingTimerLock = new();
 
     private int _heartbeatFrame;
     private long _lastHeartbeatTick;
@@ -98,6 +106,9 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
     private volatile bool _paintActive;
     private volatile bool _paintInProgress;
     private CancellationTokenSource? _paintCts;
+
+    private volatile bool _laneActive;
+    private string _laneOverlay = "";
 
     private readonly List<string> _cachedLines = [];
     private int _cachedMsgCount;
@@ -299,6 +310,9 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         }
     }
 
+    internal void ScrollPageUp()   => ScrollBy(Math.Max(1, ConvHeight - 2));
+    internal void ScrollPageDown() => ScrollBy(-Math.Max(1, ConvHeight - 2));
+
     internal void ScrollToTop()
     {
         _scrollOffset = GetMaxScrollOffset();
@@ -389,7 +403,20 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         Row(2, opt3);
         Row(1, opt4);
 
-        lock (_writeLock) { W(sb.ToString()); Flush(); }
+        _laneOverlay = sb.ToString();
+        _laneActive  = true;
+        lock (_writeLock) { W(_laneOverlay); Flush(); }
+    }
+
+    internal void ClearLane()
+    {
+        _laneActive  = false;
+        _laneOverlay = "";
+    }
+
+    private void AppendLaneOverlay(StringBuilder sb)
+    {
+        if (_laneActive) sb.Append(_laneOverlay);
     }
 
     internal void ShowCtrlCBanner()
@@ -568,7 +595,10 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         if (metrics is { PromptTokens: > 0 } m)
         {
             var genTime = m.TotalElapsed - m.TimeToFirstToken;
-            var genTps = genTime.TotalSeconds > 0.001 ? m.CompletionTokens / genTime.TotalSeconds : 0;
+            // Prefer llama.cpp's server-reported decode rate; fall back to wall-clock if absent.
+            var genTps = m.GenTokensPerSecond > 0
+                ? m.GenTokensPerSecond
+                : (genTime.TotalSeconds > 0.001 ? m.CompletionTokens / genTime.TotalSeconds : 0);
             footer = $"TTFT {m.TimeToFirstToken.TotalSeconds:F1}s · gen {genTps:F0}/s · {m.CompletionTokens} tok · {m.TotalElapsed.TotalSeconds:F1}s";
         }
         else
@@ -583,56 +613,101 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         Paint();
     }
 
-    internal void AppendThinking(string text)
+    internal void AppendThinking(string text) => AppendThinking(text, null);
+
+    internal void AppendThinking(string text, string? agentLabel)
     {
-        lock (_thinkingBufLock) { _thinkingBuf.Append(text); }
-        if (_thinking.Length == 0)
-        {
-            _thinking = "Thinking";
-            _thinkingFrame = 0;
-            _thinkingTimer?.Dispose();
-            _thinkingTimer = new System.Threading.Timer(_ =>
-            {
-                System.Threading.Interlocked.Increment(ref _thinkingFrame);
-                if (_paintActive)
-                    _paintChannel.Writer.TryWrite(new PaintRequest(PaintKind.Conv));
-            }, null, dueTime: 280, period: 280);
-        }
+        var key = agentLabel ?? MainAgentKey;
+        var stream = _thinkingStreams.GetOrAdd(key, _ => new ThinkingStream());
+        lock (stream.BufferLock) { stream.Buffer.Append(text); }
+        stream.Mode = "Thinking";
+        stream.Collapsed = false;
+        System.Threading.Interlocked.Exchange(ref stream.LastActivityTick, DateTime.UtcNow.Ticks);
+        EnsureThinkingTimer();
         PaintConvThrottled(force: false);
     }
 
-    internal void CollapseThinking(int charCount)
+    internal void CollapseThinking(int charCount) => CollapseThinking(charCount, null);
+
+    internal void CollapseThinking(int charCount, string? agentLabel)
     {
-        _thinkingCollapsed = true;
-        _thinkingCollapseChars = charCount;
-        _thinking = "";
-        _thinkingTimer?.Dispose();
-        _thinkingTimer = null;
-        lock (_thinkingBufLock) { _thinkingBuf.Clear(); }
+        var key = agentLabel ?? MainAgentKey;
+        if (!_thinkingStreams.TryGetValue(key, out var stream)) return;
+        stream.Collapsed = true;
+        stream.CollapseChars = charCount;
+        stream.Mode = "";
+        lock (stream.BufferLock) { stream.Buffer.Clear(); }
+        StopThinkingTimerIfIdle();
         PaintConvThrottled(force: true);
     }
 
-    internal void ShowWaitingIndicator()
+    internal void ShowWaitingIndicator(string? label = null) => ShowWaitingIndicator(label, null);
+
+    internal void ShowWaitingIndicator(string? label, string? agentLabel)
     {
-        if (_thinking.Length == 0)
+        var key = agentLabel ?? MainAgentKey;
+        var stream = _thinkingStreams.GetOrAdd(key, _ => new ThinkingStream());
+        stream.WaitingLabel = string.IsNullOrEmpty(label) ? "Thinking" : label;
+        if (stream.Mode != "Waiting")
         {
-            _thinking = "Waiting";
-            _thinkingFrame = 0;
-            _thinkingTimer?.Dispose();
-            _thinkingTimer = new System.Threading.Timer(_ =>
-            {
-                System.Threading.Interlocked.Increment(ref _thinkingFrame);
-                if (_paintActive)
-                    _paintChannel.Writer.TryWrite(new PaintRequest(PaintKind.Conv));
-            }, null, dueTime: 280, period: 280);
-            PaintConvThrottled(force: true);
+            stream.Mode = "Waiting";
+            stream.Frame = 0;
+        }
+        EnsureThinkingTimer();
+        PaintConvThrottled(force: true);
+    }
+
+    internal void ClearWaitingIndicator() => ClearWaitingIndicator(null);
+
+    internal void ClearWaitingIndicator(string? agentLabel)
+    {
+        var key = agentLabel ?? MainAgentKey;
+        if (!_thinkingStreams.TryGetValue(key, out var stream)) return;
+        if (stream.Mode == "Waiting")
+        {
+            stream.WaitingLabel = "Thinking";
+            ClearThinkingForKey(key);
         }
     }
 
-    internal void ClearWaitingIndicator()
+    private void EnsureThinkingTimer()
     {
-        if (_thinking == "Waiting")
-            ClearThinking();
+        lock (_thinkingTimerLock)
+        {
+            if (_thinkingTimer is not null) return;
+            _thinkingTimer = new System.Threading.Timer(_ =>
+            {
+                foreach (var s in _thinkingStreams.Values)
+                    System.Threading.Interlocked.Increment(ref s.Frame);
+                if (_paintActive)
+                    _paintChannel.Writer.TryWrite(new PaintRequest(PaintKind.Conv));
+            }, null, dueTime: 280, period: 280);
+        }
+    }
+
+    private void StopThinkingTimerIfIdle()
+    {
+        var anyActive = false;
+        foreach (var s in _thinkingStreams.Values)
+            if (s.Mode.Length > 0) { anyActive = true; break; }
+        if (anyActive) return;
+        lock (_thinkingTimerLock)
+        {
+            _thinkingTimer?.Dispose();
+            _thinkingTimer = null;
+        }
+    }
+
+    private void ClearThinkingForKey(string key)
+    {
+        if (_thinkingStreams.TryRemove(key, out var stream))
+        {
+            stream.Mode = "";
+            stream.Collapsed = false;
+            stream.CollapseChars = 0;
+            lock (stream.BufferLock) { stream.Buffer.Clear(); }
+        }
+        StopThinkingTimerIfIdle();
     }
 
     internal void ClearStreaming()
@@ -646,12 +721,19 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
 
     internal void ClearThinking()
     {
-        _thinking = "";
-        _thinkingCollapsed = false;
-        _thinkingCollapseChars = 0;
-        _thinkingTimer?.Dispose();
-        _thinkingTimer = null;
-        lock (_thinkingBufLock) { _thinkingBuf.Clear(); }
+        foreach (var stream in _thinkingStreams.Values)
+        {
+            stream.Mode = "";
+            stream.Collapsed = false;
+            stream.CollapseChars = 0;
+            lock (stream.BufferLock) { stream.Buffer.Clear(); }
+        }
+        _thinkingStreams.Clear();
+        lock (_thinkingTimerLock)
+        {
+            _thinkingTimer?.Dispose();
+            _thinkingTimer = null;
+        }
     }
 
     internal void WriteMarkdown(string md)
@@ -774,7 +856,7 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
     {
         lock (_messagesLock) { _messages.Clear(); _lastUserText = ""; }
         lock (_streamLock) { _streamBuf.Clear(); }
-        _thinking = "";
+        ClearThinking();
         _lastTokSec = 0;
         Array.Clear(_tokSecHistory);
         _tokSecHistoryIdx = 0;
@@ -901,6 +983,7 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
             if (_contextWarningPct > 0) PaintContextWarning(sb);
 
             sb.Append(R);
+            AppendLaneOverlay(sb);
             W(sb.ToString());
             Flush();
         }
@@ -929,6 +1012,7 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         if (_ctrlCBannerVisible) PaintCtrlCBanner(sb);
         if (_contextWarningPct > 0) PaintContextWarning(sb);
         sb.Append(R);
+        AppendLaneOverlay(sb);
         W(sb.ToString());
         Flush();
         _paintInProgress = false;
@@ -1115,28 +1199,41 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
             for (var i = skip; i < wrapped.Count; i++)
                 lines.Add($"  {wrapped[i]}");
         }
-        else if (_thinkingCollapsed)
+        else
         {
-            var approxTok = _thinkingCollapseChars / 4;
-            var tok = approxTok > 0 ? $" [{approxTok} tok]" : "";
-            lines.Add("");
-            lines.Add($"  {Fk}◈ Thinking{tok}{R}");
-        }
-        else if (_thinking.Length > 0)
-        {
-            var frame   = System.Threading.Volatile.Read(ref _thinkingFrame);
-            var spinner = SpinnerFrames[frame % SpinnerFrames.Length];
-            var dots    = DotsFrames[frame % DotsFrames.Length];
-            lines.Add($"  {Fbb}{spinner} {IT}{Fk}Thinking{dots}");
-            string snapshot;
-            lock (_thinkingBufLock) { snapshot = _thinkingBuf.ToString(); }
-            if (snapshot.Length > 0)
+            var snapshotKeys = _thinkingStreams.Keys.OrderBy(k => k == MainAgentKey ? "" : k, StringComparer.Ordinal).ToList();
+            var firstBlock = true;
+            foreach (var key in snapshotKeys)
             {
-                var thinkLines = snapshot.Split('\n').Where(l => l.Length > 0).TakeLast(3).ToArray();
-                foreach (var ln in thinkLines)
+                if (!_thinkingStreams.TryGetValue(key, out var stream)) continue;
+                var who = key == MainAgentKey ? null : key;
+                var prefix = who is null ? "" : $"[{who}] ";
+                if (stream.Collapsed)
                 {
-                    var display = ln.Length > w - 6 ? ln[..(w - 6)] + "…" : ln;
-                    lines.Add($"  {IT}{Fk}{display}");
+                    var approxTok = stream.CollapseChars / 4;
+                    var tok = approxTok > 0 ? $" [{approxTok} tok]" : "";
+                    if (firstBlock) { lines.Add(""); firstBlock = false; }
+                    lines.Add($"  {Fk}◈ {prefix}Thinking{tok}{R}");
+                    continue;
+                }
+                if (stream.Mode.Length == 0) continue;
+                var frame   = System.Threading.Volatile.Read(ref stream.Frame);
+                var spinner = SpinnerFrames[frame % SpinnerFrames.Length];
+                var dots    = DotsFrames[frame % DotsFrames.Length];
+                var label   = stream.Mode == "Waiting" ? stream.WaitingLabel : "Thinking";
+                if (firstBlock) { lines.Add(""); firstBlock = false; }
+                lines.Add($"  {Fbb}{spinner} {IT}{Fk}{prefix}{label}{dots}");
+                string snapshot;
+                lock (stream.BufferLock) { snapshot = stream.Buffer.ToString(); }
+                if (snapshot.Length > 0)
+                {
+                    var perAgentLines = snapshotKeys.Count > 1 ? 1 : 3;
+                    var thinkLines = snapshot.Split('\n').Where(l => l.Length > 0).TakeLast(perAgentLines).ToArray();
+                    foreach (var ln in thinkLines)
+                    {
+                        var display = ln.Length > w - 6 ? ln[..(w - 6)] + "…" : ln;
+                        lines.Add($"  {IT}{Fk}{display}");
+                    }
                 }
             }
         }
@@ -1313,7 +1410,14 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
             _heartbeatFrame = (_heartbeatFrame + 1) % HeartbeatFrames.Length;
             _lastHeartbeatTick = now;
         }
-        var pulse = HeartbeatFrames[_heartbeatFrame];
+        var isCompacting = session.Meta.IsCompacting;
+        // Distinct glyph + color while compacting so the ring reads as "actively recalculating",
+        // not just the normal idle pulse — the (pct%) next to it is stale until compaction finishes.
+        var pulse = isCompacting
+            ? SpinnerFrames[_heartbeatFrame % SpinnerFrames.Length]
+            : HeartbeatFrames[_heartbeatFrame];
+        var pulseColor = isCompacting ? Fy : (_streaming && _lastTokSec > 0 ? Fc : Fg);
+        var compactingTag = isCompacting ? $"{Fy} compacting…{R}{BgStatus}" : "";
 
         var tokStr = FmtTok(tok);
         var wMax   = Volatile.Read(ref _windowMax);
@@ -1324,9 +1428,9 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
 
         string left;
         if (_streaming && _lastTokSec > 0)
-            left = $" {Fc}{pulse}{R}{BgStatus} {tokStr} ({pct}%){maxAvgStr}  {Fg}●{R}{BgStatus} {Fw}{_lastTokSec:F1} tok/s{R}{BgStatus}";
+            left = $" {pulseColor}{pulse}{R}{BgStatus} {tokStr} ({pct}%){compactingTag}{maxAvgStr}  {Fg}●{R}{BgStatus} {Fw}{_lastTokSec:F1} tok/s{R}{BgStatus}";
         else
-            left = $" {Fg}{pulse}{R}{BgStatus} {tokStr} ({pct}%){maxAvgStr}";
+            left = $" {pulseColor}{pulse}{R}{BgStatus} {tokStr} ({pct}%){compactingTag}{maxAvgStr}";
 
         sb.Append(left);
         var visL = VisLen(left);
@@ -1336,7 +1440,10 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
             : "";
         var canCancel = _isTurnActive() || QueuedCount > 0;
         var cancelHint = canCancel ? $"{Fk}esc{R}{BgStatus} {Fw}cancel{R}{BgStatus}" : "";
-        var mid   = $"{scrollIndicator}{cancelHint}";
+        var modeIndicator = session.Meta.PlanMode
+            ? $"{Fk}[{R}{Fy}PLAN{R}{Fk}]{R}{BgStatus} "
+            : $"{Fk}[{R}{Fg}BUILD{R}{Fk}]{R}{BgStatus} ";
+        var mid   = $"{modeIndicator}{scrollIndicator}{cancelHint}";
         var right = $"{Fk}ctrl+c{R}{BgStatus} {Fw}quit{R}{BgStatus}   {Fk}ctrl+p{R}{BgStatus} {Fw}commands{R}{BgStatus} ";
         var visM  = VisLen(mid);
         var visR  = VisLen(right);
@@ -1458,19 +1565,8 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
             {
                 lines.Add("");
                 var mdLines = AnsiMarkdown.Render(m.Text, w - 4);
-                const int maxLines  = 50;
-                const int keepLines = 45;
-                if (mdLines.Count > maxLines)
-                {
-                    for (var i = 0; i < keepLines; i++)
-                        lines.Add($"  {Fk}│{R} {mdLines[i]}");
-                    lines.Add($"  {Fk}│{R} {DM}{Fk}... ({mdLines.Count - keepLines} more lines){R}");
-                }
-                else
-                {
-                    foreach (var l in mdLines)
-                        lines.Add($"  {Fk}│{R} {l}");
-                }
+                foreach (var l in mdLines)
+                    lines.Add($"  {Fk}│{R} {l}");
                 if (m.Footer is not null)
                     lines.Add($"  {Fbb}■{R}  {Fk}{m.Footer}{R}");
                 break;

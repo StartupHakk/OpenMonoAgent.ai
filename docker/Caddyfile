@@ -1,0 +1,74 @@
+# OpenMono.ai — Caddy gateway (inference box)
+#
+# One front door for every inference-side service. frpc tunnels ONLY this port,
+# so the relay still allocates a single port to the user; Caddy fans requests
+# out by path. SearXNG and Scrapling have no native auth, so Caddy enforces the
+# shared LLAMA_API_KEY (L7 bearer) in front of them. llama-server keeps enforcing
+# its own --api-key, so /v1 stays a transparent pass-through.
+#
+# Substituted at load time from the environment (see docker-compose.yml):
+#   LLAMA_API_KEY       shared bearer token (reused from the llama-server key)
+#   LLAMA_UPSTREAM      e.g. llama-server:7474  (or host.docker.internal:7474 native)
+#   SEARXNG_UPSTREAM    e.g. searxng:8080
+#   SCRAPLING_UPSTREAM  e.g. scrapling:5000
+#   WEB_SEARCH_ENABLED  true|false — reported on /services
+#   WEB_SCRAPE_ENABLED  true|false — reported on /services
+
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	log {
+		output stdout
+		format console
+		level INFO
+	}
+
+	# Unauthenticated liveness probe (relay / container healthcheck).
+	handle /health {
+		respond "ok" 200
+	}
+
+	# Capability registry. The inference box is the source of truth for which
+	# optional services are installed; the agent reads this to decide whether to
+	# route WebSearch/WebFetch through the gateway or fall back to its defaults.
+	handle /services {
+		header Content-Type application/json
+		respond `{"search": {$WEB_SEARCH_ENABLED:false}, "scrape": {$WEB_SCRAPE_ENABLED:false}}` 200
+	}
+
+	# SearXNG — privacy metasearch (backs the agent's WebSearch tool).
+	handle /search* {
+		@noauth not header Authorization "Bearer {$LLAMA_API_KEY}"
+		respond @noauth "Unauthorized" 401
+		reverse_proxy {$SEARXNG_UPSTREAM:searxng:8080} {
+			header_up Host {host}
+			header_up X-Forwarded-Host {host}
+			header_up X-Forwarded-Port {port}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	# Scrapling — anti-bot web scraping (backs the agent's WebFetch tool).
+	handle /scrape* {
+		@noauth_scrape not header Authorization "Bearer {$LLAMA_API_KEY}"
+		respond @noauth_scrape "Unauthorized" 401
+		reverse_proxy {$SCRAPLING_UPSTREAM:scrapling:5000} {
+			header_up Host {host}
+			header_up X-Forwarded-Host {host}
+			header_up X-Forwarded-Port {port}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	# Everything else → llama-server (OpenAI-compatible API). llama enforces its
+	# own --api-key, so no Caddy auth here. flush_interval -1 disables response
+	# buffering so SSE tokens stream through immediately.
+	handle {
+		reverse_proxy {$LLAMA_UPSTREAM:llama-server:7474} {
+			flush_interval -1
+		}
+	}
+}

@@ -9,6 +9,7 @@ namespace OpenMono.Tests.Acp;
 public sealed class AcpSessionStoreTests : IDisposable
 {
     private readonly string _tempDir;
+    private readonly string _legacyDir;
     private readonly string _sessionsDir;
     private readonly AppConfig _cfg;
     private readonly AcpServerSettings _settings;
@@ -17,20 +18,20 @@ public sealed class AcpSessionStoreTests : IDisposable
     {
         _tempDir = Path.Combine(Path.GetTempPath(), "openmono-acp-tests-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(_tempDir);
-        _sessionsDir = Path.Combine(_tempDir, "acp-sessions");
+        // legacy blobs (pre-unification) live here; the unified store writes under sessions/.
+        _legacyDir = Path.Combine(_tempDir, "acp-sessions");
+        _sessionsDir = Path.Combine(_tempDir, "sessions");
         _cfg = new AppConfig { DataDirectory = _tempDir };
         _cfg.Llm.Model = "test-model";
 
-
-        _settings = new AcpServerSettings { SessionTtlHours = 24, SessionsDirectory = _sessionsDir };
+        // TTL > 0 keeps the existing expiry tests meaningful; never-expire is tested separately.
+        _settings = new AcpServerSettings { SessionTtlHours = 24, SessionsDirectory = _legacyDir };
     }
 
     public void Dispose()
     {
         try { Directory.Delete(_tempDir, recursive: true); } catch {  }
     }
-
-
 
     [Fact]
     public void Create_assigns_id_and_model_and_persists_to_disk()
@@ -42,8 +43,7 @@ public sealed class AcpSessionStoreTests : IDisposable
         session.Id.Should().StartWith("sess_");
         session.Model.Should().Be("gpt-4o");
 
-        var diskFile = Path.Combine(_sessionsDir, session.Id + ".json");
-        File.Exists(diskFile).Should().BeTrue();
+        Directory.GetFiles(_sessionsDir, $"*_{session.Id}.jsonl").Should().HaveCount(1);
     }
 
     [Fact]
@@ -54,6 +54,14 @@ public sealed class AcpSessionStoreTests : IDisposable
         var session = store.Create(model: null, _cfg);
 
         session.Model.Should().Be("test-model");
+    }
+
+    [Fact]
+    public void Directory_is_the_unified_sessions_directory()
+    {
+        using var store = new AcpSessionStore(_cfg, _settings, startReaper: false);
+        store.Directory.Should().Be(_sessionsDir);
+        Directory.Exists(store.Directory).Should().BeTrue();
     }
 
     [Fact]
@@ -99,11 +107,25 @@ public sealed class AcpSessionStoreTests : IDisposable
     }
 
     [Fact]
-    public void PurgeExpired_deletes_in_memory_and_on_disk()
+    public void Never_expires_when_ttl_is_zero()
+    {
+        var neverExpire = new AcpServerSettings { SessionTtlHours = 0, SessionsDirectory = _legacyDir };
+        using var store = new AcpSessionStore(_cfg, neverExpire, startReaper: false);
+
+        var session = store.Create("gpt-4o", _cfg);
+        session.LastActivityAt = DateTime.UtcNow - TimeSpan.FromDays(365);
+        store.Save(session);
+
+        store.TryGet(session.Id).Should().NotBeNull("TTL=0 means sessions never expire");
+        store.PurgeExpired(Timeout.InfiniteTimeSpan);
+        store.TryGet(session.Id).Should().NotBeNull();
+    }
+
+    [Fact]
+    public void PurgeExpired_deletes_live_session()
     {
         using var store = new AcpSessionStore(_cfg, _settings, startReaper: false);
         var session = store.Create("gpt-4o", _cfg);
-        var path = Path.Combine(_sessionsDir, session.Id + ".json");
 
         session.LastActivityAt = DateTime.UtcNow - TimeSpan.FromHours(1);
         store.Save(session);
@@ -111,11 +133,11 @@ public sealed class AcpSessionStoreTests : IDisposable
         store.PurgeExpired(TimeSpan.FromMilliseconds(1));
 
         store.TryGet(session.Id).Should().BeNull();
-        File.Exists(path).Should().BeFalse();
+        Directory.GetFiles(_sessionsDir, $"*_{session.Id}.jsonl").Should().BeEmpty();
     }
 
     [Fact]
-    public void TryGet_returns_null_and_deletes_when_session_is_past_ttl()
+    public void TryGet_returns_null_and_deletes_when_live_session_past_ttl()
     {
         using var store = new AcpSessionStore(_cfg, _settings, startReaper: false);
 
@@ -124,7 +146,7 @@ public sealed class AcpSessionStoreTests : IDisposable
         store.Save(session);
 
         store.TryGet(session.Id).Should().BeNull();
-        File.Exists(Path.Combine(_sessionsDir, session.Id + ".json")).Should().BeFalse();
+        Directory.GetFiles(_sessionsDir, $"*_{session.Id}.jsonl").Should().BeEmpty();
     }
 
     [Fact]
@@ -163,6 +185,7 @@ public sealed class AcpSessionStoreTests : IDisposable
     {
         using var store = new AcpSessionStore(_cfg, _settings, startReaper: false);
         var session = store.Create("gpt-4o", _cfg);
+        session.Messages.Add(new Message { Role = MessageRole.User, Content = "hi" });
 
         var t1 = Task.Run(() =>
         {
@@ -182,11 +205,7 @@ public sealed class AcpSessionStoreTests : IDisposable
         });
         await Task.WhenAll(t1, t2);
 
-        var path = Path.Combine(_sessionsDir, session.Id + ".json");
-        File.Exists(path).Should().BeTrue();
-        var json = File.ReadAllText(path);
-        json.Should().StartWith("{").And.EndWith("}",
-            because: "atomic save must produce a valid JSON document at every observable point");
+        Directory.GetFiles(_sessionsDir, $"*_{session.Id}.jsonl").Should().HaveCount(1);
 
         using var reloaded = new AcpSessionStore(_cfg, _settings, startReaper: false);
         reloaded.TryGet(session.Id).Should().NotBeNull();
@@ -195,10 +214,6 @@ public sealed class AcpSessionStoreTests : IDisposable
     [Fact]
     public void Round_trip_preserves_assistant_tool_calls_and_tool_results()
     {
-
-
-
-
         string id;
         using (var store = new AcpSessionStore(_cfg, _settings, startReaper: false))
         {
@@ -248,22 +263,43 @@ public sealed class AcpSessionStoreTests : IDisposable
     {
         using var store = new AcpSessionStore(_cfg, _settings, startReaper: false);
         var session = store.Create("gpt-4o", _cfg);
-        var path = Path.Combine(_sessionsDir, session.Id + ".json");
-        File.Exists(path).Should().BeTrue();
+        Directory.GetFiles(_sessionsDir, $"*_{session.Id}.jsonl").Should().HaveCount(1);
 
         store.Delete(session.Id);
 
         store.TryGet(session.Id).Should().BeNull();
-        File.Exists(path).Should().BeFalse();
+        Directory.GetFiles(_sessionsDir, $"*_{session.Id}.jsonl").Should().BeEmpty();
     }
 
+    [Fact]
+    public void Migrates_legacy_blob_into_unified_format_on_construction()
+    {
+        Directory.CreateDirectory(_legacyDir);
+        var legacyPath = Path.Combine(_legacyDir, "sess_deadbeef.json");
+        File.WriteAllText(legacyPath, """
+            {"Id":"sess_deadbeef","StartedAt":"2026-01-01T00:00:00Z","Model":"gpt-4o",
+             "TurnCount":2,"PlanMode":true,
+             "Messages":[{"Role":"user","Content":"hello legacy"}]}
+            """);
 
+        using var store = new AcpSessionStore(_cfg, _settings, startReaper: false);
+
+        var got = store.TryGet("sess_deadbeef");
+        got.Should().NotBeNull();
+        got!.Model.Should().Be("gpt-4o");
+        got.TurnCount.Should().Be(2);
+        got.PlanMode.Should().BeTrue();
+        got.Messages.Should().ContainSingle().Which.Content.Should().Be("hello legacy");
+
+        File.Exists(legacyPath).Should().BeFalse("the original blob is moved aside after migration");
+        File.Exists(Path.Combine(_legacyDir, "migrated", "sess_deadbeef.json")).Should().BeTrue();
+    }
 
     [Fact]
-    public void Hydrate_quarantines_unparseable_json_as_dot_corrupt()
+    public void Migration_quarantines_unparseable_legacy_blob()
     {
-        Directory.CreateDirectory(_sessionsDir);
-        var bogusPath = Path.Combine(_sessionsDir, "sess_garbage.json");
+        Directory.CreateDirectory(_legacyDir);
+        var bogusPath = Path.Combine(_legacyDir, "sess_garbage.json");
         File.WriteAllText(bogusPath, "{ this is not valid JSON");
 
         using var store = new AcpSessionStore(_cfg, _settings, startReaper: false);
@@ -274,42 +310,29 @@ public sealed class AcpSessionStoreTests : IDisposable
     }
 
     [Fact]
-    public void Hydrate_skips_corrupt_files_without_throwing()
+    public void Migration_quarantines_blob_with_invalid_id()
     {
-        Directory.CreateDirectory(_sessionsDir);
-        File.WriteAllText(Path.Combine(_sessionsDir, "sess_bad1.json"), "not json");
-        File.WriteAllText(Path.Combine(_sessionsDir, "sess_bad2.json"), "{ \"id\": broken }");
+        Directory.CreateDirectory(_legacyDir);
+        var p = Path.Combine(_legacyDir, "sess_badid.json");
+        File.WriteAllText(p, "{\"Id\":\"sess_zzz!!!\",\"StartedAt\":\"2026-01-01T00:00:00Z\",\"Messages\":[]}");
 
+        using var store = new AcpSessionStore(_cfg, _settings, startReaper: false);
 
+        File.Exists(p).Should().BeFalse("a blob with an invalid id must be quarantined, not migrated");
+        File.Exists(p + ".corrupt").Should().BeTrue();
+        Directory.GetFiles(_sessionsDir, "*.jsonl").Should().BeEmpty("nothing should be migrated for an invalid id");
+    }
 
-        using (var seed = new AcpSessionStore(_cfg, _settings, startReaper: false))
-            seed.Create("gpt-4o", _cfg);
-
+    [Fact]
+    public void Migration_skips_corrupt_files_without_throwing()
+    {
+        Directory.CreateDirectory(_legacyDir);
+        File.WriteAllText(Path.Combine(_legacyDir, "sess_bad1.json"), "not json");
+        File.WriteAllText(Path.Combine(_legacyDir, "sess_bad2.json"), "{ \"id\": broken }");
 
         Action ctor = () => { using var _ = new AcpSessionStore(_cfg, _settings, startReaper: false); };
         ctor.Should().NotThrow();
     }
-
-
-
-    [Fact]
-    public void Constructor_falls_back_to_cfg_DataDirectory_when_settings_dir_unwritable()
-    {
-
-
-
-        var unwritable = OperatingSystem.IsWindows()
-            ? @"Z:\definitely\not\writable\openmono-sessions"
-            : "/proc/openmono-sessions-" + Guid.NewGuid().ToString("N");
-        var settings = new AcpServerSettings { SessionTtlHours = 24, SessionsDirectory = unwritable };
-
-        using var store = new AcpSessionStore(_cfg, settings, startReaper: false);
-
-        store.Directory.Should().Be(Path.Combine(_cfg.DataDirectory, "acp-sessions"));
-        Directory.Exists(store.Directory).Should().BeTrue();
-    }
-
-
 
     [Fact]
     public async Task RegisterPause_and_TryResolvePause_complete_the_TCS_with_response()
@@ -377,8 +400,14 @@ public sealed class AcpSessionStoreTests : IDisposable
         session.RememberPermission("Bash|x", allow: true);
         session.RememberPermission("Bash|y", allow: false);
 
-        session.TryGetRememberedPermission("Bash|x").Should().BeTrue();
-        session.TryGetRememberedPermission("Bash|y").Should().BeFalse();
+        var cachedX = session.TryGetRememberedPermission("Bash|x");
+        cachedX.Should().NotBeNull();
+        cachedX.Value.Allow.Should().BeTrue();
+
+        var cachedY = session.TryGetRememberedPermission("Bash|y");
+        cachedY.Should().NotBeNull();
+        cachedY.Value.Allow.Should().BeFalse();
+
         session.TryGetRememberedPermission("Bash|never-asked").Should().BeNull();
     }
 
@@ -391,12 +420,13 @@ public sealed class AcpSessionStoreTests : IDisposable
         session.TryGetRememberedUserInput("never-asked").Should().BeNull();
     }
 
-
-
     private static AcpSession NewBareSession() => new()
     {
-        Id = "sess_test",
-        StartedAt = DateTime.UtcNow,
-        Model = "test-model",
+        State = new SessionState
+        {
+            Id = "sess_test",
+            StartedAt = DateTime.UtcNow,
+            Model = "test-model",
+        },
     };
 }

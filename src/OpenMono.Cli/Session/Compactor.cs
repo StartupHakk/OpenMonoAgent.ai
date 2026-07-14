@@ -199,7 +199,9 @@ public sealed class Compactor
 
     private static int EstimateTokens(IReadOnlyList<Message> messages)
     {
-        var totalChars = messages.Sum(m => (m.Content?.Length ?? 0) + 20);
+        var totalChars = messages.Sum(m => (m.Content?.Length ?? 0)
+            + (m.ToolCalls?.Sum(c => c.Arguments?.Length ?? 0) ?? 0)
+            + 20);
         return totalChars / 4;
     }
 
@@ -207,16 +209,40 @@ public sealed class Compactor
     {
         var nonSystem = messages.Where(m => m.Role != MessageRole.System).ToList();
         var turns = 0;
-        var result = new List<Message>();
+        var startIndex = nonSystem.Count;
 
         for (var i = nonSystem.Count - 1; i >= 0 && turns < keepTurns; i--)
         {
-            result.Insert(0, nonSystem[i]);
+            startIndex = i;
             if (nonSystem[i].Role == MessageRole.User)
                 turns++;
         }
 
-        return result;
+        // A pending tool call awaiting a permission decision can outlive several user turns
+        // (queued permissions). Never let it fall into the summarized portion — resolving it
+        // later needs to find this exact message still in history.
+        var pendingIndex = FindEarliestUnansweredToolCallIndex(nonSystem);
+        if (pendingIndex is int p && p < startIndex)
+            startIndex = p;
+
+        return nonSystem.Skip(startIndex).ToList();
+    }
+
+    private static int? FindEarliestUnansweredToolCallIndex(List<Message> nonSystem)
+    {
+        var answered = nonSystem
+            .Where(m => m.Role == MessageRole.Tool && m.ToolCallId is not null)
+            .Select(m => m.ToolCallId!)
+            .ToHashSet();
+
+        for (var i = 0; i < nonSystem.Count; i++)
+        {
+            if (nonSystem[i].Role == MessageRole.Assistant
+                && nonSystem[i].ToolCalls is { Count: > 0 } calls
+                && calls.Any(c => !answered.Contains(c.Id)))
+                return i;
+        }
+        return null;
     }
 
     private static string BuildConversationText(List<Message> messages)

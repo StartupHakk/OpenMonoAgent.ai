@@ -1,5 +1,6 @@
 using OpenMono.Commands;
 using OpenMono.Permissions;
+using OpenMono.Playbooks;
 using OpenMono.Rendering;
 
 namespace OpenMono.Acp;
@@ -31,8 +32,15 @@ public sealed class AcpInputReaderAdapter : IInputReader
     public async Task<PermissionResponse> AskPermissionAsync(string toolName, string summary, CancellationToken ct)
     {
         var dangerous = LooksDestructive(toolName, summary);
-        var allow = await _interaction.RequestPermissionAsync(toolName, summary, dangerous, ct);
-        return allow ? PermissionResponse.Allow : PermissionResponse.Deny;
+        var (allow, scope) = await _interaction.RequestPermissionAsync(toolName, summary, dangerous, ct);
+        // Map (allow, scope) back to PermissionResponse enum
+        return (allow, scope) switch
+        {
+            (true, "session") => PermissionResponse.AllowAll,
+            (true, _) => PermissionResponse.Allow,
+            (false, "session") => PermissionResponse.DenyAll,
+            _ => PermissionResponse.Deny
+        };
     }
 
     public async Task<string> AskUserAsync(string question, CancellationToken ct)
@@ -41,7 +49,10 @@ public sealed class AcpInputReaderAdapter : IInputReader
         return value ?? string.Empty;
     }
 
-
+    public async Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct)
+    {
+        return await _interaction.RequestPlaybookApprovalAsync(plan, ct);
+    }
 
     public void EnableCommandSuggestions(CommandRegistry registry) { }
     public string ReadInput() => string.Empty;

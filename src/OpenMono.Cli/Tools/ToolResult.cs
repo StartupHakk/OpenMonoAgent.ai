@@ -72,7 +72,7 @@ public sealed record ToolResult
 
     public ToolResult WithDiff(string? diff) =>
         diff is null ? this : this with { Diff = diff };
-        
+
     public IReadOnlyList<ImagePart>? Images { get; init; }
     public ToolResult WithImages(IReadOnlyList<ImagePart> images) => this with { Images = images };
 

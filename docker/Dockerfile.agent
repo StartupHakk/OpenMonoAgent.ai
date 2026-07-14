@@ -44,6 +44,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     nodejs \
     npm \
+    python3-dev \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # HOME for the docker-compose TUI variant; compose mounts ~/.openmono here.
@@ -54,6 +56,11 @@ RUN pip3 install --no-cache-dir --break-system-packages code-review-graph graphi
 
 COPY --from=build /app /usr/local/bin/openmono/
 ENV PATH="/usr/local/bin/openmono:${PATH}"
+
+# Entrypoint wrapper that checks ~/.openmono writability and redirects
+# OPENMONO_DATA_DIR to /tmp when the bind-mount is owned by root/another UID.
+COPY docker/entrypoint.sh /usr/local/bin/openmono-entrypoint.sh
+RUN chmod +x /usr/local/bin/openmono-entrypoint.sh
 
 # Sessions live in /data. ACP callers MUST mount a named volume here
 # (e.g. `-v openmono-sessions-<agent_id>:/data`) for session JSON files to
@@ -74,4 +81,4 @@ ENV ACP_PORT=7475 \
 #   - VS Code extension / acp-smoke.sh: set OPENMONO_ACP_ONLY=1 → headless ACP.
 #   - docker-compose agent service:     set OPENMONO_ACP_ENABLED=1 → TUI + ACP.
 # The image's default (no env, no flag) is the interactive TUI.
-ENTRYPOINT ["openmono"]
+ENTRYPOINT ["/usr/local/bin/openmono-entrypoint.sh"]

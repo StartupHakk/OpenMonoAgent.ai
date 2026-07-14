@@ -1,0 +1,4 @@
+# Pin before production rollout once a known-good Scrapling release is chosen.
+scrapling[fetchers]
+fastapi
+uvicorn[standard]

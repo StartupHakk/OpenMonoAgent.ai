@@ -1,6 +1,7 @@
 using OpenMono.Commands;
 using OpenMono.Config;
 using OpenMono.Permissions;
+using OpenMono.Playbooks;
 using OpenMono.Session;
 
 namespace OpenMono.Rendering;
@@ -45,7 +46,7 @@ public sealed class AnsiTuiRenderer : IRenderer
     public void EnterFullScreen()
     {
         _painter.Sz();
-        _painter.Write($"{AnsiPainter.E}[?1049h{AnsiPainter.E}[?25l{AnsiPainter.E}[2J");
+        _painter.Write($"{AnsiPainter.E}[?1049h{AnsiPainter.E}[?1000h{AnsiPainter.E}[?1006h{AnsiPainter.E}[?25l{AnsiPainter.E}[2J");
         AnsiPainter.Flush();
         _inFullScreen = true;
         _painter.InvalidateCache();
@@ -84,10 +85,14 @@ public sealed class AnsiTuiRenderer : IRenderer
     public void StartAssistantResponse()    => _painter.StartAssistantResponse();
     public void StreamText(string text)     => _painter.StreamText(text);
     public void EndAssistantResponse(TurnMetrics? metrics = null) => _painter.EndAssistantResponse(metrics);
-    public void AppendThinking(string text) => _painter.AppendThinking(text);
-    public void CollapseThinking(int n)     => _painter.CollapseThinking(n);
-    public void ShowWaitingIndicator()      => _painter.ShowWaitingIndicator();
-    public void ClearWaitingIndicator()     => _painter.ClearWaitingIndicator();
+    public void AppendThinking(string text) => _painter.AppendThinking(text, null);
+    public void AppendThinking(string text, string? agentLabel) => _painter.AppendThinking(text, agentLabel);
+    public void CollapseThinking(int n)     => _painter.CollapseThinking(n, null);
+    public void CollapseThinking(int n, string? agentLabel) => _painter.CollapseThinking(n, agentLabel);
+    public void ShowWaitingIndicator(string? label = null) => _painter.ShowWaitingIndicator(label, null);
+    public void ShowWaitingIndicator(string? label, string? agentLabel) => _painter.ShowWaitingIndicator(label, agentLabel);
+    public void ClearWaitingIndicator()     => _painter.ClearWaitingIndicator(null);
+    public void ClearWaitingIndicator(string? agentLabel) => _painter.ClearWaitingIndicator(agentLabel);
 
     private static readonly HashSet<string> _silentTools =
         ["Glob", "FileRead", "FileWrite", "ListDirectory", "ToolSearch", "Grep"];
@@ -118,6 +123,9 @@ public sealed class AnsiTuiRenderer : IRenderer
 
     public Task<PermissionResponse> AskPermissionAsync(string toolName, string summary, CancellationToken ct)
         => _inputReader.AskPermissionAsync(toolName, summary, ct);
+
+    public Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct)
+        => _inputReader.RequestPlaybookApprovalAsync(plan, ct);
 
     public void BeginTurn()
     {

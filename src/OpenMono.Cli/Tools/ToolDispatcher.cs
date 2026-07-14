@@ -22,6 +22,7 @@ public sealed class ToolDispatcher : IDisposable
     private readonly ToolResultCache _cache;
     private readonly ArtifactStore _artifactStore;
     private readonly IToolExecutor _executor;
+    private readonly int _maxReadOnlyConcurrency;
 
     private readonly DoomLoopDetector _doomLoop = new();
 
@@ -36,8 +37,12 @@ public sealed class ToolDispatcher : IDisposable
         CursorStore? cursorStore = null,
         ToolResultCache? cache = null,
         ArtifactStore? artifactStore = null,
-        IToolExecutor? executor = null)
+        IToolExecutor? executor = null,
+        int? maxReadOnlyConcurrency = null)
     {
+        _maxReadOnlyConcurrency = maxReadOnlyConcurrency is { } cap && cap > 0
+            ? cap
+            : Math.Max(1, Environment.ProcessorCount);
         _tools = tools;
         _permissions = permissions;
         _renderer = renderer;
@@ -65,6 +70,8 @@ public sealed class ToolDispatcher : IDisposable
         if (toolCalls.Count == 0)
             return [];
 
+        Log.Info($"[OMA_DISPATCH] ExecuteToolCallsAsync called with {toolCalls.Count} tool(s): {string.Join(", ", toolCalls.Select(tc => tc.Name))}");
+
         if (_session.Meta.DoomLoopDetection && _doomLoop.Check(toolCalls))
         {
             _renderer.WriteWarning("Doom loop detected — same tool calls repeated 3 times");
@@ -76,8 +83,8 @@ public sealed class ToolDispatcher : IDisposable
         var context = BuildToolContext();
         var results = new ToolResult[toolCalls.Count];
 
-        var readOnlyItems = new List<(ToolCall Call, ITool Tool, int Index)>();
-        var writeItems = new List<(ToolCall Call, ITool Tool, int Index)>();
+        var parallelItems = new List<(ToolCall Call, ITool Tool, int Index)>();
+        var sequentialItems = new List<(ToolCall Call, ITool Tool, int Index)>();
 
         for (var i = 0; i < toolCalls.Count; i++)
         {
@@ -90,32 +97,40 @@ public sealed class ToolDispatcher : IDisposable
                 continue;
             }
 
-            if (tool.IsReadOnly && tool.IsConcurrencySafe)
-                readOnlyItems.Add((call, tool, i));
+            if (tool.IsConcurrencySafe)
+                parallelItems.Add((call, tool, i));
             else
-                writeItems.Add((call, tool, i));
+                sequentialItems.Add((call, tool, i));
         }
 
-        if (readOnlyItems.Count > 0)
+        if (parallelItems.Count > 0)
         {
-            var tasks = readOnlyItems.Select(async item =>
+            using var gate = new SemaphoreSlim(_maxReadOnlyConcurrency);
+            var tasks = parallelItems.Select(async item =>
             {
+                await gate.WaitAsync(ct);
                 try
                 {
+                    Log.Info($"[OMA_DISPATCH] Executing (read-only, parallel): {item.Tool.Name}");
                     results[item.Index] = await _executor.ExecuteAsync(item.Call, item.Tool, context, ct);
                 }
                 catch (Exception ex)
                 {
                     results[item.Index] = ToolResult.Crash($"Tool crashed: {ex.Message}", "Report this as a bug.");
                 }
+                finally
+                {
+                    gate.Release();
+                }
             });
             await Task.WhenAll(tasks);
         }
 
-        foreach (var item in writeItems)
+        foreach (var item in sequentialItems)
         {
             try
             {
+                Log.Info($"[OMA_DISPATCH] Executing (write, sequential): {item.Tool.Name}");
                 results[item.Index] = await _executor.ExecuteAsync(item.Call, item.Tool, context, ct);
             }
             catch (Exception ex)
@@ -138,6 +153,7 @@ public sealed class ToolDispatcher : IDisposable
         AskUser = (question, ct) => _renderer.AskUserAsync(question, ct),
         FileHistory = _session.Meta.FileHistory,
         Cursors = _cursorStore,
+        Output = _renderer,
     };
 
     public void Dispose()

@@ -10,10 +10,12 @@ internal sealed class AnsiSuggestionOverlay(AppConfig config, AnsiPainter painte
     private List<(string Name, string Desc)>? _allCommands;
     private List<(string Name, string Desc)> _filteredCmds = [];
     private int _suggestionIdx = -1;
+    private int _suggestionScroll = 0;
     private int _lastDrawnCount = 0;
 
     private List<string> _atResults = [];
     private int _atSearchIdx = -1;
+    private int _atScroll = 0;
 
     internal const int AtMaxDisplay = 10;
 
@@ -92,6 +94,7 @@ internal sealed class AnsiSuggestionOverlay(AppConfig config, AnsiPainter painte
         }
 
         _suggestionIdx = 0;
+        _suggestionScroll = 0;
         visible = true;
         DrawSuggestions(text);
     }
@@ -106,11 +109,12 @@ internal sealed class AnsiSuggestionOverlay(AppConfig config, AnsiPainter painte
         var convH  = layout.ConvH;
         var max    = Math.Min(_filteredCmds.Count, 8);
 
-        // Clear any leftover rows above the new (possibly shorter) list. The
-        // overlay is bottom-aligned, so a previous taller list leaves stale
-        // rows above the new top when the filter narrows. Old rows occupy
-        // convH-_lastDrawnCount+1..convH; new rows occupy convH-max+1..convH;
-        // the stale band is convH-_lastDrawnCount+1..convH-max.
+        if (_suggestionIdx < _suggestionScroll)
+            _suggestionScroll = _suggestionIdx;
+        else if (_suggestionIdx >= _suggestionScroll + max)
+            _suggestionScroll = _suggestionIdx - max + 1;
+        _suggestionScroll = Math.Clamp(_suggestionScroll, 0, Math.Max(0, _filteredCmds.Count - max));
+
         for (var i = 0; i < _lastDrawnCount - max; i++)
         {
             var row = convH - _lastDrawnCount + i + 1;
@@ -123,9 +127,10 @@ internal sealed class AnsiSuggestionOverlay(AppConfig config, AnsiPainter painte
         {
             var row = convH - max + i + 1;
             if (row < 1) continue;
-            var (name, desc) = _filteredCmds[i];
+            var idx = _suggestionScroll + i;
+            var (name, desc) = _filteredCmds[idx];
             painter.MoveTo(1, row);
-            if (i == _suggestionIdx)
+            if (idx == _suggestionIdx)
                 painter.Write(
                     $"{AnsiPainter.BgSugg}{AnsiPainter.Fg}{AnsiPainter.B} {name,-14}{AnsiPainter.R}" +
                     $"{AnsiPainter.BgSugg}{AnsiPainter.Fk} {desc}{AnsiPainter.R}" +
@@ -183,6 +188,7 @@ internal sealed class AnsiSuggestionOverlay(AppConfig config, AnsiPainter painte
 
         _atResults   = newResults;
         _atSearchIdx = 0;
+        _atScroll    = 0;
         visible      = true;
         DrawAtSuggestions(buf);
     }
@@ -194,17 +200,24 @@ internal sealed class AnsiSuggestionOverlay(AppConfig config, AnsiPainter painte
         var mainW  = layout.MainW;
         var convH  = layout.ConvH;
 
+        if (_atSearchIdx < _atScroll)
+            _atScroll = _atSearchIdx;
+        else if (_atSearchIdx >= _atScroll + AtMaxDisplay)
+            _atScroll = _atSearchIdx - AtMaxDisplay + 1;
+        _atScroll = Math.Clamp(_atScroll, 0, Math.Max(0, _atResults.Count - AtMaxDisplay));
+
         for (var i = 0; i < AtMaxDisplay; i++)
         {
             var row = convH - AtMaxDisplay + i + 1;
             if (row < 1) continue;
+            var idx = _atScroll + i;
             painter.MoveTo(1, row);
-            if (i < _atResults.Count)
+            if (idx < _atResults.Count)
             {
-                var rel      = _atResults[i];
+                var rel      = _atResults[idx];
                 var fileName = Path.GetFileName(rel);
                 var dir      = Path.GetDirectoryName(rel)?.Replace('\\', '/') ?? "";
-                if (i == _atSearchIdx)
+                if (idx == _atSearchIdx)
                     painter.Write(
                         $"{AnsiPainter.BgSugg}{AnsiPainter.Fc}{AnsiPainter.B} @{fileName,-20}{AnsiPainter.R}" +
                         $"{AnsiPainter.BgSugg}{AnsiPainter.Fk} {dir}{AnsiPainter.R}" +

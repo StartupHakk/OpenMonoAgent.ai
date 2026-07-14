@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Spectre.Console;
 using OpenMono.Commands;
 using OpenMono.Permissions;
+using OpenMono.Playbooks;
 
 namespace OpenMono.Rendering;
 
@@ -13,6 +14,7 @@ public sealed class TerminalRenderer : IRenderer
     private Task? _thinkingTask;
     private bool _thinkingActive;
     private int _thinkingChars;
+    private string _waitingLabel = "Thinking";
     private readonly Stopwatch _streamStopwatch = new();
     private int _streamTokenCount;
     private bool _streamAtLineStart;
@@ -107,8 +109,14 @@ public sealed class TerminalRenderer : IRenderer
         _console.WriteLine();
     }
 
-    public void ShowWaitingIndicator()
+    public void ShowWaitingIndicator(string? label = null) => ShowWaitingIndicator(label, null);
+
+    public void ShowWaitingIndicator(string? label, string? agentLabel)
     {
+        var baseLabel = string.IsNullOrEmpty(label) ? "Thinking" : label;
+        _waitingLabel = string.IsNullOrEmpty(agentLabel) ? baseLabel : $"{agentLabel} · {baseLabel}";
+        if (_thinkingCts is not null) return;
+
         _thinkingCts = new CancellationTokenSource();
         var ct = _thinkingCts.Token;
         _thinkingTask = Task.Run(async () =>
@@ -118,7 +126,7 @@ public sealed class TerminalRenderer : IRenderer
             while (!ct.IsCancellationRequested)
             {
                 var dots = new string('.', sequence[idx % sequence.Length]);
-                Console.Write($"\r  \u001b[2;36m⠿ Thinking{dots}\u001b[0m\u001b[K");
+                Console.Write($"\r  \u001b[2;36m⠿ {_waitingLabel}{dots}\u001b[0m\u001b[K");
                 Console.Out.Flush();
                 idx++;
                 try { await Task.Delay(200, ct); }
@@ -127,7 +135,9 @@ public sealed class TerminalRenderer : IRenderer
         }, ct);
     }
 
-    public void ClearWaitingIndicator()
+    public void ClearWaitingIndicator() => ClearWaitingIndicator(null);
+
+    public void ClearWaitingIndicator(string? agentLabel)
     {
         if (_thinkingCts is not null)
         {
@@ -135,18 +145,21 @@ public sealed class TerminalRenderer : IRenderer
             _thinkingCts.Dispose();
             _thinkingCts = null;
             _thinkingTask = null;
+            _waitingLabel = "Thinking";
             Console.Write("\r\u001b[K");
             Console.Out.Flush();
         }
     }
 
-    public void AppendThinking(string text)
+    public void AppendThinking(string text) => AppendThinking(text, null);
+
+    public void AppendThinking(string text, string? agentLabel)
     {
         if (!_thinkingActive)
         {
-
             Console.Write("\u001b[s");
-            Console.Write("\n  \u001b[2;36m◈ Thinking\u001b[0m\n  \u001b[2;3;90m");
+            var header = string.IsNullOrEmpty(agentLabel) ? "Thinking" : $"Thinking · {agentLabel}";
+            Console.Write($"\n  \u001b[2;36m◈ {header}\u001b[0m\n  \u001b[2;3;90m");
             _thinkingActive = true;
         }
         Console.Write(text);
@@ -154,14 +167,17 @@ public sealed class TerminalRenderer : IRenderer
         _thinkingChars += text.Length;
     }
 
-    public void CollapseThinking(int charCount)
+    public void CollapseThinking(int charCount) => CollapseThinking(charCount, null);
+
+    public void CollapseThinking(int charCount, string? agentLabel)
     {
         if (!_thinkingActive) return;
         Console.Write("\u001b[0m");
         Console.Write("\u001b[u\u001b[J");
         var approxTok = charCount / 4;
         var tok = approxTok > 0 ? $" [{approxTok} tok]" : "";
-        Console.Write($"\n  \u001b[2;36m◈ Thinking{tok}\u001b[0m\n");
+        var header = string.IsNullOrEmpty(agentLabel) ? "Thinking" : $"Thinking · {agentLabel}";
+        Console.Write($"\n  \u001b[2;36m◈ {header}{tok}\u001b[0m\n");
         Console.Out.Flush();
         _thinkingActive = false;
         _thinkingChars = 0;
@@ -226,7 +242,10 @@ public sealed class TerminalRenderer : IRenderer
             {
                 var genTime = m.TotalElapsed - m.TimeToFirstToken;
                 var evalTps = m.TimeToFirstToken.TotalSeconds > 0.001 ? m.PromptTokens / m.TimeToFirstToken.TotalSeconds : 0;
-                var genTps  = genTime.TotalSeconds > 0.001 ? m.CompletionTokens / genTime.TotalSeconds : 0;
+                // Prefer llama.cpp's server-reported decode rate; fall back to wall-clock if absent.
+                var genTps  = m.GenTokensPerSecond > 0
+                    ? m.GenTokensPerSecond
+                    : (genTime.TotalSeconds > 0.001 ? m.CompletionTokens / genTime.TotalSeconds : 0);
                 var line = $"[dim]TTFT [/]{m.TimeToFirstToken.TotalSeconds:F1}s";
                 if (evalTps > 0) line += $"[dim] · eval [/]{evalTps:F0}/s";
                 if (genTps  > 0) line += $"[dim] · gen [/]{genTps:F0}/s";
@@ -292,8 +311,17 @@ public sealed class TerminalRenderer : IRenderer
         _console.MarkupLine($"  [dim]{Markup.Escape(message)}[/]");
     }
 
+    private static bool IsNonInteractive => Console.IsInputRedirected || Console.IsOutputRedirected;
+
     public Task<string> AskUserAsync(string question, CancellationToken ct)
     {
+        if (IsNonInteractive)
+        {
+            _console.MarkupLine($"  [yellow]⚠ Cannot prompt (non-interactive session): {Markup.Escape(question)}[/]");
+            return Task.FromResult(
+                "[Non-interactive session: cannot ask the user a question. Make a decision based on available information and continue, or stop and report what is blocking.]");
+        }
+
         _console.WriteLine();
         _console.MarkupLine($"  [bold yellow]? {Markup.Escape(question)}[/]");
         var answer = _console.Prompt(
@@ -305,6 +333,13 @@ public sealed class TerminalRenderer : IRenderer
     public Task<PermissionResponse> AskPermissionAsync(
         string toolName, string summary, CancellationToken ct)
     {
+        if (IsNonInteractive)
+        {
+            _console.MarkupLine(
+                $"  [yellow]⚠ {Markup.Escape(toolName)} needs approval but this session is non-interactive (stdin/stdout redirected). Denying.[/]");
+            return Task.FromResult(PermissionResponse.Deny);
+        }
+
         _console.WriteLine();
         var panel = new Panel(Markup.Escape(summary))
         {
@@ -331,9 +366,75 @@ public sealed class TerminalRenderer : IRenderer
         });
     }
 
-    public void WriteToolDiff(string diff) { }
+    public Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct)
+    {
+        if (IsNonInteractive)
+        {
+            _console.MarkupLine(
+                $"  [yellow]⚠ Playbook approval required but this session is non-interactive. Denying.[/]");
+            return Task.FromResult(false);
+        }
 
-    public void WriteToolContent(string toolName, string filePath, string content) { }
+        _console.WriteLine();
+        var stepsStr = string.Join(", ", plan.Steps.Select(s => s.Id));
+        var toolsStr = string.Join(", ", plan.Tools.Select(t => t.Name));
+
+        var summary = $"Playbook: [bold]{Markup.Escape(plan.PlaybookName)}[/]\n\n" +
+                     $"Steps: {Markup.Escape(stepsStr)}\n" +
+                     $"Tools: {Markup.Escape(toolsStr)}";
+
+        var panel = new Panel(summary)
+        {
+            Header = new PanelHeader(" Playbook Approval "),
+            Border = BoxBorder.Rounded,
+            BorderStyle = new Style(Color.Yellow),
+            Padding = new Padding(2, 1),
+        };
+        _console.Write(panel);
+
+        _console.MarkupLine("  [dim][[y]] Allow  [[n]] Deny[/]");
+        var key = _console.Prompt(
+            new TextPrompt<string>("  [yellow]Approve?[/] ")
+                .DefaultValue("n")
+                .AddChoice("y").AddChoice("n"));
+
+        return Task.FromResult(key == "y");
+    }
+
+    public void WriteToolDiff(string diff) 
+    {
+        if (string.IsNullOrWhiteSpace(diff)) return;
+        foreach (var line in diff.Replace("\r\n", "\n").Split('\n'))
+        {
+            var escaped = Markup.Escape(line);
+            var markup = line switch
+            {
+                _ when line.StartsWith("+++") || line.StartsWith("---") => $"  [dim]{escaped}[/]",
+                _ when line.StartsWith("@@") => $"  [cyan]{escaped}[/]",
+                _ when line.StartsWith('+') => $"  [green]{escaped}[/]",
+                _ when line.StartsWith('-') => $"  [red]{escaped}[/]",
+                _ => $"  [grey]{escaped}[/]",
+            };
+            _console.MarkupLine(markup);
+        }
+    }
+
+    public void WriteToolContent(string toolName, string filePath, string content)
+    {
+        if (string.IsNullOrEmpty(content)) return;
+
+        const int maxLines = 20;
+        var lines = content.Replace("\r\n", "\n").Split('\n');
+
+        _console.MarkupLine($"  [dim]{Markup.Escape(filePath)}[/]");
+
+        var show = Math.Min(lines.Length, maxLines);
+        for (var i = 0; i < show; i++)
+            _console.MarkupLine($"  [grey]{Markup.Escape(lines[i])}[/]");
+
+        if (lines.Length > maxLines)
+            _console.MarkupLine($"  [dim]… {lines.Length - maxLines} more line(s)[/]");
+    }
 
     public void WriteTodos(IReadOnlyList<Session.TodoItem> todos)
     {

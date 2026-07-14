@@ -10,23 +10,6 @@ using OpenMono.Utils;
 
 namespace OpenMono.Tools;
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 public sealed class LocalToolExecutor : IToolExecutor
 {
     private readonly TurnJournal _journal;
@@ -38,6 +21,7 @@ public sealed class LocalToolExecutor : IToolExecutor
     private readonly ArtifactStore _artifactStore;
     private readonly HookRunner _hookRunner;
     private readonly IAcpEventSink? _sink;
+    private int _activeToolCount;
 
     public LocalToolExecutor(
         TurnJournal journal,
@@ -100,12 +84,35 @@ public sealed class LocalToolExecutor : IToolExecutor
         }
         _journal.RecordSanityChecked(call.Id);
 
-        if (_session.Meta.PlanMode && !tool.IsReadOnly)
+        // === SEND TOOL START TO CLIENTS IMMEDIATELY ===
+        // A single tool_start is always sent up front so clients can render the proposed
+        // change (e.g. a file diff) before the user decides. If the tool needs permission,
+        // the PermissionEngine emits a separate `permission_request` that the client
+        // correlates back to THIS tool card by its call id. We deliberately do NOT emit a
+        // distinct "start with permission" event: it carried an unrelated id from the
+        // permission_request and produced a duplicate, non-functional permission card.
+        if (_sink is not null)
         {
-            var planModeError = $"Plan mode is active — investigate and write a plan, do not edit files. " +
-                                $"Call ExitPlanMode with your completed plan to resume, then retry {call.Name}.";
-            _journal.RecordPermissionDecided(call.Id, false, "plan_mode_active");
+            Log.Info($"[OMA_TOOLSTART] Sending tool_start: {call.Name}");
+            await _sink.OnToolStartAsync(call.Id, call.Name, SummarizeToolArgs(call.Arguments), call.Arguments);
+        }
+
+        // HARD plan-mode gate. Enforced here regardless of the system prompt or tool-def
+        // filtering — a weak model can still emit a call for a tool it was never offered.
+        // PlanModePolicy is the single allowlist; blocked calls never execute and surface a
+        // clean, generic "blocked in plan mode" signal to the UI (start + failed end).
+        Log.Info($"[OMA_MODE_GATE] PlanMode={_session.Meta.PlanMode}, Tool={call.Name}, IsReadOnly={tool.IsReadOnly}");
+        if (_session.Meta.PlanMode && !PlanModePolicy.IsToolAllowed(tool))
+        {
+            var planModeError = PlanModePolicy.BlockedMessage(call.Name);
+            _journal.RecordPermissionDecided(call.Id, false, "plan_mode_blocked");
             _output.WriteToolDenied(call.Name, planModeError);
+            Log.Info($"[OMA_MODE] Tool '{call.Name}' blocked in plan mode (not in read-only allowlist)");
+            if (_sink is not null)
+            {
+                // OnToolStartAsync already called above, just send end
+                await _sink.OnToolEndAsync(call.Id, call.Name, ok: false, durationMs: 0.0);
+            }
             return ToolResult.Error(planModeError);
         }
 
@@ -113,18 +120,41 @@ public sealed class LocalToolExecutor : IToolExecutor
         bool allowed;
         string? reason;
 
-        if (capabilities.Count > 0)
+        Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: capabilities.Count={capabilities.Count}, AutoApproveWrites={_session.Meta.AutoApproveWrites}, IsReadOnly={tool.IsReadOnly}");
+
+        if (tool.IsReadOnly)
         {
+            // Read-only tools never need user permission, regardless of capabilities
+            // They can read but not write, so no user approval needed
+            Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: AUTO-APPROVED (read-only tool)");
+            allowed = true;
+            reason = null;
+        }
+        else if (_session.Meta.AutoApproveWrites)
+        {
+            // Write tools in auto-approve mode (from approved plan execution)
+            Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: AUTO-APPROVED (AutoApproveWrites)");
+            allowed = true;
+            reason = null;
+        }
+        else if (capabilities.Count > 0)
+        {
+            // Write tools with required capabilities - ask for permission
+            Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: checking {capabilities.Count} capabilities");
             var capDecision = await _permissions.CheckCapabilitiesAsync(tool.Name, capabilities, ct);
             allowed = capDecision.Allowed;
             reason = capDecision.Reason;
+            Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: capability check result: allowed={allowed}");
         }
         else
         {
+            // Write tools without capabilities - use legacy permission check
+            Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: using legacy permission check");
             var permLevel = tool.RequiredPermission(input);
             var legacyDecision = await _permissions.CheckAsync(tool.Name, input, permLevel, ct);
             allowed = legacyDecision.Allowed;
             reason = legacyDecision.Reason;
+            Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: legacy check result: allowed={allowed}");
         }
 
         if (!allowed)
@@ -138,7 +168,11 @@ public sealed class LocalToolExecutor : IToolExecutor
         }
         _journal.RecordPermissionDecided(call.Id, true);
 
-
+        // Send status: processing (tool execution starting now)
+        if (_sink is not null)
+        {
+            await _sink.OnToolStatusAsync(call.Id, "processing");
+        }
 
         if (tool.IsReadOnly && _cache.TryGet(call.Name, input, out var cachedResult) && cachedResult is not null)
         {
@@ -149,7 +183,7 @@ public sealed class LocalToolExecutor : IToolExecutor
             Log.Debug($"Tool cache hit: {call.Name}");
             if (_sink is not null)
             {
-                await _sink.OnToolStartAsync(call.Id, call.Name, SummarizeToolArgs(call.Arguments));
+                // OnToolStartAsync already called above, just send end (cache hit means instant execution)
                 await _sink.OnToolEndAsync(call.Id, call.Name, ok: true, durationMs: 0.0);
             }
             return cachedResult with { ModelPreview = $"[cached] {cachedResult.ModelPreview}" };
@@ -159,19 +193,46 @@ public sealed class LocalToolExecutor : IToolExecutor
         _session.Meta.TokenTracker?.RecordToolUse(call.Name);
         _journal.RecordToolStarted(call.Id);
 
+        // The static WriteToolStart line above is a one-shot print — with nothing further until
+        // the tool returns, a slow tool (a long Bash command, a sub-agent, a big fetch) leaves the
+        // terminal looking frozen. Show a live indicator for the duration of execution instead.
+        // ponytail: label reflects whichever concurrent call started the indicator first when
+        // several concurrency-safe tools overlap; upgrade to a per-call label if that's confusing.
+        if (System.Threading.Interlocked.Increment(ref _activeToolCount) == 1)
+            _output.ShowWaitingIndicator($"Running {call.Name}");
+
+        // OnToolStartAsync already called above (before permission check), don't call again
         var stopwatch = Stopwatch.StartNew();
-        if (_sink is not null)
-            await _sink.OnToolStartAsync(call.Id, call.Name, SummarizeToolArgs(call.Arguments));
 
         ToolResult result;
+
+        CancellationTokenSource? timeoutCts = null;
+        var execCt = ct;
+        if (tool.Timeout is { } toolTimeout && toolTimeout > TimeSpan.Zero)
+        {
+            timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(toolTimeout);
+            execCt = timeoutCts.Token;
+        }
+
         try
         {
-            await _hookRunner.RunPreToolUseHooksAsync(call.Name, call.Arguments, ct);
+            var hookDecision = await _hookRunner.RunPreToolUseHooksAsync(call.Name, call.Arguments, ct);
+            if (!hookDecision.Allowed)
+            {
+                var hookReason = hookDecision.Reason ?? "Blocked by a PreToolUse hook";
+                Log.Info($"Tool blocked by PreToolUse hook: {call.Name} — {hookReason}");
+                result = ToolResult.PermissionDenied(
+                    $"{call.Name} was blocked by a PreToolUse hook: {hookReason}. " +
+                    "Do not retry; address the hook's requirement or ask the user how to proceed.");
+            }
+            else
+            {
+                Log.Debug($"Tool executing: {call.Name}");
+                result = await tool.ExecuteAsync(input, ctx, execCt);
 
-            Log.Debug($"Tool executing: {call.Name}");
-            result = await tool.ExecuteAsync(input, ctx, ct);
-
-            await _hookRunner.RunPostToolUseHooksAsync(call.Name, result.Content, ct);
+                await _hookRunner.RunPostToolUseHooksAsync(call.Name, result.Content, ct);
+            }
 
             if (result.Class == ResultClass.Success && result.ModelPreview.Length > _artifactStore.LargeOutputThreshold)
             {
@@ -221,6 +282,21 @@ public sealed class LocalToolExecutor : IToolExecutor
                 }
             }
         }
+        catch (PendingUserResponseException)
+        {
+            // User interaction pending (permission, input, etc.) — propagate to turn runner
+            throw;
+        }
+        catch (OperationCanceledException) when (timeoutCts is { IsCancellationRequested: true } && !ct.IsCancellationRequested)
+        {
+            var secs = tool.Timeout!.Value.TotalSeconds;
+            _journal.RecordToolCrashed(call.Id, "Timeout", $"timed out after {secs:F0}s");
+            _output.WriteToolError(call.Name, $"timed out after {secs:F0}s");
+            Log.Warn($"Tool timed out: {call.Name} after {secs:F0}s");
+            result = ToolResult.StateConflict(
+                $"{call.Name} timed out after {secs:F0}s",
+                "Narrow the input (e.g. a more specific path or pattern) and retry.");
+        }
         catch (OperationCanceledException)
         {
             _journal.RecordToolCrashed(call.Id, "OperationCanceledException", "cancelled");
@@ -234,10 +310,20 @@ public sealed class LocalToolExecutor : IToolExecutor
             Log.Error($"Tool exception: {call.Name}", ex);
             result = ToolResult.Crash($"Tool execution failed: {ex.Message}", "Try with different parameters or report this as a bug.");
         }
+        finally
+        {
+            timeoutCts?.Dispose();
+            if (System.Threading.Interlocked.Decrement(ref _activeToolCount) == 0)
+                _output.ClearWaitingIndicator();
+        }
 
         stopwatch.Stop();
         if (_sink is not null)
+        {
+            // Send status before tool_end
+            await _sink.OnToolStatusAsync(call.Id, result.IsError ? "failed" : "success");
             await _sink.OnToolEndAsync(call.Id, call.Name, ok: !result.IsError, durationMs: stopwatch.Elapsed.TotalMilliseconds);
+        }
 
         return result;
     }

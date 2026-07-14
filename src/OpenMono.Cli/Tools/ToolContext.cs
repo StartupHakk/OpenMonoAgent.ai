@@ -1,7 +1,9 @@
 using OpenMono.History;
+using OpenMono.Rendering;
 using OpenMono.Session;
 using OpenMono.Permissions;
 using OpenMono.Config;
+using OpenMono.Acp;
 
 namespace OpenMono.Tools;
 
@@ -21,4 +23,30 @@ public sealed class ToolContext
     public Action? EndResponse { get; init; }
     public Action<string>? StreamText { get; init; }
     public Action<string>? OnDebug { get; init; }
+
+    public IOutputSink? Output { get; init; }
+
+    public IAcpUserInteraction? Interaction { get; init; }
+
+    public int AgentDepth { get; init; } = 0;
+
+    public ToolContext WithAgentDepth(int newDepth) => new()
+    {
+        ToolRegistry     = this.ToolRegistry,
+        Session          = this.Session,
+        Permissions      = this.Permissions,
+        Config           = this.Config,
+        WorkingDirectory = this.WorkingDirectory,
+        WriteOutput      = this.WriteOutput,
+        AskUser          = this.AskUser,
+        FileHistory      = this.FileHistory,
+        Cursors          = this.Cursors,
+        BeginResponse    = this.BeginResponse,
+        EndResponse      = this.EndResponse,
+        StreamText       = this.StreamText,
+        OnDebug          = this.OnDebug,
+        Output           = this.Output,
+        Interaction      = this.Interaction,
+        AgentDepth       = newDepth,
+    };
 }

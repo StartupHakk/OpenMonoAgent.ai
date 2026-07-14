@@ -17,9 +17,25 @@ public sealed class ArtifactStore : IDisposable
 
     public ArtifactStore(string sessionId, string dataDirectory, int? largeOutputThreshold = null)
     {
-        _artifactDirectory = Path.Combine(dataDirectory, "artifacts", sessionId);
         _largeOutputThreshold = largeOutputThreshold ?? DefaultLargeOutputThreshold;
-        Directory.CreateDirectory(_artifactDirectory);
+        _artifactDirectory = Path.Combine(dataDirectory, "artifacts", sessionId);
+
+        try
+        {
+            Directory.CreateDirectory(_artifactDirectory);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            _artifactDirectory = Path.Combine(
+                Path.GetTempPath(), "openmono", "artifacts", sessionId);
+            Directory.CreateDirectory(_artifactDirectory);
+        }
+        catch (IOException)
+        {
+            _artifactDirectory = Path.Combine(
+                Path.GetTempPath(), "openmono", "artifacts", sessionId);
+            Directory.CreateDirectory(_artifactDirectory);
+        }
     }
 
     public static ArtifactStore ForSession(SessionState session, string dataDirectory)
@@ -42,7 +58,19 @@ public sealed class ArtifactStore : IDisposable
         var artifactId = GenerateArtifactId(toolName, content);
         var artifactPath = Path.Combine(_artifactDirectory, $"{artifactId}.txt");
 
-        File.WriteAllText(artifactPath, content, Encoding.UTF8);
+        try
+        {
+            File.WriteAllText(artifactPath, content, Encoding.UTF8);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return result;
+        }
+        catch (IOException)
+        {
+            return result;
+        }
+
         var bytes = new FileInfo(artifactPath).Length;
 
         var metadata = new ArtifactMetadata(

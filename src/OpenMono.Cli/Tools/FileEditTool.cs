@@ -17,7 +17,7 @@ public sealed class FileEditTool : ToolBase
         .AddBoolean("replace_all", "Replace all occurrences (default: false)")
         .Require("file_path", "old_string", "new_string");
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
     {
         var filePath = input.TryGetProperty("file_path", out var fp) ? fp.GetString() : null;
         if (string.IsNullOrEmpty(filePath))
@@ -61,17 +61,16 @@ public sealed class FileEditTool : ToolBase
                     $"old_string found {occurrences} times in {resolvedPath}. " +
                     "Provide more context to make it unique, or set replace_all=true.");
 
+            var guard = SecretScanner.Guard(newString, context.Config.SecretWrites);
+            if (guard.Blocked)
+                return ToolResult.PermissionDenied(guard.Message);
+            var effectiveNew = guard.Content;
+
             string updated;
             if (replaceAll)
-                updated = content.Replace(oldString, newString);
+                updated = content.Replace(oldString, effectiveNew);
             else
-                updated = ReplaceFirst(content, oldString, newString);
-
-            var secrets = SecretScanner.Scan(newString);
-            var secretWarning = secrets.Count > 0
-                ? $"\n⚠ Potential secret(s) detected in replacement text: {string.Join(", ", secrets.Select(SecretScanner.RuleIdToLabel))}. " +
-                  "Verify this file should contain credentials before committing."
-                : string.Empty;
+                updated = ReplaceFirst(content, oldString, effectiveNew);
 
             context.FileHistory?.RecordBefore(resolvedPath, Name, context.Session.Messages.Count);
 
@@ -80,9 +79,9 @@ public sealed class FileEditTool : ToolBase
             context.FileHistory?.RecordAfter(resolvedPath);
 
             var replacements = replaceAll ? occurrences : 1;
-            var diff = InlineDiff.FromEdit(oldString, newString, resolvedPath);
+            var diff = InlineDiff.FromEdit(oldString, effectiveNew, resolvedPath);
             return ToolResult.Success(
-                $"Replaced {replacements} occurrence(s) in {resolvedPath}{secretWarning}")
+                $"Replaced {replacements} occurrence(s) in {resolvedPath}{guard.Message}")
                 .WithDiff(diff);
         }
         catch (UnauthorizedAccessException)

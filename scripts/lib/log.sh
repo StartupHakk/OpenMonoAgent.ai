@@ -199,6 +199,22 @@ clear_setup_prefs() {
     rm -f "$_SETUP_PREFS_FILE"
 }
 
+# flush_stdin — discard input buffered before an interactive prompt.
+# A long step (model/driver download, apt, docker build) can accumulate stray
+# keystrokes — usually impatient Enter presses — in the terminal's input
+# buffer. Without draining them, the next `read` consumes one immediately and
+# silently auto-selects the prompt's default, so the user never sees the prompt
+# they just "answered". Only drains a real TTY, so piped/unattended stdin
+# (heredocs, CI) is left intact. No-ops on shells too old for `read -t <frac>`.
+flush_stdin() {
+    [ -t 0 ] || return 0
+    local _discard
+    # Tiny non-zero timeout: each buffered line is consumed at once; when the
+    # buffer empties, read blocks for the timeout, fails (>128), and we stop.
+    while read -r -t 0.1 _discard 2>/dev/null; do :; done
+    return 0
+}
+
 # role_prompt — interactive role selection (used during setup if OPENMONO_ROLE not set)
 # Sets $OPENMONO_ROLE to: full, inference, or agent
 role_prompt() {
@@ -218,6 +234,9 @@ role_prompt() {
         fi
     fi
 
+    # Drop keystrokes buffered during any prior long step so they don't
+    # auto-answer this prompt.
+    flush_stdin
     _role_invalid=0
     while true; do
         echo ""

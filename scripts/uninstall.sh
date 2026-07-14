@@ -11,10 +11,11 @@ set -uo pipefail
 # Reverses install.sh (always) and — with --deep — install_prereqs.sh.
 #
 # What this script removes by default (safe, OpenMono-only):
-#   • llama-server + agent Docker containers (via docker compose down)
+#   • llama-server + agent + gateway + searxng + scrapling Docker containers
 #   • Locally-built / pulled images tied to the compose file
 #   • $INSTALL_DIR/docker/docker-compose.override.yml   (GPU/CPU override)
 #   • /usr/local/bin/openmono                            (CLI symlink)
+#   • frp tunnel: frpc binary/pkg + config + service     (from 'openmono tunnel setup')
 #   • $HOME/.openmono/                                   (graph-db, prefs, logs, env)
 #   • Power profile is restored to 'balanced'            (Linux + powerprofilesctl only)
 #   • RC-file additions for $HOME/.dotnet PATH/DOTNET_ROOT (.bashrc/.zshrc/.profile)
@@ -159,6 +160,35 @@ rm_path() {
         fi
         if rm -rf "$target" 2>>"$OPENMONO_LOG_FILE"; then
             ok "Removed $label"
+            return 0
+        fi
+        if [ -n "${SUDO:-}" ]; then
+            detail "$label not fully removable as $(id -un 2>/dev/null || echo "$USER") — retrying with $SUDO (container-owned files?)"
+            if $SUDO rm -rf "$target" 2>>"$OPENMONO_LOG_FILE"; then
+                ok "Removed $label (with $SUDO)"
+                return 0
+            fi
+        fi
+        warn "Could not remove $label (permission denied?)"
+    else
+        detail "$label not present — skipping"
+    fi
+}
+
+# sudo_rm_path — like rm_path, but elevates with $SUDO. Used for the root-owned
+# files frpc's `openmono tunnel setup` installs (/usr/local/bin/frpc, /etc/frp,
+# the systemd unit). Respects --dry-run; soft-fails so a denied rm doesn't abort.
+sudo_rm_path() {
+    local target="$1"
+    local label="${2:-$target}"
+    if [ -e "$target" ] || [ -L "$target" ]; then
+        if [ "$DRY_RUN" = "1" ]; then
+            printf "  ${DIM}[dry-run]${NC} %s rm -rf %s\n" "$SUDO" "$target"
+            _log "DRY-RUN: $SUDO rm -rf $target"
+            return 0
+        fi
+        if $SUDO rm -rf "$target" 2>>"$OPENMONO_LOG_FILE"; then
+            ok "Removed $label"
         else
             warn "Could not remove $label (permission denied?)"
         fi
@@ -272,21 +302,21 @@ fi
 # bail rather than guessing — better than nuking the wrong directory.
 
 # Compute TOTAL_STEPS up front so the "Step N/M" counter stays accurate.
-# Safe mode = 9; --deep on Ubuntu adds pip + docker + nvidia + dotnet = 13;
+# Safe mode = 10; --deep on Ubuntu adds pip + docker + nvidia + dotnet = 14;
 # --deep on macOS only does pip + dotnet (the rest is brew/Docker-Desktop = NO).
 # We resolve the platform briefly here too, just for the step count — the full
 # platform detection happens a few lines down so the rest of the script can use it.
 case "$(uname -s)" in
-    Linux)  _is_ubuntu_quick=0; [ -f /etc/os-release ] && grep -q '^ID=ubuntu' /etc/os-release && _is_ubuntu_quick=1 ;;
+    Linux)  _is_ubuntu_quick=0; [ -f /etc/os-release ] && grep -qE '^(ID=ubuntu|ID=linuxmint|ID_LIKE=.*ubuntu)' /etc/os-release && _is_ubuntu_quick=1 ;;
     *)      _is_ubuntu_quick=0 ;;
 esac
 
 if [ "$DEEP" = "1" ] && [ "$_is_ubuntu_quick" = "1" ]; then
-    TOTAL_STEPS=13
+    TOTAL_STEPS=14
 elif [ "$DEEP" = "1" ]; then
-    TOTAL_STEPS=11
+    TOTAL_STEPS=12
 else
-    TOTAL_STEPS=9
+    TOTAL_STEPS=10
 fi
 
 CURRENT_STEP=0
@@ -331,7 +361,11 @@ case "$(uname -s)" in
         if [ -f /etc/os-release ]; then
             # shellcheck disable=SC1091
             . /etc/os-release
-            [ "${ID:-}" = "ubuntu" ] && IS_UBUNTU=1
+            # Ubuntu and its apt-compatible derivatives (Linux Mint, Pop!_OS, …)
+            # install the same packages the same way, so --deep can reverse them.
+            if [ "${ID:-}" = "ubuntu" ] || [ "${ID:-}" = "linuxmint" ] || printf '%s' "${ID_LIKE:-}" | grep -qw ubuntu; then
+                IS_UBUNTU=1
+            fi
         fi
         ;;
     Darwin) PLATFORM="macos" ;;
@@ -353,8 +387,9 @@ fi
 
 echo ""
 printf "  ${BOLD}Will remove:${NC}\n"
-[ -n "$INSTALL_DIR" ] && printf "    • OpenMono Docker containers, images, and override file\n"
+[ -n "$INSTALL_DIR" ] && printf "    • OpenMono Docker containers (llama, agent, gateway, searxng, scrapling), images, and override file\n"
 printf "    • /usr/local/bin/openmono symlink (if writable)\n"
+printf "    • frp tunnel — frpc service, binary/package, and config (from 'openmono tunnel setup')\n"
 printf "    • \$HOME/.openmono/ (prefs, graph-db, logs, env)\n"
 printf "    • Power profile reset to 'balanced' (if powerprofilesctl is present)\n"
 printf "    • .NET PATH/DOTNET_ROOT block from your shell rc files\n"
@@ -393,7 +428,7 @@ if [ -n "$INSTALL_DIR" ] && [ -d "$INSTALL_DIR/docker" ] && command -v docker &>
         ok "Compose stack torn down"
 
         # Belt-and-suspenders: containers named explicitly in the compose file.
-        for c in llama-server openmono-agent; do
+        for c in llama-server openmono-agent openmono-gateway openmono-searxng openmono-scrapling; do
             if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$c"; then
                 info "Force-removing leftover container: $c"
                 do_run docker rm -f "$c"
@@ -405,7 +440,9 @@ if [ -n "$INSTALL_DIR" ] && [ -d "$INSTALL_DIR/docker" ] && command -v docker &>
         for img in \
             ghcr.io/ggml-org/llama.cpp:server \
             ghcr.io/ggml-org/llama.cpp:server-cuda \
-            ghcr.io/ggml-org/llama.cpp:server-vulkan
+            ghcr.io/ggml-org/llama.cpp:server-vulkan \
+            caddy:2-alpine \
+            searxng/searxng:latest
         do
             if docker image inspect "$img" &>/dev/null 2>&1; then
                 if confirm "Remove pulled image $img?" "Y"; then
@@ -470,7 +507,67 @@ else
     detail "/usr/local/bin/openmono not present — skipping"
 fi
 
-# ── Step 6: Remove $HOME/.openmono/ ──────────────────────────────────────────
+# ── Step 6: Stop and remove the frp tunnel (frpc) ────────────────────────────
+# Reverses `openmono tunnel setup` (scripts/setup-tunnel-inference.sh):
+#   Linux : systemd unit + /usr/local/bin/frpc + /etc/frp — all root-owned, so
+#           every removal here elevates via $SUDO (or prints manual steps when
+#           neither root nor sudo is available).
+#   macOS : the Homebrew frpc service + package + ~/.config/frp + brew etc/frp.
+# The relay credential cache (~/.openmono/relay.json) is removed with
+# ~/.openmono in the next step.
+
+next_step "Removing frp tunnel (frpc)"
+
+if [ "$PLATFORM" = "macos" ]; then
+    if command -v brew &>/dev/null; then
+        if brew services list 2>/dev/null | grep -q '^frpc'; then
+            info "Stopping frpc Homebrew service..."
+            do_run brew services stop frpc
+        fi
+        if brew list frpc &>/dev/null 2>&1; then
+            if confirm "Uninstall the frpc Homebrew package?" "Y"; then
+                do_run brew uninstall frpc
+                ok "Uninstalled frpc (Homebrew)"
+            else
+                info "Keeping frpc Homebrew package"
+            fi
+        else
+            detail "frpc not installed via Homebrew — skipping"
+        fi
+        # brew service config copied here by setup-tunnel-inference.sh.
+        _brew_frp="$(brew --prefix 2>/dev/null || true)/etc/frp"
+        [ "$_brew_frp" != "/etc/frp" ] && rm_path "$_brew_frp" "Homebrew frp config"
+    else
+        detail "Homebrew not present — skipping frpc package removal"
+    fi
+    rm_path "$HOME/.config/frp" "\$HOME/.config/frp"
+else
+    # Linux: everything frpc installed is root-owned — needs root/sudo.
+    if [ -z "$SUDO" ] && [ "$(id -u)" -ne 0 ]; then
+        warn "frpc files are root-owned but neither root nor sudo is available."
+        warn "Remove them manually:"
+        warn "  sudo systemctl disable --now frpc"
+        warn "  sudo rm -f /etc/systemd/system/frpc.service /usr/local/bin/frpc"
+        warn "  sudo rm -rf /etc/frp && sudo systemctl daemon-reload"
+    else
+        # Stop + disable before deleting the unit (also clears the enable symlink
+        # in multi-user.target.wants that `systemctl enable` created).
+        if command -v systemctl &>/dev/null \
+           && { [ -f /etc/systemd/system/frpc.service ] \
+                || systemctl list-unit-files 2>/dev/null | grep -q '^frpc\.service'; }; then
+            info "Stopping and disabling frpc systemd service..."
+            do_run $SUDO systemctl disable --now frpc
+        else
+            detail "frpc systemd service not present — skipping stop/disable"
+        fi
+        sudo_rm_path "/etc/systemd/system/frpc.service" "frpc systemd unit"
+        command -v systemctl &>/dev/null && do_run $SUDO systemctl daemon-reload
+        sudo_rm_path "/usr/local/bin/frpc" "/usr/local/bin/frpc"
+        sudo_rm_path "/etc/frp"            "/etc/frp (frpc config)"
+    fi
+fi
+
+# ── Step 7: Remove $HOME/.openmono/ ──────────────────────────────────────────
 
 next_step "Removing $HOME/.openmono/ state"
 
@@ -487,7 +584,7 @@ else
     detail "\$HOME/.openmono not present — skipping"
 fi
 
-# ── Step 7: Strip .NET block from shell rc files ─────────────────────────────
+# ── Step 8: Strip .NET block from shell rc files ─────────────────────────────
 
 next_step "Stripping .NET SDK PATH from shell rc files"
 
@@ -495,7 +592,7 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
     strip_rc_block "$rc"
 done
 
-# ── Step 8: Restore power profile (Linux only) ───────────────────────────────
+# ── Step 9: Restore power profile (Linux only) ───────────────────────────────
 
 next_step "Restoring power profile"
 
@@ -519,7 +616,7 @@ else
     detail "powerprofilesctl not present — skipping"
 fi
 
-# ── Step 9: Remove the cloned repository (opt-in) ────────────────────────────
+# ── Step 10: Remove the cloned repository (opt-in) ───────────────────────────
 
 next_step "Removing the cloned repository"
 
@@ -607,7 +704,7 @@ if [ -z "$SUDO" ] && [ "$(id -u)" -ne 0 ]; then
     die "Cannot remove system packages without root."
 fi
 
-# ── Step 10: Remove pip --user packages ──────────────────────────────────────
+# ── Step 11: Remove pip --user packages ──────────────────────────────────────
 
 next_step "Uninstalling pip --user packages"
 pip_uninstall code-review-graph
@@ -615,7 +712,7 @@ pip_uninstall code-review-graph
 pip_uninstall graphifyy
 pip_uninstall graphify  # defensive: older versions may have used this name
 
-# ── Step 11: Remove Docker (apt) ─────────────────────────────────────────────
+# ── Step 12: Remove Docker (apt) ─────────────────────────────────────────────
 
 next_step "Removing Docker (apt packages + repo + keyring)"
 
@@ -651,7 +748,7 @@ else
     fi
 fi
 
-# ── Step 12: Remove NVIDIA stack ─────────────────────────────────────────────
+# ── Step 13: Remove NVIDIA stack ─────────────────────────────────────────────
 
 next_step "Removing NVIDIA stack (drivers + CUDA + container toolkit)"
 
@@ -698,7 +795,7 @@ else
     fi
 fi
 
-# ── Step 13: Remove .NET SDK ─────────────────────────────────────────────────
+# ── Step 14: Remove .NET SDK ─────────────────────────────────────────────────
 
 next_step "Removing .NET 10 SDK"
 

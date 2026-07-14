@@ -3,8 +3,15 @@ using OpenMono.Config;
 
 namespace OpenMono.Hooks;
 
+public sealed record HookDecision(bool Allowed, string? Reason)
+{
+    public static readonly HookDecision Allow = new(true, null);
+}
+
 public sealed class HookRunner
 {
+    private const int BlockExitCode = 2;
+
     private readonly AppConfig _config;
     private readonly Action<string>? _warn;
 
@@ -22,7 +29,7 @@ public sealed class HookRunner
         }
     }
 
-    public async Task RunPreToolUseHooksAsync(
+    public async Task<HookDecision> RunPreToolUseHooksAsync(
         string toolName, string toolInput, CancellationToken ct)
     {
         var vars = new Dictionary<string, string>
@@ -44,8 +51,18 @@ public sealed class HookRunner
                     continue;
             }
 
-            await ExecuteHookAsync(hook, vars, ct);
+            var exec = await ExecuteHookAsync(hook, vars, ct);
+            if (exec.ExitCode == BlockExitCode)
+            {
+                var reason =
+                    !string.IsNullOrWhiteSpace(exec.Stderr) ? exec.Stderr.Trim()
+                    : !string.IsNullOrWhiteSpace(exec.Stdout) ? exec.Stdout.Trim()
+                    : "Blocked by a PreToolUse hook";
+                return new HookDecision(false, reason);
+            }
         }
+
+        return HookDecision.Allow;
     }
 
     public async Task RunPostToolUseHooksAsync(
@@ -68,7 +85,9 @@ public sealed class HookRunner
         }
     }
 
-    private async Task ExecuteHookAsync(
+    private readonly record struct HookExecution(int ExitCode, string Stdout, string Stderr);
+
+    private async Task<HookExecution> ExecuteHookAsync(
         HookDefinition hook, Dictionary<string, string> variables, CancellationToken ct)
     {
         var command = hook.Run;
@@ -92,7 +111,7 @@ public sealed class HookRunner
             if (process is null)
             {
                 _warn?.Invoke($"Hook failed to start: {command}");
-                return;
+                return new HookExecution(-1, "", "");
             }
 
             using (process)
@@ -100,23 +119,30 @@ public sealed class HookRunner
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 timeoutCts.CancelAfter(TimeSpan.FromSeconds(30));
 
+                var stdoutTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+                var stderrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
                 await process.WaitForExitAsync(timeoutCts.Token);
+                var stdout = await stdoutTask;
+                var stderr = await stderrTask;
 
-                if (process.ExitCode != 0)
+                if (process.ExitCode != 0 && process.ExitCode != BlockExitCode)
                 {
-                    var stderr = await process.StandardError.ReadToEndAsync(ct);
                     _warn?.Invoke($"Hook exited with code {process.ExitCode}: {command}" +
                         (string.IsNullOrEmpty(stderr) ? "" : $"\n  {stderr.Trim()}"));
                 }
+
+                return new HookExecution(process.ExitCode, stdout, stderr);
             }
         }
         catch (OperationCanceledException)
         {
             _warn?.Invoke($"Hook timed out (30s): {command}");
+            return new HookExecution(-1, "", "");
         }
         catch (Exception ex)
         {
             _warn?.Invoke($"Hook failed: {command} — {ex.Message}");
+            return new HookExecution(-1, "", "");
         }
     }
 }

@@ -101,6 +101,42 @@ public class ConversationLoopTests
     }
 
     [Fact]
+    public async Task RunManualCompactionAsync_ResetsStaleCheckpointState()
+    {
+        var llm = new FakeLlmClient([
+            new StreamChunk { TextDelta = "summary of old turns", IsComplete = true },
+        ]);
+
+        var session = new SessionState();
+        session.AddMessage(new Message { Role = MessageRole.System, Content = "System" });
+        for (var i = 0; i < 6; i++)
+        {
+            session.AddMessage(new Message { Role = MessageRole.User, Content = $"user {i}" });
+            session.AddMessage(new Message { Role = MessageRole.Assistant, Content = $"assistant {i}" });
+        }
+
+        // A checkpoint left over from earlier in the session, pointing into the message
+        // list as it exists *before* this compaction rewrites it.
+        session.Checkpoints.Add(new CheckpointEntry
+        {
+            Id = "stale", CreatedAt = DateTime.UtcNow, TurnIndex = 1, CutoffMessageIndex = 5, Summary = "stale summary",
+        });
+        session.CheckpointCutoffIndex = 5;
+
+        var renderer = new TerminalRenderer();
+        var config = new AppConfig();
+        var loop = new ConversationLoop(llm, new ToolRegistry(), new PermissionEngine(config, renderer, renderer),
+            renderer, renderer, renderer, config, session);
+
+        await loop.RunManualCompactionAsync(null, CancellationToken.None);
+
+        session.Checkpoints.Should().BeEmpty(
+            "a full compaction re-summarises everything from raw history, so a checkpoint " +
+            "pointing into the pre-compaction message list is stale and must be dropped");
+        session.CheckpointCutoffIndex.Should().Be(0);
+    }
+
+    [Fact]
     public async Task DoomLoop_DoesNotFireAcrossUserTurns()
     {
         static List<StreamChunk> ToolRound(string id) =>

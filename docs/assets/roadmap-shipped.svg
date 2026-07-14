@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="234" viewBox="0 0 800 234" role="img" aria-label="Shipped features">
+  <defs>
+    <style>
+      .mono { font-family: 'JetBrains Mono','Cascadia Code','Fira Code',ui-monospace,monospace; }
+      .item { font-size: 11px; fill: #C9D2C6; }
+      .item-dim { font-size: 10px; fill: #8C968A; }
+    </style>
+    <linearGradient id="bg2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0B0F0A"/>
+      <stop offset="1" stop-color="#070807"/>
+    </linearGradient>
+  </defs>
+
+  <!-- canvas -->
+  <rect x="0.5" y="0.5" width="799" height="233" rx="10" fill="url(#bg2)" stroke="#1C231A" stroke-width="1"/>
+
+  <!-- ===== header ===== -->
+  <circle cx="34" cy="34" r="9" fill="none" stroke="#ADFF8F" stroke-width="1.6"/>
+  <path d="M30 34 l3 3 5.5 -6" fill="none" stroke="#ADFF8F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="52" y="32" class="mono" font-size="13" font-weight="700" fill="#DAE5D8">Shipped</text>
+  <text x="52" y="46" class="mono" font-size="9.5" fill="#7E887C" letter-spacing="2">11 FEATURES · DONE</text>
+  <line x1="22" y1="60" x2="778" y2="60" stroke="#1C231A" stroke-width="1"/>
+
+  <!-- ===== left card ===== -->
+  <rect x="22" y="76" width="368" height="142" rx="8" fill="#0E140C" stroke="#243020" stroke-width="1"/>
+  <g class="mono">
+    <text x="38" y="102" class="item"><tspan fill="#ADFF8F" font-weight="700">✓ </tspan>Web search &amp; scraping</text>
+    <text x="52" y="116" class="item-dim">SearXNG + Scrapling, self-hosted</text>
+    <text x="38" y="140" class="item"><tspan fill="#ADFF8F" font-weight="700">✓ </tspan>Vision / multimodal</text>
+    <text x="52" y="154" class="item-dim">@image.png in chat, mmproj auto</text>
+    <text x="38" y="178" class="item"><tspan fill="#ADFF8F" font-weight="700">✓ </tspan>Mobile app — iOS &amp; Android</text>
+    <text x="38" y="202" class="item"><tspan fill="#ADFF8F" font-weight="700">✓ </tspan>Plan mode + Session resume</text>
+  </g>
+
+  <!-- ===== right card ===== -->
+  <rect x="410" y="76" width="368" height="142" rx="8" fill="#0E140C" stroke="#243020" stroke-width="1"/>
+  <g class="mono">
+    <text x="426" y="102" class="item"><tspan fill="#ADFF8F" font-weight="700">✓ </tspan>VS Code + Cursor extension</text>
+    <text x="440" y="116" class="item-dim">chat panel via ACP server</text>
+    <text x="426" y="140" class="item"><tspan fill="#ADFF8F" font-weight="700">✓ </tspan>Doom loop detection</text>
+    <text x="440" y="154" class="item-dim">aborts on 3× repeated tool calls</text>
+    <text x="426" y="178" class="item"><tspan fill="#ADFF8F" font-weight="700">✓ </tspan>12 / 16 GB GPU support</text>
+    <text x="426" y="202" class="item"><tspan fill="#ADFF8F" font-weight="700">✓ </tspan>Distributed inference relay</text>
+  </g>
+</svg>

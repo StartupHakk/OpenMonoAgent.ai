@@ -7,8 +7,9 @@ IMAGE="${OPENMONO_IMAGE:-openmono-agent:latest}"
 WORKSPACE="${OPENMONO_WORKSPACE:-$(pwd)}"
 CONFIG_DIR="${HOME}/.openmono"
 
-# Ensure config dir exists so the mount doesn't create it as root inside the container
-mkdir -p "${CONFIG_DIR}"
+# Ensure config dir and subdirs exist so the mount doesn't create them as
+# root inside the container (which causes UnauthorizedAccessException).
+mkdir -p "${CONFIG_DIR}" "${CONFIG_DIR}/sessions" "${CONFIG_DIR}/memory" "${CONFIG_DIR}/artifacts"
 
 # Base flags always needed
 DOCKER_ARGS=(

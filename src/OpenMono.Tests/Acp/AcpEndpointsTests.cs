@@ -135,21 +135,26 @@ public sealed class AcpEndpointsTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task PostSessions_plan_mode_starts_session_in_plan_mode_with_activation_message()
+    public async Task PostSessions_plan_mode_body_overrides_the_plan_default_in_both_directions()
     {
+        // Sessions default to plan mode; plan_mode:true is a no-op that stays in plan.
         var res = await _client.PostAsJsonAsync("/api/v1/sessions", new { plan_mode = true });
         res.StatusCode.Should().Be(HttpStatusCode.OK);
-
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         doc.RootElement.GetProperty("plan_mode").GetBoolean().Should().BeTrue();
-        var sid = doc.RootElement.GetProperty("session_id").GetString();
 
-        var info = await _client.GetAsync($"/api/v1/sessions/{sid}");
+        // plan_mode:false starts straight in build mode, with the switch notice for the model.
+        var res2 = await _client.PostAsJsonAsync("/api/v1/sessions", new { plan_mode = false });
+        using var doc2 = JsonDocument.Parse(await res2.Content.ReadAsStringAsync());
+        doc2.RootElement.GetProperty("plan_mode").GetBoolean().Should().BeFalse();
+        var sid2 = doc2.RootElement.GetProperty("session_id").GetString();
+
+        var info = await _client.GetAsync($"/api/v1/sessions/{sid2}");
         using var infoDoc = JsonDocument.Parse(await info.Content.ReadAsStringAsync());
-        infoDoc.RootElement.GetProperty("plan_mode").GetBoolean().Should().BeTrue();
+        infoDoc.RootElement.GetProperty("plan_mode").GetBoolean().Should().BeFalse();
 
-        var msgs = await _client.GetAsync($"/api/v1/sessions/{sid}/messages");
-        (await msgs.Content.ReadAsStringAsync()).Should().Contain("Plan mode activated");
+        var msgs = await _client.GetAsync($"/api/v1/sessions/{sid2}/messages");
+        (await msgs.Content.ReadAsStringAsync()).Should().Contain("BUILD mode");
     }
 
     [Fact]
@@ -184,7 +189,7 @@ public sealed class AcpEndpointsTests : IAsyncLifetime
         root.GetProperty("session_id").GetString().Should().Be(sid);
         root.GetProperty("model").GetString().Should().Be("test-model");
         root.GetProperty("turn_count").GetInt32().Should().Be(0);
-        root.GetProperty("plan_mode").GetBoolean().Should().BeFalse();
+        root.GetProperty("plan_mode").GetBoolean().Should().BeTrue("new sessions default to plan mode (read-only)");
     }
 
 
@@ -318,6 +323,34 @@ public sealed class AcpEndpointsTests : IAsyncLifetime
     }
 
 
+
+    [Fact]
+    public async Task GetSessions_lists_workspace_sessions_with_digests()
+    {
+        var sid1 = await CreateSessionAsync();
+        var store = _app.Services.GetRequiredService<AcpSessionStore>();
+        var s1 = store.TryGet(sid1)!;
+        s1.Messages.Add(new Message { Role = MessageRole.User, Content = "Fix the parser bug" });
+        s1.TurnCount = 1;
+        store.Save(s1);
+
+        await CreateSessionAsync();
+
+        var res = await _client.GetAsync("/api/v1/sessions");
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        var sessions = doc.RootElement.GetProperty("sessions").EnumerateArray().ToArray();
+        sessions.Length.Should().BeGreaterThanOrEqualTo(2);
+
+        var first = sessions.Single(e => e.GetProperty("session_id").GetString() == sid1);
+        first.GetProperty("title").GetString().Should().Be("Fix the parser bug");
+        first.GetProperty("turn_count").GetInt32().Should().Be(1);
+        first.GetProperty("model").GetString().Should().Be("test-model");
+        first.GetProperty("message_count").GetInt32().Should().BeGreaterThanOrEqualTo(1);
+        first.GetProperty("started_at").GetString().Should().NotBeNullOrEmpty();
+        first.GetProperty("last_activity_at").GetString().Should().NotBeNullOrEmpty();
+    }
 
     private async Task<string> CreateSessionAsync()
     {

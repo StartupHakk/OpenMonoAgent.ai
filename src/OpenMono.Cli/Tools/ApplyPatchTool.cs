@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using OpenMono.Permissions;
 
 namespace OpenMono.Tools;
 
@@ -26,6 +27,7 @@ public sealed partial class ApplyPatchTool : ToolBase
 
             var results = new List<string>();
             var filesModified = 0;
+            var failures = 0;
 
             var fileHunks = hunks.GroupBy(h => h.FilePath);
 
@@ -33,30 +35,50 @@ public sealed partial class ApplyPatchTool : ToolBase
             {
                 var filePath = Path.GetFullPath(group.Key, context.WorkingDirectory);
 
+                // Containment + protected-file guard before any write, so a patch can
+                // never escape the workspace or clobber credentials/config files.
+                var guardError = PathGuard.Validate(filePath, context.WorkingDirectory);
+                if (guardError is not null)
+                {
+                    results.Add($"FAIL {group.Key}: {guardError}");
+                    failures++;
+                    continue;
+                }
+
                 if (!File.Exists(filePath))
                 {
-                    results.Add($"SKIP {group.Key}: file not found");
+                    results.Add($"FAIL {group.Key}: file not found");
+                    failures++;
                     continue;
                 }
 
                 var originalLines = (await File.ReadAllLinesAsync(filePath, ct)).ToList();
                 var modifiedLines = new List<string>(originalLines);
                 var offset = 0;
+                var hunkFailed = false;
 
                 foreach (var hunk in group.OrderBy(h => h.StartLine))
                 {
                     var adjustedStart = hunk.StartLine - 1 + offset;
 
-                    var contextMatch = VerifyContext(modifiedLines, adjustedStart, hunk);
-                    if (!contextMatch)
+                    if (!VerifyContext(modifiedLines, adjustedStart, hunk))
                     {
                         results.Add($"FAIL {group.Key}:{hunk.StartLine}: context mismatch");
-                        continue;
+                        hunkFailed = true;
+                        break;
                     }
 
                     var (newLines, linesRemoved, linesAdded) = ApplyHunk(modifiedLines, adjustedStart, hunk);
                     modifiedLines = newLines;
                     offset += linesAdded - linesRemoved;
+                }
+
+                // All-or-nothing per file: never persist a partially-applied patch.
+                if (hunkFailed)
+                {
+                    results.Add($"SKIP {group.Key}: left unchanged (patch did not apply cleanly)");
+                    failures++;
+                    continue;
                 }
 
                 if (!dryRun)
@@ -72,6 +94,17 @@ public sealed partial class ApplyPatchTool : ToolBase
                 var verb = dryRun ? "Would modify" : "Modified";
                 results.Add($"OK {verb} {group.Key} ({group.Count()} hunk(s))");
                 filesModified++;
+            }
+
+            if (failures > 0)
+            {
+                var failSummary = dryRun
+                    ? $"Dry run incomplete: {filesModified} file(s) would apply, {failures} file(s) could not"
+                    : $"Patch did not fully apply: {filesModified} file(s) modified, {failures} file(s) left unchanged";
+
+                return ToolResult.StateConflict(
+                    $"{failSummary}\n{string.Join('\n', results)}",
+                    "Re-read the target file(s) and regenerate the patch against their current contents.");
             }
 
             var summary = dryRun

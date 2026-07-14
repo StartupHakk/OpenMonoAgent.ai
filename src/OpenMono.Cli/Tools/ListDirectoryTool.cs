@@ -10,13 +10,14 @@ public sealed class ListDirectoryTool : ToolBase
     public override bool IsConcurrencySafe => true;
     public override bool IsReadOnly => true;
     public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;
+    public override TimeSpan? Timeout => TimeSpan.FromSeconds(120);
 
     protected override SchemaBuilder DefineSchema() => new SchemaBuilder()
         .AddString("path", "Directory path to list (default: working directory)")
         .AddBoolean("recursive", "List recursively (default: false)")
         .AddInteger("max_entries", "Maximum entries to return (default: 200)");
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
     {
         var dirPath = input.TryGetProperty("path", out var p) ? p.GetString() : ".";
         if (string.IsNullOrEmpty(dirPath))

@@ -15,31 +15,138 @@ OpenMono is a .NET 10 CLI that runs a local agentic loop against a llama.cpp inf
 ## High-level topology
 
 ```
-┌────────────────────────────────────────┐
-│  openmono (CLI)                        │
-│  src/OpenMono.Cli/                     │
-│                                        │
-│  ConversationLoop                      │
-│    └── ILlmClient (streaming SSE)      │
-│    └── ToolDispatcher                  │
-│         └── 20 built-in tools          │
-│         └── MCP tools (dynamic)        │
-│         └── LSP tools                  │
-│         └── RoslynTool                 │
-│    └── PermissionEngine                │
-│    └── SessionManager (JSONL)          │
-│    └── Compactor / Checkpointer        │
-│    └── HookRunner                      │
-│    └── IRenderer (TUI | Classic)       │
-└────────────────────────────────────────┘
-           │ HTTP :7474 (OpenAI-compat)
-           ▼
-┌────────────────────┐
-│  llama-server      │
-│  (llama.cpp)       │
-│  Qwen3.6 GGUF      │
-└────────────────────┘
+┌──────────────────────────────────┐   ┌──────────────────────────────────┐
+│  openmono (CLI / TUI)            │   │  VS Code / Cursor extension      │
+│  src/OpenMono.Cli/               │   │  StartupHakk.openmono-agent      │
+│                                  │   │  (sidebar chat panel)            │
+│  ConversationLoop                │   │   · streams responses            │
+│    └── ILlmClient (streaming SSE)│   │   · executes workspace tools     │
+│    └── ToolDispatcher            │   │     (file edits, bash, grep,     │
+│         └── 20 built-in tools   │   │      patches, permission prompts) │
+│         └── MCP tools (dynamic) │   └──────────────┬───────────────────┘
+│         └── LSP tools           │                  │ HTTP/SSE (ACP) :7475
+│         └── RoslynTool          │                  ▼
+│    └── PermissionEngine         │   ┌──────────────────────────────────┐
+│    └── SessionManager (JSONL)   │   │  ACP server (--acp-only mode)    │
+│    └── Compactor / Checkpointer │   │  same ConversationLoop + tools   │
+│    └── HookRunner               │   │  as the CLI — extension is UI    │
+│    └── IRenderer (TUI | Classic)│   └──────────────┬───────────────────┘
+└────────────────┬─────────────────┘                  │
+                 │ HTTP :7474 (OpenAI-compat)          │ HTTP :7474
+                 └──────────────────┬─────────────────┘
+                                    ▼
+                       ┌────────────────────┐
+                       │  llama-server      │
+                       │  (llama.cpp)       │
+                       │  Qwen3.6 GGUF      │
+                       └────────────────────┘
 ```
+
+The CLI and the VS Code/Cursor extension share the same agent core. The extension connects over ACP (Agent Client Protocol) on `:7475` — start the agent with `--acp-only --acp-port 7475` to expose this interface instead of the TUI.
+
+---
+
+## Inference-side web services (Caddy gateway)
+
+One tunnel, three services. `WebSearch` & `WebFetch`, self-hosted.
+
+The agent's `WebSearch` and `WebFetch` tools route through a single Caddy gateway
+that sits beside the inference server. `frpc` tunnels only that one port — Caddy
+fans requests apart by path to SearXNG, Scrapling, and llama-server. Services are
+opt-in, auto-detected, and every tool degrades to a built-in default when its
+service is absent.
+
+| | |
+|---|---|
+| **Gateway** | Caddy 2 · `:47480` |
+| **Search** | SearXNG — backs `WebSearch` |
+| **Scrape** | Scrapling + Camoufox — backs `WebFetch` |
+| **Auth** | shared `LLAMA_API_KEY` bearer on `/search*` and `/scrape*` |
+
+```
+                       ┌──────────── inference box ────────────┐
+agent ──frpc/relay──▶  │  Caddy gateway :8080 → :47480          │
+  llm.endpoint   ┐     │   /v1,/props,/metrics → llama-server   │ (pass-through, SSE flush -1)
+  web.gateway  ──┴───▶ │   /search*  [Bearer]  → SearXNG:8080  │
+                       │   /scrape*  [Bearer]  → Scrapling:5000 │
+                       │   /services           → capability JSON│
+                       │   /health             → 200 (no auth)  │
+                       └────────────────────────────────────────┘
+```
+
+`llm.endpoint` and `web.gateway` resolve to the **same** relay URL in dual-box
+mode — Caddy fans them apart by path, so `web.gateway` is optional. The only
+thing to configure on the agent box is `llm.endpoint` + `llm.api_key`.
+
+### How a tool picks its path
+
+Every `WebSearch` / `WebFetch` call walks this decision before doing any network
+work. `GatewayCapabilities` owns the logic and caches the answer per gateway URL
+for the whole process — the registry is probed at most once per session.
+
+1. **Explicit config override wins** — `web.search` / `web.scrape` in config or
+   `OPENMONO_WEB_SEARCH` / `OPENMONO_WEB_SCRAPE` env var. Truthy = `1/true/yes/on`.
+2. **Resolve the gateway URL** — `web.gateway` if set, else `llm.endpoint`. No
+   gateway → fall back immediately.
+3. **Probe `GET /services` (cached, 5 s timeout)** — returns
+   `{"search": true, "scrape": false}`. Memoised in a `ConcurrentDictionary`
+   keyed by gateway URL.
+4. **Route through the gateway** — `POST/GET` to `/scrape` or `/search` with the
+   shared `LLAMA_API_KEY` bearer.
+5. **Fall back on any failure** — service absent, probe fails, non-JSON body, or
+   request throws → tool silently uses DuckDuckGo / direct `HttpClient` fetch.
+   Cancellation token is the one exception that always propagates.
+
+### The two tools
+
+**`WebSearch`** — read-only, concurrency-safe  
+Primary: `GET /search?q=…&format=json` against the gateway; parses `results[]`
+into title / url / snippet.  
+Fallback: scrapes `html.duckduckgo.com` exactly as before.
+
+**`WebFetch`** — 90 s ceiling, browser-capable  
+Primary: `POST /scrape` with `{url, render, headless, max_length, format:"markdown"}`.
+Returns clean markdown. `render` forces a real browser; `headless` toggles headed
+mode — both only apply on the gateway path.  
+Fallback: original direct `HttpClient` fetch + HTML strip.
+
+### Scrapling engine selection
+
+The FastAPI wrapper (`docker/scrapling/app.py`) runs auth-free on the internal
+network — Caddy enforces the bearer in front.
+
+| | Engine | Condition |
+|---|---|---|
+| A | `AsyncFetcher` (fast path) | Plain async HTTP. Default unless `render:true`. |
+| B | Auto-escalate | 403 / 429 / 503 or thrown fetch → retries with stealthy. |
+| C | `StealthyFetcher` (stealth) | Camoufox real browser, `solve_cloudflare=True`, network-idle wait. |
+
+### Install
+
+```bash
+openmono setup gateway   # Caddy only
+openmono setup search    # SearXNG + gateway  (profile: search)
+openmono setup scraper   # Scrapling + gateway (profile: scraper)
+```
+
+### Component reference
+
+| Component | Layer | Responsibility |
+|-----------|-------|----------------|
+| `WebSearchTool.cs` | agent | Routes to SearXNG, parses JSON; DuckDuckGo fallback |
+| `WebFetchTool.cs` | agent | POSTs to Scrapling with `render`/`headless`; direct-fetch fallback |
+| `GatewayCapabilities.cs` | agent | Resolves gateway URL, probes `/services`, caches per-URL |
+| `WebConfig` (`AppConfig.cs`) | agent | Gateway / Search / Scrape config + truthy parsing + env merge |
+| `docker/Caddyfile` | gateway | Path-routing, bearer enforcement, `/services` registry, SSE pass-through |
+| `docker/scrapling/app.py` | service | FastAPI wrapper: fast→stealth engine selection, markdown extraction |
+| `docker/searxng/settings.yml` | service | Enables JSON format, disables rate limiter (internal traffic) |
+| `docker-compose.yml` | infra | `caddy` / `searxng` / `scrapling` under `search` / `scraper` profiles |
+| `openmono setup *` | infra | Installs services, flips `WEB_*_ENABLED`, retargets frpc tunnel |
+
+Files: [docker/Caddyfile](../docker/Caddyfile),
+[docker/searxng/settings.yml](../docker/searxng/settings.yml),
+[docker/scrapling/](../docker/scrapling/),
+[docker/docker-compose.yml](../docker/docker-compose.yml).
 
 ---
 

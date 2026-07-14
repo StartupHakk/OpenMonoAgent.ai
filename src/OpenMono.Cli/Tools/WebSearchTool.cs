@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using OpenMono.Permissions;
@@ -8,7 +9,7 @@ namespace OpenMono.Tools;
 public sealed partial class WebSearchTool : ToolBase
 {
     public override string Name => "WebSearch";
-    public override string Description => "Search the web using DuckDuckGo. Returns titles, URLs, and snippets for the top results. " +
+    public override string Description => "Search the web. Returns titles, URLs, and snippets for the top results. " +
         "Use for general or current information; for library/framework API documentation prefer the Context7 tools if available.";
     public override bool IsConcurrencySafe => true;
     public override bool IsReadOnly => true;
@@ -27,7 +28,7 @@ public sealed partial class WebSearchTool : ToolBase
         }
     };
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input) =>
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input) =>
         [new NetworkEgressCap("duckduckgo.com", 443, "https")];
 
     protected override async Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
@@ -35,9 +36,73 @@ public sealed partial class WebSearchTool : ToolBase
         var query = input.GetProperty("query").GetString()!;
         var maxResults = input.TryGetProperty("max_results", out var mr) ? Math.Min(mr.GetInt32(), 20) : 8;
 
+        if (await GatewayCapabilities.IsEnabledAsync(context.Config, GatewayCapabilities.WebService.Search, ct))
+        {
+            var gateway = GatewayCapabilities.ResolveGateway(context.Config)!;
+            try
+            {
+                return await SearxngSearchAsync(gateway, context.Config.Llm.ApiKey, query, maxResults, ct);
+            }
+            catch (Exception ex)
+            {
+                if (ct.IsCancellationRequested) throw;
+                context.OnDebug?.Invoke($"WebSearch: SearXNG gateway unavailable ({ex.Message}); falling back to DuckDuckGo");
+            }
+        }
+
+        return await DuckDuckGoSearchAsync(query, maxResults, ct);
+    }
+
+    private static async Task<ToolResult> SearxngSearchAsync(
+        string gateway, string? apiKey, string query, int maxResults, CancellationToken ct)
+    {
+        var url = $"{gateway.TrimEnd('/')}/search?q={Uri.EscapeDataString(query)}&format=json";
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        if (!string.IsNullOrEmpty(apiKey))
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+
+        using var response = await Http.SendAsync(request, ct);
+        response.EnsureSuccessStatusCode();
+
+        var json = await response.Content.ReadAsStringAsync(ct);
+        using var doc = JsonDocument.Parse(json);
+
+        if (!doc.RootElement.TryGetProperty("results", out var resultsEl) ||
+            resultsEl.ValueKind != JsonValueKind.Array)
+            return ToolResult.Success($"No results found for: {query}");
+
+        var output = new System.Text.StringBuilder();
+        output.AppendLine($"Search results for: {query}\n");
+
+        var count = 0;
+        foreach (var r in resultsEl.EnumerateArray())
+        {
+            if (count >= maxResults) break;
+            var title = r.TryGetProperty("title", out var t) ? t.GetString() : null;
+            var resultUrl = r.TryGetProperty("url", out var u) ? u.GetString() : null;
+            if (string.IsNullOrEmpty(title) || string.IsNullOrEmpty(resultUrl)) continue;
+
+            var snippet = r.TryGetProperty("content", out var c) ? c.GetString() : null;
+
+            count++;
+            output.AppendLine($"{count}. {title}");
+            output.AppendLine($"   {resultUrl}");
+            if (!string.IsNullOrEmpty(snippet))
+                output.AppendLine($"   {snippet}");
+            output.AppendLine();
+        }
+
+        return count == 0
+            ? ToolResult.Success($"No results found for: {query}")
+            : ToolResult.Success(output.ToString().TrimEnd());
+    }
+
+    private static async Task<ToolResult> DuckDuckGoSearchAsync(string query, int maxResults, CancellationToken ct)
+    {
         try
         {
-
             var encoded = Uri.EscapeDataString(query);
             var url = $"https://html.duckduckgo.com/html/?q={encoded}";
 

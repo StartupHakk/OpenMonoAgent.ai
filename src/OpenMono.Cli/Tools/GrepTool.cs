@@ -12,6 +12,7 @@ public sealed class GrepTool : ToolBase
     public override bool IsConcurrencySafe => true;
     public override bool IsReadOnly => true;
     public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;
+    public override TimeSpan? Timeout => TimeSpan.FromSeconds(120);
 
     protected override SchemaBuilder DefineSchema() => new SchemaBuilder()
         .AddString("pattern", "Regex pattern to search for")
@@ -22,7 +23,7 @@ public sealed class GrepTool : ToolBase
         .AddInteger("max_results", "Maximum number of results (default: 250)")
         .Require("pattern");
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
     {
         var searchPath = input.TryGetProperty("path", out var p) ? p.GetString() : ".";
         if (string.IsNullOrEmpty(searchPath))
