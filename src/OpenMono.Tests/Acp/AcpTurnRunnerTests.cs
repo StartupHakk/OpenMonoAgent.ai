@@ -97,9 +97,15 @@ public sealed class AcpTurnRunnerTests
         await runner.ResumeWithPermissionAsync(payload.RootElement, CancellationToken.None);
 
         session.TryGetRememberedPermission(ctx.ContextKey).Should().BeTrue(
-            "the allow decision must persist in the session cache so the re-issued tool call hits without re-pausing");
+            "the allow decision must persist in the session cache so the loop can re-run the call without re-pausing");
+
+        var toolMsg = session.Messages.LastOrDefault(m => m.Role == MessageRole.Tool);
+        toolMsg.Should().NotBeNull("allow must execute the pending tool call, not ask the model to re-issue it");
+        toolMsg!.ToolCallId.Should().Be("call_p");
+        toolMsg.Content.Should().Be("done");
 
         var events = ParseSseEvents(body);
+        events.Should().Contain(e => e.name == "tool_start");
         events.Last().name.Should().Be("done");
     }
 
@@ -135,7 +141,7 @@ public sealed class AcpTurnRunnerTests
     }
 
     [Fact]
-    public async Task ResumeWithUserInputAsync_caches_answer_and_appends_synthetic_tool_message()
+    public async Task ResumeWithUserInputAsync_caches_answer_and_reexecutes_pending_tool_call()
     {
         var session = NewSession();
 
@@ -147,7 +153,9 @@ public sealed class AcpTurnRunnerTests
         });
         session.RegisterPause("ask_42", PendingResponseKind.UserInput, "which?");
 
-        var (runner, _, _) = BuildHarness(session, new ToolRegistry(),
+        var tools = new ToolRegistry();
+        tools.Register(new AskUserTool());
+        var (runner, _, _) = BuildHarness(session, tools,
             new List<List<StreamChunk>>
             {
                 new() { new() { TextDelta = "ok", IsComplete = false }, new() { IsComplete = true } },

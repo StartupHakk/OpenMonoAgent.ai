@@ -200,6 +200,24 @@ public sealed class ConversationLoop : IDisposable
             EnableThinking = thinking,
         };
 
+        // Resume path (ACP): a prior run of this turn paused for permission/user input
+        // after recording the assistant tool-call message but before running (all of)
+        // its tool calls. Execute the unanswered calls now — the user's decision is
+        // cached in the session — instead of asking the model to re-issue them.
+        var pendingCalls = PendingToolCalls();
+        if (pendingCalls is not null)
+        {
+            using var pendingAbort = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var pendingResults = await ExecuteToolCallsWithInflightAsync(
+                pendingCalls, new Dictionary<string, Task<ToolResult>>(), BuildToolContext(), pendingAbort, ct);
+            if (await AppendToolResultsAsync(pendingCalls, pendingResults, ct))
+            {
+                _journal.FinishTurn("turn_break");
+                await EmitUsageAsync();
+                return;
+            }
+        }
+
         var maxIterations = 1000;
         for (var i = 0; i < maxIterations; i++)
         {
@@ -372,56 +390,8 @@ public sealed class ConversationLoop : IDisposable
 
             var results = await ExecuteToolCallsWithInflightAsync(toolCalls, inFlightTasks, context, siblingAbortCts, ct);
 
-            foreach (var (call, result) in toolCalls.Zip(results))
+            if (await AppendToolResultsAsync(toolCalls, results, ct))
             {
-
-                var content = result.Content;
-                if (content.Length > LargeResultThreshold)
-                {
-                    var refPath = await StoreContentReplacementAsync(call.Name, content, ct);
-                    content = $"[Result truncated — {content.Length} chars. Full output stored at: {refPath}]\n" +
-                              content[..Math.Min(2000, content.Length)] + "\n... (truncated)";
-                }
-
-                _session.AddMessage(new Message
-                {
-                    Role = MessageRole.Tool,
-                    ToolCallId = call.Id,
-                    ToolName = call.Name,
-                    Content = content,
-                });
-
-                if (_sink is not null)
-                {
-                    var artifactId = result.Artifacts.Count > 0 ? result.Artifacts[0].Id : null;
-                    await _sink.OnToolResultPreviewAsync(call.Id, result.ModelPreview, artifactId);
-                }
-            }
-
-            var pendingImages = results
-                .Where(r => r.Images is { Count: > 0 })
-                .SelectMany(r => r.Images!)
-                .ToList();
-            if (pendingImages.Count > 0)
-                _session.AddMessage(new Message
-                {
-                    Role = MessageRole.User,
-                    Content = $"[{pendingImages.Count} image(s) from tool calls]",
-                    ContentParts = [new TextPart("Images retrieved by tools:"), .. pendingImages],
-                });
-
-            if (results.Any(r => r.BreakTurn))
-            {
-                if (_session.Meta.LastPlan is { Length: > 0 } plan)
-                {
-                    _output.WriteInfo("Plan ready — review below. Reply to approve or request changes.");
-                    _output.WriteMarkdown(plan);
-                }
-                _session.AddMessage(new Message
-                {
-                    Role = MessageRole.User,
-                    Content = PlanModeInstructions.PlanPresented,
-                });
                 _journal.FinishTurn("turn_break");
                 await EmitUsageAsync();
                 return;
@@ -543,6 +513,89 @@ public sealed class ConversationLoop : IDisposable
         _output.WriteInfo("  /compact    — summarise history to free context space before continuing");
         _output.WriteInfo("  /checkpoint — compress older turns and continue with a fresh window");
         _output.WriteInfo("  /clear      — wipe the session and start fresh");
+    }
+
+    private List<ToolCall>? PendingToolCalls()
+    {
+        // A pause aborts the turn after the assistant message is recorded but before
+        // (all of) its tool calls ran. Detect that state: the tail of the history is
+        // an assistant tool-call message followed only by tool results.
+        var answered = new HashSet<string>();
+        for (var i = _session.Messages.Count - 1; i >= 0; i--)
+        {
+            var m = _session.Messages[i];
+            if (m.Role == MessageRole.Tool && m.ToolCallId is not null)
+            {
+                answered.Add(m.ToolCallId);
+                continue;
+            }
+            if (m.Role == MessageRole.Assistant && m.ToolCalls is { Count: > 0 })
+            {
+                var pending = m.ToolCalls.Where(c => !answered.Contains(c.Id)).ToList();
+                return pending.Count > 0 ? pending : null;
+            }
+            return null;
+        }
+        return null;
+    }
+
+    private async Task AppendToolResultMessageAsync(ToolCall call, ToolResult result, CancellationToken ct)
+    {
+        var content = result.Content;
+        if (content.Length > LargeResultThreshold)
+        {
+            var refPath = await StoreContentReplacementAsync(call.Name, content, ct);
+            content = $"[Result truncated — {content.Length} chars. Full output stored at: {refPath}]\n" +
+                      content[..Math.Min(2000, content.Length)] + "\n... (truncated)";
+        }
+
+        _session.AddMessage(new Message
+        {
+            Role = MessageRole.Tool,
+            ToolCallId = call.Id,
+            ToolName = call.Name,
+            Content = content,
+        });
+
+        if (_sink is not null)
+        {
+            var artifactId = result.Artifacts.Count > 0 ? result.Artifacts[0].Id : null;
+            await _sink.OnToolResultPreviewAsync(call.Id, result.ModelPreview, artifactId);
+        }
+    }
+
+    /// <summary>Appends results to the session; returns true when a result breaks the turn.</summary>
+    private async Task<bool> AppendToolResultsAsync(List<ToolCall> toolCalls, List<ToolResult> results, CancellationToken ct)
+    {
+        foreach (var (call, result) in toolCalls.Zip(results))
+            await AppendToolResultMessageAsync(call, result, ct);
+
+        var pendingImages = results
+            .Where(r => r.Images is { Count: > 0 })
+            .SelectMany(r => r.Images!)
+            .ToList();
+        if (pendingImages.Count > 0)
+            _session.AddMessage(new Message
+            {
+                Role = MessageRole.User,
+                Content = $"[{pendingImages.Count} image(s) from tool calls]",
+                ContentParts = [new TextPart("Images retrieved by tools:"), .. pendingImages],
+            });
+
+        if (!results.Any(r => r.BreakTurn))
+            return false;
+
+        if (_session.Meta.LastPlan is { Length: > 0 } plan)
+        {
+            _output.WriteInfo("Plan ready — review below. Reply to approve or request changes.");
+            _output.WriteMarkdown(plan);
+        }
+        _session.AddMessage(new Message
+        {
+            Role = MessageRole.User,
+            Content = PlanModeInstructions.PlanPresented,
+        });
+        return true;
     }
 
     private async Task<string> StoreContentReplacementAsync(
@@ -686,47 +739,63 @@ public sealed class ConversationLoop : IDisposable
                 siblingAbortCts.Token);
         }
 
-        var failedAny = false;
-        foreach (var call in toolCalls)
+        try
         {
-            if (!inFlightTasks.TryGetValue(call.Id, out var task))
-                continue;
-
-            var index = toolCalls.IndexOf(call);
-            try
+            var failedAny = false;
+            foreach (var call in toolCalls)
             {
-                results[index] = await task;
+                if (!inFlightTasks.TryGetValue(call.Id, out var task))
+                    continue;
 
-                if (results[index].Class == ResultClass.Crash && !failedAny)
+                var index = toolCalls.IndexOf(call);
+                try
                 {
-                    failedAny = true;
-                    _output.WriteDebug($"[P2.4] {call.Name} crashed — aborting sibling tasks");
-                    await siblingAbortCts.CancelAsync();
+                    results[index] = await task;
+
+                    if (results[index].Class == ResultClass.Crash && !failedAny)
+                    {
+                        failedAny = true;
+                        _output.WriteDebug($"[P2.4] {call.Name} crashed — aborting sibling tasks");
+                        await siblingAbortCts.CancelAsync();
+                    }
+                }
+                catch (PendingUserResponseException)
+                {
+                    throw;
+                }
+                catch (OperationCanceledException) when (siblingAbortCts.IsCancellationRequested && !ct.IsCancellationRequested)
+                {
+
+                    results[index] = ToolResult.Cancelled($"{call.Name} cancelled (sibling abort)");
+                }
+                catch (Exception ex)
+                {
+                    results[index] = ToolResult.Crash($"{call.Name} crashed: {ex.Message}", "Try with different parameters");
                 }
             }
-            catch (OperationCanceledException) when (siblingAbortCts.IsCancellationRequested && !ct.IsCancellationRequested)
+
+            foreach (var item in writeable)
             {
 
-                results[index] = ToolResult.Cancelled($"{call.Name} cancelled (sibling abort)");
-            }
-            catch (Exception ex)
-            {
-                results[index] = ToolResult.Crash($"{call.Name} crashed: {ex.Message}", "Try with different parameters");
+                ct.ThrowIfCancellationRequested();
+
+                if (item.Tool is null)
+                {
+                    results[item.Index] = ToolResult.Error($"Unknown tool: {item.Call.Name}");
+                    continue;
+                }
+
+                results[item.Index] = await _executor.ExecuteAsync(item.Call, item.Tool, context, ct);
             }
         }
-
-        foreach (var item in writeable)
+        catch (PendingUserResponseException)
         {
-
-            ct.ThrowIfCancellationRequested();
-
-            if (item.Tool is null)
-            {
-                results[item.Index] = ToolResult.Error($"Unknown tool: {item.Call.Name}");
-                continue;
-            }
-
-            results[item.Index] = await _executor.ExecuteAsync(item.Call, item.Tool, context, ct);
+            // The turn is pausing for the user. Persist the results that already ran so
+            // the resume executes only the still-unanswered calls — never a second time.
+            foreach (var (call, result) in toolCalls.Zip(results))
+                if (result is not null)
+                    await AppendToolResultMessageAsync(call, result, CancellationToken.None);
+            throw;
         }
 
         return [.. results];

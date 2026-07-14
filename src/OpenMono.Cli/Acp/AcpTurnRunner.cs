@@ -71,11 +71,10 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
 
 
+        // The decision is cached under the pause's context key; the conversation loop
+        // re-executes the still-unanswered tool calls itself on the next drive — the
+        // model is never asked to re-issue the call.
         _acpSession.RememberPermission(ctx.ContextKey, allow);
-
-        AppendSyntheticToolMessages(allow
-            ? "Permission granted by user. Re-issue the tool call to execute."
-            : "Permission denied by user.");
 
         await DriveLoopAsync(ct);
     }
@@ -94,10 +93,9 @@ public sealed class AcpTurnRunner : IAcpEventSink
         if (!_acpSession.TryResolvePause(id, new AcpUserInputResponse(value)))
             throw new InvalidOperationException($"failed to resolve pause id: {id}");
 
+        // Same as the permission path: the answer is cached, and re-running the paused
+        // tool call consumes it via the interaction forwarder.
         _acpSession.RememberUserInput(ctx.ContextKey, value);
-
-
-        AppendSyntheticToolMessages(value);
 
         await DriveLoopAsync(ct);
     }
@@ -149,32 +147,6 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
 
 
-
-    private void AppendSyntheticToolMessages(string resolutionContent)
-    {
-        var lastAssistant = _acpSession.Messages
-            .LastOrDefault(m => m.Role == MessageRole.Assistant && m.ToolCalls is not null);
-        if (lastAssistant?.ToolCalls is null || lastAssistant.ToolCalls.Count == 0) return;
-
-        var alreadyAnswered = _acpSession.Messages
-            .Where(m => m.Role == MessageRole.Tool && m.ToolCallId is not null)
-            .Select(m => m.ToolCallId!)
-            .ToHashSet();
-
-        var first = true;
-        foreach (var call in lastAssistant.ToolCalls)
-        {
-            if (alreadyAnswered.Contains(call.Id)) continue;
-            _acpSession.Messages.Add(new Message
-            {
-                Role = MessageRole.Tool,
-                ToolCallId = call.Id,
-                ToolName = call.Name,
-                Content = first ? resolutionContent : "Execution deferred. Retry to run.",
-            });
-            first = false;
-        }
-    }
 
     private SessionState BuildSessionState()
     {
