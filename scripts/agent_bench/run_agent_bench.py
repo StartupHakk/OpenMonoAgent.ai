@@ -32,6 +32,12 @@ ENDPOINT = os.environ.get("OPENMONO_ENDPOINT", "http://host.docker.internal:7474
 # costs one extra LLM call. Cap it so a permission-thrashing model can't hang.
 MAX_RESUMES = 300
 
+# Plan mode ends the turn after ExitPlanMode so a human can approve the plan.
+# Headless there is no human, so the harness plays the approving user — capped,
+# so a model that re-plans forever still terminates.
+PLAN_CONTINUE_MSG = "Yes, proceed. Implement the plan now and do not stop until the task is fully done."
+MAX_PLAN_CONTINUES = 2
+
 
 def log(msg):
     print(f"[bench] {msg}", flush=True)
@@ -166,13 +172,15 @@ def start_agent(ws, port, name):
     raise RuntimeError("agent did not come up")
 
 
-def drive(base, prompt, budget):
+def drive(base, prompt, budget, plan_mode=False):
     """Run one turn to completion, auto-allowing every permission pause."""
-    sid = http(f"{base}/sessions", "POST", {})["session_id"]
+    sid = http(f"{base}/sessions", "POST",
+               {"plan_mode": True} if plan_mode else {})["session_id"]
     m = dict(llm_calls=0, tool_calls=0, tool_fail=0, permissions=0, user_inputs=0,
              in_tokens=0, out_tokens=0, tools={}, failed_tools={}, resumes=0,
-             status="done", assistant_chars=0)
+             status="done", assistant_chars=0, plan_continues=0)
     pending = None          # (kind, id) the agent is blocked on
+    plan_pending = False    # ExitPlanMode succeeded; expect the turn to break for approval
     body = {"message": prompt}
     t0 = time.time()
 
@@ -194,6 +202,8 @@ def drive(base, prompt, budget):
                     n = d.get("name", "?")
                     m["tools"][n] = m["tools"].get(n, 0) + 1
                 elif ev == "tool_end":
+                    if d.get("name") == "ExitPlanMode" and d.get("ok", True):
+                        plan_pending = True
                     if not d.get("ok", True):
                         m["tool_fail"] += 1
                         n = d.get("name", "?")
@@ -217,6 +227,11 @@ def drive(base, prompt, budget):
             break
 
         if saw_done:
+            if plan_pending and m["plan_continues"] < MAX_PLAN_CONTINUES:
+                plan_pending = False
+                m["plan_continues"] += 1
+                body = {"message": PLAN_CONTINUE_MSG}
+                continue
             m["status"] = "done"
             break
         if saw_error and not pending:
@@ -258,16 +273,16 @@ def grade(task, ws):
         return {"passed": False, "score": 0, "detail": f"grader crashed: {(r.stdout + r.stderr)[-300:]}"}
 
 
-def run_one(model, task, bench_root, budget):
+def run_one(model, task, bench_root, budget, plan_mode=False):
     ws = bench_root / model / task
     seed_workspace(task, ws)
     prompt = (TASKS_DIR / task / "prompt.txt").read_text().strip()
     port, name = free_port(), f"ombench_{os.getpid()}_{port_tag(task)}"
-    log(f"{model} · {task} · agent on :{port}")
+    log(f"{model} · {task} · agent on :{port}{' · forced plan mode' if plan_mode else ''}")
     before = llama_metrics()
     try:
         base = start_agent(ws, port, name)
-        m = drive(base, prompt, budget)
+        m = drive(base, prompt, budget, plan_mode=plan_mode)
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
     after = llama_metrics()
@@ -303,6 +318,8 @@ def main():
     ap.add_argument("--workdir", default="/tmp/claude-1000/agent-bench")
     ap.add_argument("--budget", type=int, default=1200, help="per-task seconds")
     ap.add_argument("--restore", default="", help="model to switch back to at the end")
+    ap.add_argument("--plan-mode", action="store_true",
+                    help="start every session in plan mode (forces plan -> approve -> implement)")
     ap.add_argument("--smoke", action="store_true", help="no model switch, current model")
     args = ap.parse_args()
 
@@ -325,7 +342,7 @@ def main():
                 model_use(model)
             for task in tasks:
                 try:
-                    row = run_one(model, task, bench_root, args.budget)
+                    row = run_one(model, task, bench_root, args.budget, plan_mode=args.plan_mode)
                 except Exception as e:
                     log(f"{model} · {task} · HARNESS ERROR: {e}")
                     row = dict(model=model, task=task, status="harness_error",

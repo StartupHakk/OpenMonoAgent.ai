@@ -59,7 +59,17 @@ public static class AcpEndpoints
         }
 
         var session = store.Create(body?.Model, config);
-        return Results.Ok(new { session_id = session.Id, model = session.Model });
+        if (body?.PlanMode == true)
+        {
+            // Same activation as the TUI's /plan toggle: restrict tools AND tell the model.
+            session.PlanMode = true;
+            session.Messages.Add(new Message
+            {
+                Role = MessageRole.User,
+                Content = PlanModeInstructions.Activation("activated at session start"),
+            });
+        }
+        return Results.Ok(new { session_id = session.Id, model = session.Model, plan_mode = session.PlanMode });
     }
 
 
@@ -316,5 +326,6 @@ public static class AcpEndpoints
     private sealed class CreateSessionBody
     {
         [JsonPropertyName("model")] public string? Model { get; set; }
+        [JsonPropertyName("plan_mode")] public bool? PlanMode { get; set; }
     }
 }

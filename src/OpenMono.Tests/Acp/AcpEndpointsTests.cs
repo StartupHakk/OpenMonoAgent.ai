@@ -135,6 +135,24 @@ public sealed class AcpEndpointsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PostSessions_plan_mode_starts_session_in_plan_mode_with_activation_message()
+    {
+        var res = await _client.PostAsJsonAsync("/api/v1/sessions", new { plan_mode = true });
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("plan_mode").GetBoolean().Should().BeTrue();
+        var sid = doc.RootElement.GetProperty("session_id").GetString();
+
+        var info = await _client.GetAsync($"/api/v1/sessions/{sid}");
+        using var infoDoc = JsonDocument.Parse(await info.Content.ReadAsStringAsync());
+        infoDoc.RootElement.GetProperty("plan_mode").GetBoolean().Should().BeTrue();
+
+        var msgs = await _client.GetAsync($"/api/v1/sessions/{sid}/messages");
+        (await msgs.Content.ReadAsStringAsync()).Should().Contain("Plan mode activated");
+    }
+
+    [Fact]
     public async Task PostSessions_ignores_extra_fields_like_client_tools_silently()
     {
 
