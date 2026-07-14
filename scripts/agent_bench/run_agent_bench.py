@@ -174,9 +174,12 @@ def start_agent(ws, port, name):
 
 
 def drive(base, prompt, budget, plan_mode=False):
-    """Run one turn to completion, auto-allowing every permission pause."""
-    sid = http(f"{base}/sessions", "POST",
-               {"plan_mode": True} if plan_mode else {})["session_id"]
+    """Run one turn to completion, auto-allowing every permission pause.
+
+    plan_mode is always sent explicitly: upstream sessions default to plan mode,
+    but the benchmark's baseline is build mode (comparable to runs 1-4).
+    """
+    sid = http(f"{base}/sessions", "POST", {"plan_mode": plan_mode})["session_id"]
     m = dict(llm_calls=0, tool_calls=0, tool_fail=0, permissions=0, user_inputs=0,
              in_tokens=0, out_tokens=0, tools={}, failed_tools={}, resumes=0,
              status="done", assistant_chars=0, plan_continues=0)
