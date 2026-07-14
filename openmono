@@ -509,27 +509,46 @@ cmd_stop() {
     _ensure_docker
     cd "$DOCKER_DIR"
     export LLAMA_PORT
+    # The llama-server (and agent) services live behind compose profiles. With no
+    # profile active, 'docker compose' sees zero services, so a bare 'stop'/'down'
+    # silently no-ops (exit 0) and the old code reported "Stopped" without ever
+    # stopping anything. Activate the profiles so compose can see the service.
+    export COMPOSE_PROFILES="full,server"
 
     # Check health (warn only, don't fail)
     if ! curl -sf "http://localhost:${LLAMA_PORT}/health" &>/dev/null; then
         warn "llama-server is not responding on port ${LLAMA_PORT}"
     fi
 
+    # Helper: is the fixed-name container actually running right now?
+    _llama_running() {
+        [[ -n "$(docker ps --filter 'name=^/llama-server$' --filter 'status=running' \
+                          --format '{{.Names}}' 2>/dev/null)" ]]
+    }
+
     info "Stopping llama-server..."
-    if docker compose stop llama-server 2>/dev/null; then
-        ok "Stopped"
-    else
-        # If stop failed, try kill
-        if docker compose kill llama-server 2>/dev/null; then
-            ok "Force-stopped"
-        else
-            err "Failed to stop llama-server. Try: cd docker && docker compose kill llama-server"
-            return 1
-        fi
+    docker compose stop llama-server 2>/dev/null \
+        || docker compose kill llama-server 2>/dev/null || true
+
+    # Verify. compose can silently filter a profiled service on some versions, so
+    # confirm against the daemon and fall back to raw docker (container_name is fixed).
+    if _llama_running; then
+        warn "Container still running — forcing stop by name..."
+        docker stop llama-server >/dev/null 2>&1 || docker kill llama-server >/dev/null 2>&1 || true
     fi
 
-    # Clean up container
-    docker compose down 2>/dev/null || true
+    if _llama_running; then
+        err "Failed to stop llama-server. Try: docker stop llama-server"
+        return 1
+    fi
+    ok "Stopped"
+
+    # Remove only the (now stopped) llama-server container so a future start
+    # recreates it cleanly and 'restart: unless-stopped' can't resurrect it on a
+    # daemon restart. Leave running agent sessions (docker-agent-run-*) untouched —
+    # 'openmono stop' targets the inference server, not the user's live agents.
+    docker compose rm -fs llama-server >/dev/null 2>&1 \
+        || docker rm -f llama-server >/dev/null 2>&1 || true
 }
 
 cmd_restart() {
@@ -741,15 +760,20 @@ cmd_model() {
     local sub="${1:-list}"
 
     if [[ "$sub" == "--help" || "$sub" == "-h" || "$sub" == "help" ]]; then
-        echo "Usage: openmono model [list|use <name>] [--ctx N]"
+        echo "Usage: openmono model [list|use <name>] [--ctx N] [--ncmoe N|all|off]"
         echo ""
         echo "  list             List all models in $models_dir (default)"
         echo "  use <name>       Switch llama-server to a model. <name> can be the"
         echo "                   filename or any unambiguous part of it (case-insensitive)."
         echo "  --ctx N          Also set CTX_SIZE (context window) when switching."
+        echo "  --ncmoe N|all|off  MoE expert CPU-offload. Auto by default: only offloads"
+        echo "                   when a MoE model (…-A<n>B…) would NOT fit the GPU pool."
+        echo "                   The AMD iGPU addresses ~96 GB of GTT, so nothing offloads"
+        echo "                   there; a 16 GB card needs it. N = first N layers on CPU."
+        echo "  --no-mtp         Disable MTP speculative decoding (auto-on for *-MTP-* models)."
         echo ""
         echo "Switching updates docker/.env (MODEL_NAME, MODEL_ALIAS, vision projector"
-        echo "if a matching mmproj exists) and restarts llama-server."
+        echo "if a matching mmproj exists, MoE offload, MTP) and restarts llama-server."
         echo ""
         echo "Examples:"
         echo "  openmono model                       # list models"
@@ -789,6 +813,26 @@ cmd_model() {
         fi
     }
 
+    # Usable GPU memory in bytes, for deciding whether a model needs MoE offload.
+    # On an AMD iGPU the dedicated VRAM is a stub (~1 GB) and the real pool is GTT
+    # (system RAM lent to the GPU), so GTT + VRAM is the honest figure. A discrete
+    # NVIDIA card reports its VRAM via nvidia-smi. 0 = unknown → never auto-offload.
+    _gpu_mem_bytes() {
+        local f gtt vram best=0 total
+        for f in /sys/class/drm/card*/device/mem_info_gtt_total; do
+            [[ -r "$f" ]] || continue
+            gtt="$(cat "$f" 2>/dev/null || echo 0)"
+            vram="$(cat "${f%gtt_total}vram_total" 2>/dev/null || echo 0)"
+            total=$(( gtt + vram ))
+            [[ "$total" -gt "$best" ]] && best="$total"
+        done
+        if [[ "$best" -eq 0 ]] && command -v nvidia-smi &>/dev/null; then
+            total="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)"
+            [[ "$total" =~ ^[0-9]+$ ]] && best=$(( total * 1048576 ))
+        fi
+        printf '%s' "$best"
+    }
+
     if [[ "$sub" == "list" || "$sub" == "ls" ]]; then
         echo ""
         echo -e "${BLUE}── Models in $models_dir ──${NC}"
@@ -810,15 +854,26 @@ cmd_model() {
     local query="${1:-}"
     shift || true
     local new_ctx=""
+    # MoE expert offload override: unset = auto (offload only if the model would
+    # not fit the GPU pool), a number = experts of the first N layers, "all" =
+    # every layer, "off" = none.  --no-mtp opts out of MTP speculative decoding.
+    local moe_opt="" no_mtp=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --ctx) new_ctx="${2:-}"; shift 2 ;;
+            --ncmoe|--moe) moe_opt="${2:-}"; shift 2 ;;
+            --cpu-moe) moe_opt="all"; shift ;;
+            --no-moe|--no-cpu-moe) moe_opt="off"; shift ;;
+            --no-mtp) no_mtp=true; shift ;;
             *) err "Unknown option: $1"; exit 1 ;;
         esac
     done
     [[ -n "$query" ]] || { err "Usage: openmono model use <name>"; exit 1; }
     if [[ -n "$new_ctx" && ! "$new_ctx" =~ ^[0-9]+$ ]]; then
         err "--ctx expects a number (e.g. 131072)"; exit 1
+    fi
+    if [[ -n "$moe_opt" && "$moe_opt" != "all" && "$moe_opt" != "off" && ! "$moe_opt" =~ ^[0-9]+$ ]]; then
+        err "--ncmoe expects a number, 'all' or 'off'"; exit 1
     fi
 
     # Resolve query → exactly one candidate (exact match wins, then substring)
@@ -860,13 +915,44 @@ cmd_model() {
         [[ "$model_lc" == "$core"* ]] && { mmproj="$(basename "$m")"; break; }
     done
 
+    # MoE expert offload. Models with an active-parameter signature (…-A<n>B…,
+    # e.g. 35B-A3B, 26B-A4B) are Mixture-of-Experts. Offloading their experts to
+    # CPU RAM (--cpu-moe) is what makes them fit a SMALL GPU — but it moves that
+    # compute off the GPU, so it is a loss when the model already fits. Hence
+    # auto-mode only offloads when the model would NOT fit the GPU pool:
+    # the AMD iGPU addresses ~96 GB of GTT (everything fits, no offload), while a
+    # 16 GB discrete card needs it for anything past ~14 GB.
+    # --ncmoe N / --cpu-moe / --no-moe always override this.
+    local moe_flags="" is_moe=false gpu_mem model_bytes
+    [[ "$model" =~ -A[0-9]+B ]] && is_moe=true
+    gpu_mem="$(_gpu_mem_bytes)"
+    model_bytes="$(stat -c '%s' "$models_dir/$model" 2>/dev/null || echo 0)"
+    case "$moe_opt" in
+        off) moe_flags="" ;;
+        all) moe_flags="--cpu-moe" ;;
+        "")  if [[ "$is_moe" == true && "$gpu_mem" -gt 0 \
+                  && "$model_bytes" -gt $(( gpu_mem * 85 / 100 )) ]]; then
+                 moe_flags="--cpu-moe"
+             fi ;;
+        *)   moe_flags="--n-cpu-moe $moe_opt" ;;
+    esac
+
+    # Multi-token prediction: unsloth's "-MTP" GGUFs carry an MTP head, which
+    # llama.cpp drives as self-speculative decoding (no separate draft model).
+    # Without this flag the MTP weights are dead cargo.
+    local spec_flags=""
+    if [[ "$no_mtp" != "true" && "$model_lc" == *mtp* ]]; then
+        spec_flags="--spec-type draft-mtp"
+    fi
+
     # Rewrite docker/.env, preserving unrelated settings (same pattern as install.sh)
     touch "$env_file"
-    grep -v -E "^MODEL_NAME=|^MODEL_ALIAS=|^MODEL_MMPROJ=|^OPENMONO_VISION_ENABLED=${new_ctx:+|^CTX_SIZE=}" \
+    grep -v -E "^MODEL_NAME=|^MODEL_ALIAS=|^MODEL_MMPROJ=|^MOE_FLAGS=|^SPEC_FLAGS=|^OPENMONO_VISION_ENABLED=${new_ctx:+|^CTX_SIZE=}" \
         "$env_file" > "${env_file}.tmp" || true
     {
         printf "MODEL_NAME=%s\nMODEL_ALIAS=%s\nMODEL_MMPROJ=%s\nOPENMONO_VISION_ENABLED=%s\n" \
             "$model" "$alias" "$mmproj" "$([ -n "$mmproj" ] && echo 1 || echo 0)"
+        printf "MOE_FLAGS=%s\nSPEC_FLAGS=%s\n" "$moe_flags" "$spec_flags"
         [[ -n "$new_ctx" ]] && printf "CTX_SIZE=%s\n" "$new_ctx"
     } >> "${env_file}.tmp"
     mv "${env_file}.tmp" "$env_file"
@@ -874,7 +960,7 @@ cmd_model() {
     local ctx_now
     ctx_now="$(grep '^CTX_SIZE=' "$env_file" | head -1 | cut -d= -f2-)"
     ok "Model set: $model"
-    detail "alias: $alias  ·  vision: ${mmproj:-off}  ·  ctx: ${ctx_now:-default}  ·  size: $(_model_size "$model")"
+    detail "alias: $alias  ·  vision: ${mmproj:-off}  ·  moe-offload: ${moe_flags:-off (fits GPU)}  ·  mtp: $([ -n "$spec_flags" ] && echo on || echo off)  ·  ctx: ${ctx_now:-default}  ·  size: $(_model_size "$model")"
 
     # Large models leave less GTT room for the KV cache — hint, don't block.
     local bytes

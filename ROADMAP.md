@@ -8,7 +8,6 @@
 
 ## In Progress
 
-- [ ] `openmono stop` not working, it is not stopping llama-server correctly
 - [ ] Colored diff display for file edits
 - [ ] Git branch + status injected into system prompt
 - [ ] Built-in playbooks — commit, review, explain, debug
@@ -52,6 +51,7 @@
 
 ## Done
 
+- [x] `openmono stop` now reliably stops llama-server — services sit behind compose profiles, so a bare `stop`/`down` silently no-op'd; `cmd_stop` now activates the profile, verifies the container is really down against the daemon (raw `docker stop` fallback), and removes only the inference container without touching running agent sessions
 - [x] Agent iteration limit raised to 1000 and is now configurable — previously capped at 25 in [`ConversationLoop.cs`](https://github.com/StartupHakk/OpenMonoAgent.ai/blob/main/src/OpenMono.Cli/Session/ConversationLoop.cs)
 - [x] Doom loop detection improved — aborts early if the same tool sequence repeats, preventing runaway agent loops
 - [x] Plan mode integrated — restricts the agent to read-only tools for safe exploration before making changes
