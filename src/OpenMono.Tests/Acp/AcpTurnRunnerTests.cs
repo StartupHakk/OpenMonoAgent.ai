@@ -658,6 +658,33 @@ public sealed class AcpTurnRunnerTests
         session.Messages.Count(m => m.Role == MessageRole.Tool && m.ToolCallId == "call_b").Should().Be(1);
     }
 
+    [Fact]
+    public async Task Mode_banner_is_ephemeral_and_never_persisted_into_the_session()
+    {
+        var tools = new ToolRegistry();
+        tools.Register(new CountingTool());
+
+        // Two LLM rounds in one turn: tool call, then final text — the banner is
+        // prepended per iteration and must not accumulate in the stored system message.
+        var (runner, session, _) = BuildHarness(
+            tools: tools,
+            llmRounds: new List<List<StreamChunk>>
+            {
+                new()
+                {
+                    new() { ToolCallDelta = new ToolCall { Id = "call_1", Name = "CountingTool", Arguments = "{}" }, IsComplete = false },
+                    new() { IsComplete = true },
+                },
+                new() { new() { TextDelta = "done.", IsComplete = false }, new() { IsComplete = true, Usage = new UsageInfo() } },
+            });
+
+        await runner.RunUserMessageAsync("go", CancellationToken.None);
+
+        var system = session.Messages.First(m => m.Role == MessageRole.System);
+        system.Content.Should().NotContain("ACTIVE MODE",
+            "the per-turn mode banner must stay ephemeral; persisting it stacks a copy per LLM call and busts the prompt cache");
+    }
+
     private sealed class CountingTool : ITool
     {
         public string Name => "CountingTool";
