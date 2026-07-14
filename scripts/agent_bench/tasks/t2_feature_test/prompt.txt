@@ -1,0 +1,12 @@
+Add a new module durations.py with a function parse_duration(text) -> int (seconds).
+
+Spec:
+- text is one or more <number><unit> pairs, e.g. "90s", "1h30m", "2d4h", "1h 30m".
+- Units: d (days), h (hours), m (minutes), s (seconds). Pairs may appear in any order. Spaces between pairs are allowed.
+- Numbers are non-negative integers.
+- Return the total number of seconds as an int.
+- Raise ValueError for: empty string, unknown unit, a number without a unit, a negative number, a fractional number.
+
+Examples: "90s" -> 90, "1h30m" -> 5400, "2d" -> 172800, "3m20s" -> 200.
+
+Also add unit tests for parse_duration in the existing test style (see test_slug.py), covering the valid examples and the ValueError cases. Run the full suite with `python3 -m unittest discover` and make sure everything passes.

@@ -1,0 +1,13 @@
+config.py was written against pydantic v1 and crashes on import with the pydantic version installed in this environment (`python3 -c "import config"` shows it).
+
+Port it to the pydantic version that is actually installed. Do not pin or install a different pydantic version, and do not add new dependencies.
+
+Use the Context7 MCP tool to look up the current pydantic API before you write the code — do not guess the new API from memory. Replace every removed v1 construct with its current equivalent.
+
+All existing behaviour must be preserved:
+- host must match the pattern ^[a-z0-9.\-]+$
+- port must be >= 1024
+- tls=True requires port >= 8443
+- load(data) validates the dict and returns a plain dict
+
+Verify with `python3 -c "import config; print(config.load({'host': 'api.example.com', 'port': 8443, 'tls': True}))"` and make sure invalid input still raises a validation error.

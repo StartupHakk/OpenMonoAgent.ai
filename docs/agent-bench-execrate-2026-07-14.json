@@ -1,0 +1,22 @@
+{
+ "Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL": {
+  "intents": 186,
+  "executed": 87,
+  "exec_rate": 47
+ },
+ "Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL": {
+  "intents": 130,
+  "executed": 68,
+  "exec_rate": 52
+ },
+ "ornith-1.0-35b-Q4_K_M": {
+  "intents": 193,
+  "executed": 100,
+  "exec_rate": 52
+ },
+ "Qwen-AgentWorld-35B-A3B-UD-IQ3_S": {
+  "intents": 123,
+  "executed": 74,
+  "exec_rate": 60
+ }
+}

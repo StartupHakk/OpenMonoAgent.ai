@@ -1,0 +1,7 @@
+report.py has three exporters (to_csv, to_tsv, to_psv) that are copy-paste duplicates of each other. Refactor report.py to remove the duplication.
+
+Hard constraints:
+- The public API stays exactly the same: to_csv(rows, columns), to_tsv(rows, columns), to_psv(rows, columns) must keep working for existing callers like export_cli.py.
+- The output must stay byte-for-byte identical to what the current code produces, including every quirk. Read the code carefully before you change it.
+
+Verify your refactor: the output of `python3 export_cli.py csv`, `python3 export_cli.py tsv` and `python3 export_cli.py psv` must be unchanged from before your edit.

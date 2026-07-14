@@ -1,0 +1,3 @@
+Bug report from accounting: an invoice for three line items of 333 cents each with a 10% contract discount is billed as 897 cents, but it should be 899 cents.
+
+Reproduce it, find the root cause, and fix it. The spec in pricing.py is authoritative: the discount applies to the ORDER total, and the result is rounded half-up to whole cents. Make sure the existing tests still pass (python3 -m unittest discover).

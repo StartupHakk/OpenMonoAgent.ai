@@ -1,0 +1,11 @@
+Add a `stats` subcommand to this todo CLI.
+
+`python3 main.py stats` must print exactly one line:
+
+total=<total> open=<open> done=<done>
+
+where <total> is the number of tasks, <done> the number of completed ones, and <open> the rest. With an empty/missing database it prints `total=0 open=0 done=0`.
+
+Wire it up the same way the existing subcommands are wired (argparse in main.py, the implementation next to the other commands). The existing add/list/done commands must keep working exactly as they do now.
+
+Verify end to end by actually running the CLI: add a couple of tasks, mark one done, and check `stats` prints the right line.
