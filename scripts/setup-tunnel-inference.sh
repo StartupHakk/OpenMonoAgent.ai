@@ -436,6 +436,19 @@ EOF
     fi
 fi
 
+# ── Patch docker-compose.override.yml if it predates the --api-key fix ──
+# Older installs baked the GPU override without the --api-key injection
+# (fixed in install.sh commit 2e9a3cf); .env alone can't fix those since
+# there's no ${LLAMA_API_KEY:+...} placeholder for compose to substitute into.
+
+OVERRIDE_FILE="$REPO_DIR/docker/docker-compose.override.yml"
+if [[ "$NATIVE_INFERENCE" != "true" && -f "$OVERRIDE_FILE" ]] && ! grep -q -- '--api-key' "$OVERRIDE_FILE"; then
+    warn "docker-compose.override.yml predates the API key fix — patching it in"
+    awk '{print} /^      --metrics/ && !p { print "      ${LLAMA_API_KEY:+--api-key ${LLAMA_API_KEY}}"; p=1 }' \
+        "$OVERRIDE_FILE" > "$OVERRIDE_FILE.tmp" && mv "$OVERRIDE_FILE.tmp" "$OVERRIDE_FILE"
+    ok "Patched $OVERRIDE_FILE"
+fi
+
 # ── Restart llama-server so it picks up the new API key ──────────────
 
 if [[ "$NATIVE_INFERENCE" == "true" ]]; then
@@ -456,6 +469,14 @@ else
             info "Restarting llama-server with new API key..."
             (cd "$REPO_DIR/docker" && docker compose up -d llama-server) || \
                 warn "Restart failed — run manually: cd ${REPO_DIR}/docker && docker compose up -d llama-server"
+            sleep 2
+            LLAMA_PORT="$(grep '^LLAMA_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true)"
+            _probe_code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${LLAMA_PORT:-7474}/v1/models" 2>/dev/null || echo "000")
+            if [[ "$_probe_code" == "200" ]]; then
+                warn "llama-server answered without an API key (HTTP 200) — auth is NOT applied. Check $OVERRIDE_FILE"
+            elif [[ "$_probe_code" == "401" ]]; then
+                ok "Verified: llama-server rejects unauthenticated requests"
+            fi
         else
             info "llama-server not running yet. Start it with: openmono start"
         fi
