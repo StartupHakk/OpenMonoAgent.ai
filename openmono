@@ -761,6 +761,37 @@ cmd_restart() {
 }
 
 cmd_agent() {
+    # Native / no-Docker fallback for fully open-source dev, cloud, agent-only,
+    # or any environment without Docker. Uses the published OSS .NET agent binary
+    # (or dotnet run from source) + the settings configured via `openmono config`.
+    # This keeps everything 100% open source (mock or real llama.cpp OSS model).
+    if ! docker info &>/dev/null 2>&1; then
+        info "Docker not available — running native open-source agent"
+        WORKSPACE="${WORKSPACE:-$(pwd)}"
+        export WORKSPACE
+        mkdir -p "${HOME}/.openmono"
+
+        local settings="$HOME/.openmono/settings.json"
+        local cfg_endpoint cfg_key
+        if [[ -f "$settings" ]] && command -v jq &>/dev/null; then
+            cfg_endpoint=$(jq -r '.llm.endpoint // empty' "$settings")
+            cfg_key=$(jq -r '.llm.api_key // empty' "$settings")
+            [[ -n "$cfg_key" ]] && export OPENMONO_API_KEY="$cfg_key"
+        fi
+        if [[ -z "${cfg_endpoint}" ]]; then
+            cfg_endpoint="http://localhost:7474"
+        fi
+        export OPENMONO_ENDPOINT="$cfg_endpoint"
+
+        # Prefer the stable published native build we created during setup
+        if [[ -x "$HOME/.openmono/bin/openmono" ]]; then
+            exec "$HOME/.openmono/bin/openmono" "$@"
+        fi
+        # Fallback to source (dev in the OpenMono tree)
+        cd "$REPO_DIR"
+        exec dotnet run --project src/OpenMono.Cli -- "$@"
+    fi
+
     _ensure_docker
     WORKSPACE="${WORKSPACE:-$(pwd)}"
     export WORKSPACE
