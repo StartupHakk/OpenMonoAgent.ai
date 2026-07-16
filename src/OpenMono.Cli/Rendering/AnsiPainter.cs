@@ -96,6 +96,11 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
 
     private volatile int _contextWarningPct;
 
+    // "Update available" banner text, supplied by the host launcher via env when a
+    // newer version of OpenMono is on the tracked branch. Null = up to date / unknown.
+    private readonly string? _updateNotice =
+        Environment.GetEnvironmentVariable("OPENMONO_UPDATE_NOTICE") is { Length: > 0 } n ? n : null;
+
     private string[]? _prevConvFrame;
     private string[]? _prevSideFrame;
     private int _prevFrameWidth;
@@ -1133,6 +1138,7 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
             var convH       = Math.Max(0, _th - inputH - 2);
 
             PaintConvArea(sb, mainW, convH);
+            PaintUpdateBanner(sb, convH);
             PaintInputBox(sb, mainW, convH);
             PaintTabBar(sb, mainW, convH + inputH);
             PaintSidebar(sb, mainW, convH + inputH + 1);
@@ -1168,6 +1174,7 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         var currentText = _getBgInput();
         var convH       = _th - InputContentRows(currentText, mainW) - 4;
         PaintConvArea(sb, mainW, convH);
+        PaintUpdateBanner(sb, convH);
         PaintInputBox(sb, mainW, convH);
         PaintTabBar(sb, mainW, convH + InputContentRows(currentText, mainW) + 2);
         PaintSidebar(sb, mainW, _th - 1);
@@ -1722,6 +1729,18 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         var msg    = "  ^C  Press Ctrl+C one more time to exit";
         var padded = msg.Length < w ? msg + new string(' ', w - msg.Length) : msg[..w];
         sb.Append($"{E}[{row};1H\x1b[43;30m{padded}{R}");
+    }
+
+    // Renders the "update available" banner on the line directly above the input
+    // box (like Claude Code's update notice). No-op when no update is available.
+    private void PaintUpdateBanner(StringBuilder sb, int convH)
+    {
+        if (string.IsNullOrEmpty(_updateNotice)) return;
+        var w      = _tw > 0 ? _tw : 80;
+        var msg    = $"  ⬆  {_updateNotice}";
+        var padded = msg.Length < w ? msg + new string(' ', w - msg.Length) : msg[..w];
+        var row    = Math.Max(1, convH);   // the line just above the input box
+        sb.Append($"{E}[{row};1H\x1b[42;30m{padded}{R}");
     }
 
     private void PaintContextWarning(StringBuilder sb)
