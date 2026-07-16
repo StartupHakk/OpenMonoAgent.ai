@@ -761,6 +761,39 @@ cmd_restart() {
     ok "Restarted"
 }
 
+# ── Update check (host-side; the container can't see the install's git repo) ───
+# Recompute whether the tracked branch is ahead of us and cache the result.
+_refresh_update_cache() {
+    local cache="$HOME/.openmono/.update_check" notice=""
+    git -C "$REPO_DIR" fetch --quiet 2>/dev/null || true
+    local upstream behind cur
+    upstream="$(git -C "$REPO_DIR" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+    if [[ -n "$upstream" ]]; then
+        behind="$(git -C "$REPO_DIR" rev-list --count HEAD..@{u} 2>/dev/null || echo 0)"
+        if [[ "${behind:-0}" -gt 0 ]]; then
+            cur="$(cat "$REPO_DIR/VERSION" 2>/dev/null | tr -d '[:space:]')"
+            notice="Update available — ${behind} new commit(s). Exit and run: openmono upgrade  (you're on v${cur:-?})"
+        fi
+    fi
+    mkdir -p "$HOME/.openmono"
+    printf '%s\n%s\n' "$(date +%s)" "$notice" > "$cache"
+}
+
+# Print the cached update notice (empty when up to date). Refreshes in the
+# background when the cache is missing or >6h old, so it never blocks startup.
+_update_notice() {
+    [[ -d "$REPO_DIR/.git" ]] || return 0
+    command -v git &>/dev/null || return 0
+    local cache="$HOME/.openmono/.update_check" now stamp=0
+    now="$(date +%s)"
+    [[ -f "$cache" ]] && stamp="$(sed -n '1p' "$cache" 2>/dev/null || echo 0)"
+    [[ "$stamp" =~ ^[0-9]+$ ]] || stamp=0
+    if [[ $(( now - stamp )) -gt 21600 ]]; then
+        ( _refresh_update_cache ) >/dev/null 2>&1 &
+    fi
+    [[ -f "$cache" ]] && sed -n '2p' "$cache" 2>/dev/null || true
+}
+
 cmd_agent() {
     _ensure_docker
     WORKSPACE="${WORKSPACE:-$(pwd)}"
@@ -890,11 +923,19 @@ cmd_agent() {
         git_args+=(-e "GIT_CONFIG_COUNT=1" -e "GIT_CONFIG_KEY_0=safe.directory" -e "GIT_CONFIG_VALUE_0=/workspace")
     fi
 
+    # Surface an "update available" banner inside the agent. The check runs on the
+    # host (the container can't see the install's git checkout) and is cached, so
+    # it never delays startup.
+    local extra_env=()
+    local _upd; _upd="$(_update_notice 2>/dev/null || true)"
+    [[ -n "$_upd" ]] && extra_env+=(-e "OPENMONO_UPDATE_NOTICE=$_upd")
+
     docker compose run --rm \
         --user "$(id -u):$(id -g)" \
         -e HOME=/home/agent \
         -e WORKSPACE="$WORKSPACE" \
         "${git_args[@]+"${git_args[@]}"}" \
+        "${extra_env[@]+"${extra_env[@]}"}" \
         agent "$@"
 }
 
