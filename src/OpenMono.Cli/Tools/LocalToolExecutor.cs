@@ -120,41 +120,41 @@ public sealed class LocalToolExecutor : IToolExecutor
         bool allowed;
         string? reason;
 
-        Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: capabilities.Count={capabilities.Count}, AutoApproveWrites={_session.Meta.AutoApproveWrites}, IsReadOnly={tool.IsReadOnly}");
+        Log.Debug($"[EXEC_PERM] {tool.Name}: capabilities.Count={capabilities.Count}, AutoApproveWrites={_session.Meta.AutoApproveWrites}, IsReadOnly={tool.IsReadOnly}");
 
         if (tool.IsReadOnly)
         {
             // Read-only tools never need user permission, regardless of capabilities
             // They can read but not write, so no user approval needed
-            Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: AUTO-APPROVED (read-only tool)");
+            Log.Debug($"[EXEC_PERM] {tool.Name}: AUTO-APPROVED (read-only tool)");
             allowed = true;
             reason = null;
         }
         else if (_session.Meta.AutoApproveWrites)
         {
             // Write tools in auto-approve mode (from approved plan execution)
-            Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: AUTO-APPROVED (AutoApproveWrites)");
+            Log.Debug($"[EXEC_PERM] {tool.Name}: AUTO-APPROVED (AutoApproveWrites)");
             allowed = true;
             reason = null;
         }
         else if (capabilities.Count > 0)
         {
             // Write tools with required capabilities - ask for permission
-            Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: checking {capabilities.Count} capabilities");
+            Log.Debug($"[EXEC_PERM] {tool.Name}: checking {capabilities.Count} capabilities");
             var capDecision = await _permissions.CheckCapabilitiesAsync(tool.Name, capabilities, ct);
             allowed = capDecision.Allowed;
             reason = capDecision.Reason;
-            Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: capability check result: allowed={allowed}");
+            Log.Debug($"[EXEC_PERM] {tool.Name}: capability check result: allowed={allowed}");
         }
         else
         {
             // Write tools without capabilities - use legacy permission check
-            Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: using legacy permission check");
+            Log.Debug($"[EXEC_PERM] {tool.Name}: using legacy permission check");
             var permLevel = tool.RequiredPermission(input);
             var legacyDecision = await _permissions.CheckAsync(tool.Name, input, permLevel, ct);
             allowed = legacyDecision.Allowed;
             reason = legacyDecision.Reason;
-            Console.Error.WriteLine($"[EXEC_PERM] {tool.Name}: legacy check result: allowed={allowed}");
+            Log.Debug($"[EXEC_PERM] {tool.Name}: legacy check result: allowed={allowed}");
         }
 
         if (!allowed)

@@ -43,7 +43,10 @@ if [[ "${OPENMONO_NO_GIT_AUTH:-0}" != "1" ]]; then
   elif [[ "$(uname)" != "Darwin" && -n "${SSH_AUTH_SOCK:-}" && -S "${SSH_AUTH_SOCK}" ]]; then
     DOCKER_ARGS+=(-v "${SSH_AUTH_SOCK}:/ssh-agent" -e "SSH_AUTH_SOCK=/ssh-agent")
   fi
-  DOCKER_ARGS+=(-e "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new")
+  # Batch-mode ssh + no HTTPS prompt: fail fast instead of hanging on a
+  # credential/passphrase prompt the agent can't answer.
+  DOCKER_ARGS+=(-e "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes")
+  DOCKER_ARGS+=(-e "GIT_TERMINAL_PROMPT=0")
   DOCKER_ARGS+=(-e "GIT_CONFIG_COUNT=1" -e "GIT_CONFIG_KEY_0=safe.directory" -e "GIT_CONFIG_VALUE_0=/workspace")
 fi
 
