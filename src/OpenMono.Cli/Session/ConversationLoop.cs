@@ -525,7 +525,20 @@ public sealed class ConversationLoop : IDisposable
             var planModeBeforeTools = _session.Meta.PlanMode;
             Log.Info($"[OMA_MODE_DETECT] Before tools: PlanMode={planModeBeforeTools}");
 
-            var results = await ExecuteToolCallsWithInflightAsync(toolCalls, inFlightTasks, context, siblingAbortCts, ct);
+            // Keep an animated "Working" indicator on screen while tools run. Each
+            // tool prints only a static start line, so a long build / install / clone
+            // would otherwise look frozen until the next model round re-shows a
+            // spinner. This closes that dead gap so the user always sees activity.
+            _output.ShowWaitingIndicator("Working");
+            List<ToolResult> results;
+            try
+            {
+                results = await ExecuteToolCallsWithInflightAsync(toolCalls, inFlightTasks, context, siblingAbortCts, ct);
+            }
+            finally
+            {
+                _output.ClearWaitingIndicator();
+            }
             Log.Info($"[OMA_MODE_DETECT] ExecuteToolCallsWithInflightAsync returned normally");
 
             foreach (var (call, result) in toolCalls.Zip(results))
