@@ -28,6 +28,25 @@ if [[ -S /var/run/docker.sock ]]; then
   DOCKER_ARGS+=(-v /var/run/docker.sock:/var/run/docker.sock)
 fi
 
+# Git auth passthrough: surface the host's git identity + credentials read-only
+# so the agent can commit/push to the user's repo. SSH agent forwarding keeps the
+# private key on the host. Opt out with OPENMONO_NO_GIT_AUTH=1.
+if [[ "${OPENMONO_NO_GIT_AUTH:-0}" != "1" ]]; then
+  [[ -f "${HOME}/.gitconfig" ]] && DOCKER_ARGS+=(-v "${HOME}/.gitconfig:/home/agent/.gitconfig:ro")
+  [[ -d "${HOME}/.ssh" ]] && DOCKER_ARGS+=(-v "${HOME}/.ssh:/home/agent/.ssh:ro")
+  [[ -f "${HOME}/.git-credentials" ]] && DOCKER_ARGS+=(-v "${HOME}/.git-credentials:/home/agent/.git-credentials:ro")
+  # macOS: only Docker Desktop's magic socket bridges the agent into the VM.
+  # A raw $SSH_AUTH_SOCK bind only works on Linux; elsewhere fall back to the
+  # mounted ~/.ssh key files.
+  if [[ "$(uname)" == "Darwin" && -d "/Applications/Docker.app" ]]; then
+    DOCKER_ARGS+=(-v "/run/host-services/ssh-auth.sock:/ssh-agent" -e "SSH_AUTH_SOCK=/ssh-agent")
+  elif [[ "$(uname)" != "Darwin" && -n "${SSH_AUTH_SOCK:-}" && -S "${SSH_AUTH_SOCK}" ]]; then
+    DOCKER_ARGS+=(-v "${SSH_AUTH_SOCK}:/ssh-agent" -e "SSH_AUTH_SOCK=/ssh-agent")
+  fi
+  DOCKER_ARGS+=(-e "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new")
+  DOCKER_ARGS+=(-e "GIT_CONFIG_COUNT=1" -e "GIT_CONFIG_KEY_0=safe.directory" -e "GIT_CONFIG_VALUE_0=/workspace")
+fi
+
 # LLM endpoint: forward host-local inference server into the container.
 # host-gateway resolves to the host's LAN IP on Linux; host.docker.internal on Mac.
 if [[ "$(uname)" == "Darwin" ]]; then
