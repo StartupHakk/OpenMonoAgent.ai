@@ -153,7 +153,16 @@ static class SystemPrompt
 
         var gitContext = await Utils.GitHelper.GetContextAsync(config.WorkingDirectory);
         if (gitContext is not null)
-            parts.Add($"# Git\n\n{gitContext}");
+            parts.Add($"""
+                # Git
+
+                {gitContext}
+
+                You can create commits and push using the Bash tool. The user's git identity
+                and credentials (SSH keys / tokens) are already available, so `git commit` and
+                `git push` work against their remote. Always confirm with the user before
+                pushing, and never force-push without explicit approval.
+                """);
 
         parts.Add($"""
             # Environment

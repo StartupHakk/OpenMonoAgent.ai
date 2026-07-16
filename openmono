@@ -854,10 +854,42 @@ cmd_agent() {
         export OPENMONO_ENDPOINT="$cfg_endpoint"
     fi
 
+    # ── Git auth passthrough ────────────────────────────────────────────────
+    # The agent commits/pushes to the USER's repo, but git auth lives on the
+    # host. Surface the host's identity + credentials read-only so nothing is
+    # copied into the image, and forward the SSH agent when available so private
+    # keys never enter the container. Opt out entirely with OPENMONO_NO_GIT_AUTH=1.
+    local git_args=()
+    if [[ "${OPENMONO_NO_GIT_AUTH:-0}" != "1" ]]; then
+        # Identity + credential-helper config (user.name/email, aliases, helpers).
+        [[ -f "$HOME/.gitconfig" ]] && git_args+=(-v "$HOME/.gitconfig:/home/agent/.gitconfig:ro")
+        # SSH keys, config, known_hosts — covers ssh:// remotes (the common case).
+        [[ -d "$HOME/.ssh" ]] && git_args+=(-v "$HOME/.ssh:/home/agent/.ssh:ro")
+        # HTTPS credentials for the git 'store' helper, if the host uses it.
+        [[ -f "$HOME/.git-credentials" ]] && git_args+=(-v "$HOME/.git-credentials:/home/agent/.git-credentials:ro")
+
+        # SSH agent forwarding keeps the private key on the host. On macOS only
+        # Docker Desktop's magic socket bridges into the VM; a raw $SSH_AUTH_SOCK
+        # bind only works on Linux (shared kernel). Elsewhere (e.g. macOS+Colima)
+        # we skip it and fall back to the mounted ~/.ssh key files.
+        if [[ "$_OPENMONO_OS" == "Darwin" && -d "/Applications/Docker.app" ]]; then
+            git_args+=(-v "/run/host-services/ssh-auth.sock:/ssh-agent" -e "SSH_AUTH_SOCK=/ssh-agent")
+        elif [[ "$_OPENMONO_OS" != "Darwin" && -n "${SSH_AUTH_SOCK:-}" && -S "${SSH_AUTH_SOCK}" ]]; then
+            git_args+=(-v "${SSH_AUTH_SOCK}:/ssh-agent" -e "SSH_AUTH_SOCK=/ssh-agent")
+        fi
+
+        # Accept new host keys non-interactively (write failure on a read-only
+        # known_hosts is only a warning, so first-time pushes don't hang), and
+        # trust the bind-mounted repo so git doesn't reject it as dubious.
+        git_args+=(-e "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new")
+        git_args+=(-e "GIT_CONFIG_COUNT=1" -e "GIT_CONFIG_KEY_0=safe.directory" -e "GIT_CONFIG_VALUE_0=/workspace")
+    fi
+
     docker compose run --rm \
         --user "$(id -u):$(id -g)" \
         -e HOME=/home/agent \
         -e WORKSPACE="$WORKSPACE" \
+        "${git_args[@]+"${git_args[@]}"}" \
         agent "$@"
 }
 
