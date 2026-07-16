@@ -96,6 +96,10 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.agent
+      args:
+        # Override the apt mirror when the default (ports.ubuntu.com on arm64) is
+        # blocked/slow on the build network. Empty by default = no change.
+        APT_MIRROR: ${OPENMONO_APT_MIRROR:-}
     container_name: openmono-agent
     profiles: ["full", "agent"]
     volumes:

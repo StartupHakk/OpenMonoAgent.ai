@@ -878,10 +878,15 @@ cmd_agent() {
             git_args+=(-v "${SSH_AUTH_SOCK}:/ssh-agent" -e "SSH_AUTH_SOCK=/ssh-agent")
         fi
 
-        # Accept new host keys non-interactively (write failure on a read-only
-        # known_hosts is only a warning, so first-time pushes don't hang), and
-        # trust the bind-mounted repo so git doesn't reject it as dubious.
-        git_args+=(-e "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new")
+        # Accept new host keys non-interactively (a write failure on a read-only
+        # known_hosts is only a warning, so first-time pushes don't hang), and run
+        # ssh in batch mode so a passphrase-locked key fails fast instead of
+        # blocking on a prompt the agent can't answer.
+        git_args+=(-e "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes")
+        # Same for HTTPS: never prompt for username/password — surface a clear
+        # error immediately rather than hanging until the Bash tool's timeout.
+        git_args+=(-e "GIT_TERMINAL_PROMPT=0")
+        # Trust the bind-mounted repo so git doesn't reject it as dubious ownership.
         git_args+=(-e "GIT_CONFIG_COUNT=1" -e "GIT_CONFIG_KEY_0=safe.directory" -e "GIT_CONFIG_VALUE_0=/workspace")
     fi
 
