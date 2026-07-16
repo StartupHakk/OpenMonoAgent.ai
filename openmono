@@ -330,6 +330,7 @@ cmd_help() {
     echo ""
     echo "Any box:"
     printf "  %-14s %s\n" "setup"   "Install (--full|--inference|--agent) [--gpu|--cpu]"
+    printf "  %-14s %s\n" "upgrade" "Update to the latest version + rebuild the agent (--check to preview)"
     printf "  %-14s %s\n" "config"  "Read/write ~/.openmono/settings.json (e.g. llm.endpoint, llm.api_key)"
     printf "  %-14s %s\n" "version" "Print the CLI version"
     printf "  %-14s %s\n" "help"    "Show this help"
@@ -1004,6 +1005,131 @@ cmd_graphify() {
     bash "$REPO_DIR/scripts/setup-graphify.sh" "${@}"
 }
 
+# Update the local checkout to the latest version and rebuild the .NET agent
+# image. llama-server is intentionally left untouched — only the agent changes
+# between releases. Safe to run from any box; it self-updates the CLI in place.
+#
+# Note on self-modification: git pull rewrites this very script, but cmd_upgrade's
+# body and the dispatching `case` are already parsed into memory before the pull
+# runs, so the in-flight execution is unaffected. New code takes effect next run.
+cmd_upgrade() {
+    local check_only=false
+    case "${1:-}" in
+        --check|-n)
+            check_only=true ;;
+        --help|-h)
+            echo "Usage: openmono upgrade [--check]"
+            echo ""
+            echo "Updates OpenMono.ai to the latest version:"
+            echo "  1. Fast-forwards the checkout in $REPO_DIR to the latest commit"
+            echo "  2. Rebuilds the .NET agent Docker image (llama-server is left untouched)"
+            echo ""
+            echo "  --check   Report whether an update is available without applying it"
+            echo ""
+            echo "Install directory: $REPO_DIR"
+            return 0 ;;
+        "") ;;
+        *)
+            err "Unknown upgrade option: $1"
+            echo "Run: openmono upgrade --help"
+            return 1 ;;
+    esac
+
+    # Self-upgrade requires a git checkout (this is how the installer clones it).
+    if [[ ! -d "$REPO_DIR/.git" ]]; then
+        err "$REPO_DIR is not a git checkout — cannot self-upgrade."
+        err "Re-install with: curl -fsSL https://raw.githubusercontent.com/StartupHakk/OpenMonoAgent.ai/main/get-openmono.sh | bash"
+        return 1
+    fi
+    if ! command -v git &>/dev/null; then
+        err "git is required for 'openmono upgrade'. Install it and retry."
+        return 1
+    fi
+
+    local current_version="$OPENMONO_VERSION"
+    local branch
+    branch="$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+
+    info "Checking for updates on branch '${branch}' (current: v${current_version})..."
+    if ! git -C "$REPO_DIR" fetch --quiet 2>/dev/null; then
+        err "Could not reach the remote — check your network connection and retry."
+        return 1
+    fi
+
+    # Compare local HEAD against its upstream tracking branch.
+    local upstream_ref local_rev upstream_rev
+    upstream_ref="$(git -C "$REPO_DIR" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+    if [[ -z "$upstream_ref" ]]; then
+        err "Branch '${branch}' has no upstream to pull from — nothing to upgrade."
+        return 1
+    fi
+    local_rev="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)"
+    upstream_rev="$(git -C "$REPO_DIR" rev-parse '@{u}' 2>/dev/null || true)"
+
+    if [[ -n "$local_rev" && "$local_rev" == "$upstream_rev" ]]; then
+        ok "Already up to date (v${current_version}, branch ${branch})."
+        return 0
+    fi
+
+    local behind
+    behind="$(git -C "$REPO_DIR" rev-list --count HEAD..@{u} 2>/dev/null || echo '?')"
+    info "Update available: ${behind} new commit(s) on ${upstream_ref}"
+    git -C "$REPO_DIR" log --oneline --no-decorate HEAD..@{u} 2>/dev/null | head -10 | sed 's/^/    /' || true
+
+    if [[ "$check_only" == "true" ]]; then
+        echo ""
+        info "Run 'openmono upgrade' to apply."
+        return 0
+    fi
+
+    # Never clobber local edits — a fast-forward can't merge them and force-reset
+    # would silently discard work. Make the user resolve them first.
+    if [[ -n "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]]; then
+        err "Local changes in $REPO_DIR would block a clean update."
+        err "Stash or discard them, then retry:"
+        err "  git -C \"$REPO_DIR\" stash    # or: git -C \"$REPO_DIR\" checkout -- ."
+        return 1
+    fi
+
+    info "Pulling latest changes..."
+    if ! git -C "$REPO_DIR" pull --ff-only --quiet; then
+        err "git pull failed. Resolve the issue above and retry."
+        return 1
+    fi
+
+    # New releases may add scripts; keep the CLI and helpers executable.
+    chmod +x "$REPO_DIR/openmono" 2>/dev/null || true
+    chmod +x "$REPO_DIR/scripts/"*.sh 2>/dev/null || true
+
+    local new_version
+    new_version="$(cat "$REPO_DIR/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "$current_version")"
+    ok "Code updated: v${current_version} → v${new_version}"
+
+    # Rebuild the agent image. llama-server is a pinned upstream image and is
+    # never rebuilt here. Docker's COPY-layer cache is keyed on file content, so
+    # a plain build picks up the new source without needing a full cache purge.
+    if ! command -v docker &>/dev/null; then
+        warn "docker not found — code is updated but the agent image was not rebuilt."
+        warn "Install Docker, then run: cd \"$DOCKER_DIR\" && docker compose build agent"
+        return 0
+    fi
+    _ensure_docker
+
+    info "Rebuilding the agent image (llama-server is left untouched)..."
+    (cd "$DOCKER_DIR" && docker compose stop agent >/dev/null 2>&1 || true)
+    if (cd "$DOCKER_DIR" && docker compose build agent); then
+        ok "Agent image rebuilt."
+    else
+        err "Agent image build failed — code is updated but the image is stale."
+        err "Retry manually: cd \"$DOCKER_DIR\" && docker compose build agent"
+        return 1
+    fi
+
+    echo ""
+    ok "Upgrade complete — now on v${new_version}."
+    echo "  Run the agent: openmono agent"
+}
+
 cmd_config() {
     local settings="$HOME/.openmono/settings.json"
 
@@ -1314,7 +1440,8 @@ case "$COMMAND" in
     status)         cmd_status ;;
     graph)          cmd_graph "$@" ;;
     graphify)       cmd_graphify "$@" ;;
-    config)         cmd_config "$@" ;;    
+    upgrade|update) cmd_upgrade "$@" ;;
+    config)         cmd_config "$@" ;;
     tunnel)         cmd_tunnel "$@" ;;
     version|--version|-V) cmd_version ;;
     help|--help|-h) cmd_help ;;
