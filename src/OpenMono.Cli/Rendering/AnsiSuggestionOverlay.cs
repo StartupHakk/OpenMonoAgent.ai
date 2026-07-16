@@ -1,5 +1,6 @@
 using OpenMono.Commands;
 using OpenMono.Config;
+using OpenMono.Llm;
 using OpenMono.Utils;
 
 namespace OpenMono.Rendering;
@@ -73,6 +74,34 @@ internal sealed class AnsiSuggestionOverlay(AppConfig config, AnsiPainter painte
 
     internal void UpdateSuggestions(string text, ref bool visible)
     {
+        // Once the user has typed "/model " (command + space), suggest backend-advertised model
+        // names instead of commands. Selecting one completes the line to "/model <name>".
+        if (text.StartsWith("/model ", StringComparison.OrdinalIgnoreCase))
+        {
+            var query  = text["/model ".Length..].TrimStart();
+            var models = ModelCatalog.Models;
+
+            _filteredCmds = models
+                .Where(m => query.Length == 0 || m.Contains(query, StringComparison.OrdinalIgnoreCase))
+                .Select(m => ($"/model {m}",
+                    string.Equals(m, config.Llm.Model, StringComparison.OrdinalIgnoreCase) ? "current" : ""))
+                .ToList();
+
+            if (_filteredCmds.Count == 0)
+            {
+                if (visible) HideSuggestions(text);
+                visible = false;
+                _suggestionIdx = -1;
+                return;
+            }
+
+            _suggestionIdx = 0;
+            _suggestionScroll = 0;
+            visible = true;
+            DrawSuggestions(text);
+            return;
+        }
+
         if (_allCommands is null || !text.StartsWith('/'))
         {
             if (visible) { HideSuggestions(text); visible = false; }

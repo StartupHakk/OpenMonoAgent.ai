@@ -120,6 +120,12 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
 
     await TryDetectActualModelAsync(config);
     if (model is not null) config.Llm.Model = model;
+
+    // Seed the model catalog (used by /model and inline suggestions) with the active model, then
+    // refresh the full list of backend-advertised models in the background so the UI stays responsive.
+    if (!string.IsNullOrEmpty(config.Llm.Model))
+        ModelCatalog.Set([config.Llm.Model]);
+    _ = ModelCatalog.RefreshAsync(config.Llm.Endpoint, config.Llm.ApiKey);
     if (verbose) config.Verbose = true;
     if (showDetail) config.ShowDetail = true;
     renderer.Verbose = config.Verbose;
@@ -365,6 +371,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     commands.Register(new CheckpointCommand(checkpointer));
     commands.Register(new ThinkCommand());
     commands.Register(new ModeCommand());
+    commands.Register(new ModelCommand());
 
     var compactor = new Compactor(llm, config.Llm.ContextSize);
     var loop = new ConversationLoop(llm, tools, permissions, renderer, renderer, renderer, config, session, compactor, memoryStore,
