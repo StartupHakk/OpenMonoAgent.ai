@@ -393,6 +393,14 @@ internal sealed class AnsiInputReader(
     {
         var saved = _bgInputBuf.ToString();
         StopBackgroundInput();
+
+        // Alert the user in case the terminal/window isn't focused. Inside the
+        // container this rings the host terminal (bell + OSC 9 banner); on the
+        // host it raises a native OS notification.
+        Utils.DesktopNotifier.Alert(
+            "OpenMono — permission needed",
+            $"The agent needs your permission to run {tool}.");
+
         painter.AddMessage(new AnsiPainter.Msg("sys",
             $"{AnsiPainter.Fy}▶ Permission: {tool}{AnsiPainter.R}\n{summary}"));
         painter.PaintConvThrottled(force: true);
