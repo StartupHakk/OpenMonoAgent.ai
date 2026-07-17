@@ -10,10 +10,11 @@ public static class ProcessRunner
         int timeoutMs = 30_000,
         CancellationToken ct = default)
     {
+        var isWindows = Environment.OSVersion.Platform == PlatformID.Win32NT;
         var psi = new ProcessStartInfo
         {
-            FileName = "/bin/bash",
-            ArgumentList = { "-c", command },
+            FileName = isWindows ? "cmd.exe" : "/bin/bash",
+            ArgumentList = { isWindows ? "/c" : "-c", command },
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
