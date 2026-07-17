@@ -395,8 +395,8 @@ internal sealed class AnsiInputReader(
         StopBackgroundInput();
 
         // Alert the user in case the terminal/window isn't focused. Inside the
-        // container this rings the host terminal (bell + OSC 9 banner); on the
-        // host it raises a native OS notification.
+        // container this rings the host terminal bell; on the host it raises a
+        // native OS notification.
         Utils.DesktopNotifier.Alert(
             "OpenMono — permission needed",
             $"The agent needs your permission to run {tool}.");
