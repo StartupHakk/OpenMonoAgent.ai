@@ -13,6 +13,9 @@ llama.cpp/
 # --- code-review-graph (installed tool) ---
 code-review-graph/
 
+# --- gortex (local code-intelligence index) ---
+.gortex/
+
 # --- .NET local config (may contain secrets) ---
 appsettings.Development.json
 appsettings.Local.json

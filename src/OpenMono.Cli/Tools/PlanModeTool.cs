@@ -48,7 +48,8 @@ public sealed class EnterPlanModeTool : ToolBase
 
         context.Session.Meta.PlanMode = true;
         Utils.Log.Info("<---SWITCHED-TO-PLAN-MODE--->");
-        return Task.FromResult(ToolResult.Success(ModeInstructions.Activation(reason)));
+        var promptOverride = Config.PromptOverrides.LoadPlanPrompt(context.Config);
+        return Task.FromResult(ToolResult.Success(ModeInstructions.Activation(reason, promptOverride)));
     }
 }
 

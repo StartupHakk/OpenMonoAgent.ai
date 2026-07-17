@@ -84,6 +84,7 @@ for (var i = 0; i < args.Length; i++)
             Console.WriteLine("  /checkpoint        Checkpoint conversation to free context");
             Console.WriteLine("  /think             Toggle step-by-step reasoning mode");
             Console.WriteLine("  /mode              Toggle between Plan mode (read-only) and Build mode (write)");
+            Console.WriteLine("  /prompt            Override the system prompt or Plan-mode prompt (global/project)");
             Console.WriteLine("  /init              Auto-generate OPENMONO.md from project");
             Console.WriteLine("  /resume [id]       Restore a previous session");
             Console.WriteLine("  /export            Export conversation (markdown/json/html)");
@@ -365,6 +366,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     commands.Register(new CheckpointCommand(checkpointer));
     commands.Register(new ThinkCommand());
     commands.Register(new ModeCommand());
+    commands.Register(new PromptCommand());
 
     var compactor = new Compactor(llm, config.Llm.ContextSize);
     var loop = new ConversationLoop(llm, tools, permissions, renderer, renderer, renderer, config, session, compactor, memoryStore,

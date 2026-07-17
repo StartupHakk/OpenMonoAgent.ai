@@ -138,7 +138,7 @@ static class SystemPrompt
     {
         var parts = new List<string>();
 
-        parts.Add(Base);
+        parts.Add(Config.PromptOverrides.LoadSystemPrompt(config) ?? Base);
 
         var projectInstructions = Config.ProjectConfig.Load(config.WorkingDirectory);
         if (projectInstructions is not null)

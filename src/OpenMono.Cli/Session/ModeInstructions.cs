@@ -82,9 +82,14 @@ internal static class ModeInstructions
     }
 
     // ── EnterPlanMode tool result: the "how to plan" workflow ──────────────────────────────
-    /// <summary>Tool-result text when the LLM calls EnterPlanMode.</summary>
-    internal static string Activation(string reason) =>
-        $"Plan mode activated: {reason}\n\n" +
+    /// <summary>
+    /// Tool-result text when the LLM calls EnterPlanMode. <paramref name="promptOverride"/>,
+    /// when set (via `/prompt`), fully replaces the default "how to plan" workflow text below.
+    /// </summary>
+    internal static string Activation(string reason, string? promptOverride = null) =>
+        promptOverride is not null
+        ? promptOverride
+        : $"Plan mode activated: {reason}\n\n" +
         "IMPORTANT: You cannot create, write, or edit anything right now.\n" +
         "Do NOT say 'I'll create X' or 'I'll implement X'. You are not implementing.\n" +
         "Your only deliverable is a written plan document. Exit plan mode to implement.\n\n" +

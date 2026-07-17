@@ -136,6 +136,30 @@ public class PlanModeToolTests
         }
     }
 
+    [Fact]
+    public async Task EnterPlanMode_WithPlanPromptOverride_ReplacesActivationTextVerbatim()
+    {
+        var workDir = Path.Combine(Path.GetTempPath(), "openmono-plan-override-" + Guid.NewGuid().ToString("N")[..8]);
+        var projectDir = Path.Combine(workDir, ".openmono");
+        Directory.CreateDirectory(projectDir);
+        try
+        {
+            File.WriteAllText(Path.Combine(projectDir, PromptOverrides.PlanPromptFile), "CUSTOM PLAN INSTRUCTIONS");
+
+            var context = CreateContext(workDir);
+            var tool = new EnterPlanModeTool();
+            var input = JsonDocument.Parse("""{"reason": "test"}""").RootElement;
+            var result = await tool.ExecuteAsync(input, context, CancellationToken.None);
+
+            result.IsError.Should().BeFalse();
+            result.Content.Should().Be("CUSTOM PLAN INSTRUCTIONS");
+        }
+        finally
+        {
+            Directory.Delete(workDir, recursive: true);
+        }
+    }
+
     private static ToolContext CreateContext(string? workDir = null)
     {
         workDir ??= Path.GetTempPath();
