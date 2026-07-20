@@ -11,6 +11,10 @@
 # belt-and-suspenders — but it must probe the same path the agent writes to.
 set -euo pipefail
 
+if ! id -un >/dev/null 2>&1; then
+    echo "agent:x:$(id -u):$(id -g):agent:${HOME:-/home/agent}:/bin/bash" >> /etc/passwd 2>/dev/null || true
+fi
+
 DATA_DIR="${OPENMONO_DATA_DIR:-${HOME}/.openmono}"
 
 # Probe writability with a real file write inside the sessions/ subdir — the

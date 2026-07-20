@@ -58,8 +58,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
+RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && node --version && npm --version
+
 # HOME for the docker-compose TUI variant; compose mounts ~/.openmono here.
-RUN mkdir -p /home/agent && chmod 1777 /home/agent
+RUN mkdir -p /home/agent && chmod 1777 /home/agent && chmod 0666 /etc/passwd
 
 # MCP servers shipped with the agent (structural + semantic graph queries).
 RUN pip3 install --no-cache-dir --break-system-packages code-review-graph graphifyy

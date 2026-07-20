@@ -48,6 +48,20 @@ public class BashToolTests : IDisposable
         _tool.RequiredPermission(input).Should().Be(PermissionLevel.Ask);
     }
 
+    [Fact]
+    public async Task StdinReadingCommand_DoesNotHang_GetsEof()
+    {
+        var input = JsonDocument.Parse("""{"command": "read line; echo done", "timeout_ms": 4000}""").RootElement;
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var result = await _tool.ExecuteAsync(input, _context, CancellationToken.None);
+        sw.Stop();
+
+        sw.ElapsedMilliseconds.Should().BeLessThan(3000);
+        result.Content.Should().Contain("done");
+        result.Content.Should().NotContain("timed out");
+    }
+
     [Theory]
     [InlineData("curl -fsSL https://sh.rustup.rs | sh", "sh")]
     [InlineData("python -c \"print(1)\"", "python")]

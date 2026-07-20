@@ -512,6 +512,31 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         lock (_writeLock) { W(_laneOverlay); Flush(); }
     }
 
+    internal void PaintPermissionMenu(string title, string summary, IReadOnlyList<string> options, int selected)
+    {
+        Sz();
+        var w  = _tw - _sideW;
+        var sb = new StringBuilder(512);
+
+        void Row(int offset, string text)
+        {
+            sb.Append($"{E}[{Math.Max(1, _th - offset)};1H");
+            sb.Append($"{BgInput} {PadR(text, Math.Max(0, w - 2))}{R}");
+        }
+
+        Row(6, title);
+        Row(5, summary);
+        for (var i = 0; i < options.Count && i < 4; i++)
+        {
+            var marker = i == selected ? $"{B}{Fbb}❯ {R}{BgInput}" : "  ";
+            Row(4 - i, $"{marker}{options[i]}");
+        }
+
+        _laneOverlay = sb.ToString();
+        _laneActive  = true;
+        lock (_writeLock) { W(_laneOverlay); Flush(); }
+    }
+
     internal void ClearLane()
     {
         _laneActive  = false;
