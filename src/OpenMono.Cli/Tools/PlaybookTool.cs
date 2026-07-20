@@ -70,7 +70,7 @@ public sealed class PlaybookTool : ToolBase
             var dangerous = plan.Tools.Any(t => t.Dangerous);
             var cacheKey = $"Playbook:{plan.PlaybookName}";
 
-            Console.Error.WriteLine($"[PLAYBOOK] Requesting permission for {plan.PlaybookName} (dangerous={dangerous})");
+            Utils.Log.Debug($"[PLAYBOOK] Requesting permission for {plan.PlaybookName} (dangerous={dangerous})");
             var (approved, scope) = await context.Permissions.PauseForUserResponseAsync(
                 context.Interaction,
                 cacheKey,
@@ -82,7 +82,7 @@ public sealed class PlaybookTool : ToolBase
             if (!approved)
                 return ToolResult.Error($"Playbook '{plan.PlaybookName}' execution cancelled by user");
 
-            Console.Error.WriteLine($"[PLAYBOOK] Permission approved (scope={scope}), switching to Build mode");
+            Utils.Log.Debug($"[PLAYBOOK] Permission approved (scope={scope}), switching to Build mode");
         }
 
         // Auto-switch from Plan to Build mode if approved

@@ -1,4 +1,5 @@
 using OpenMono.Playbooks;
+using OpenMono.Utils;
 
 namespace OpenMono.Acp;
 
@@ -63,6 +64,11 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
                 summary,
                 dangerous,
             });
+
+            // Alert the user in case they've switched away from this agent's tab.
+            DesktopNotifier.Alert(
+                "OpenMono — permission needed",
+                $"The agent needs your permission to run {toolName}.");
         }
 
         throw new PendingUserResponseException(id, PendingResponseKind.Permission);
@@ -96,6 +102,10 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
             tools = plan.Tools.Select(t => new { name = t.Name, isReadOnly = t.IsReadOnly, dangerous = t.Dangerous }),
             requiresModeSwitch = plan.RequiresModeSwitch,
         });
+
+        DesktopNotifier.Alert(
+            "OpenMono — approval needed",
+            $"The agent needs your approval to run the '{plan.PlaybookName}' playbook.");
 
         Utils.Log.Info($"[OMA_PLAYBOOK] RequestPlaybookApprovalAsync: awaiting approval id={id}");
         throw new PendingUserResponseException(id, PendingResponseKind.PlaybookApproval);
@@ -136,6 +146,10 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
             id,
             question,
         });
+
+        DesktopNotifier.Alert(
+            "OpenMono — input needed",
+            "The agent is waiting for your input.");
 
         throw new PendingUserResponseException(id, PendingResponseKind.UserInput);
     }

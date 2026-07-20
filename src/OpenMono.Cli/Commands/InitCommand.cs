@@ -59,56 +59,12 @@ public sealed class InitCommand : ICommand
     private static async Task<string?> DetectBuildSystemAsync(string cwd, CancellationToken ct)
     {
         var lines = new List<string> { "## Build" };
-
-        var slnFiles = Directory.GetFiles(cwd, "*.sln", SearchOption.TopDirectoryOnly);
-        var csprojFiles = Directory.GetFiles(cwd, "*.csproj", SearchOption.AllDirectories);
-        if (slnFiles.Length > 0)
+    
+        foreach (var stack in StackDetector.Detect(cwd))
         {
-            lines.Add($"- Solution: `dotnet build {Path.GetFileName(slnFiles[0])}`");
-            lines.Add($"- Tests: `dotnet test`");
-        }
-        else if (csprojFiles.Length > 0)
-        {
-            lines.Add($"- Build: `dotnet build`");
-            lines.Add($"- Tests: `dotnet test`");
-        }
-
-        if (File.Exists(Path.Combine(cwd, "package.json")))
-        {
-            var hasYarn = File.Exists(Path.Combine(cwd, "yarn.lock"));
-            var hasPnpm = File.Exists(Path.Combine(cwd, "pnpm-lock.yaml"));
-            var pm = hasPnpm ? "pnpm" : hasYarn ? "yarn" : "npm";
-            lines.Add($"- Install: `{pm} install`");
-            lines.Add($"- Build: `{pm} run build`");
-            lines.Add($"- Test: `{pm} test`");
-        }
-
-        if (File.Exists(Path.Combine(cwd, "pyproject.toml")) ||
-            File.Exists(Path.Combine(cwd, "setup.py")))
-        {
-            var hasPoetry = File.Exists(Path.Combine(cwd, "poetry.lock"));
-            if (hasPoetry)
-            {
-                lines.Add("- Install: `poetry install`");
-                lines.Add("- Test: `poetry run pytest`");
-            }
-            else
-            {
-                lines.Add("- Install: `pip install -e .`");
-                lines.Add("- Test: `pytest`");
-            }
-        }
-
-        if (File.Exists(Path.Combine(cwd, "go.mod")))
-        {
-            lines.Add("- Build: `go build ./...`");
-            lines.Add("- Test: `go test ./...`");
-        }
-
-        if (File.Exists(Path.Combine(cwd, "Cargo.toml")))
-        {
-            lines.Add("- Build: `cargo build`");
-            lines.Add("- Test: `cargo test`");
+            lines.Add($"### {stack.Name}");
+            foreach (var cmd in stack.Commands)
+                lines.Add($"- {cmd.Label}: `{cmd.Command}`");
         }
 
         if (File.Exists(Path.Combine(cwd, "Makefile")))

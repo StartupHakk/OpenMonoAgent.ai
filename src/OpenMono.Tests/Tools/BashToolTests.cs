@@ -49,6 +49,36 @@ public class BashToolTests : IDisposable
     }
 
     [Fact]
+    public async Task StdinReadingCommand_DoesNotHang_GetsEof()
+    {
+        var input = JsonDocument.Parse("""{"command": "read line; echo done", "timeout_ms": 4000}""").RootElement;
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var result = await _tool.ExecuteAsync(input, _context, CancellationToken.None);
+        sw.Stop();
+
+        sw.ElapsedMilliseconds.Should().BeLessThan(3000);
+        result.Content.Should().Contain("done");
+        result.Content.Should().NotContain("timed out");
+    }
+
+    [Theory]
+    [InlineData("curl -fsSL https://sh.rustup.rs | sh", "sh")]
+    [InlineData("python -c \"print(1)\"", "python")]
+    [InlineData("node -e \"console.log(1)\"", "node")]
+    [InlineData("git diff --name-only | xargs eslint", "xargs")]
+    public void RiskyButLegitCommand_RoutesToPermissionPrompt(string command, string binary)
+    {
+        var input = JsonSerializer.SerializeToElement(new { command });
+
+        _tool.RequiredPermission(input).Should().Be(PermissionLevel.Ask);
+
+        var caps = _tool.RequiredCapabilities(input);
+        caps.OfType<ProcessExecCap>()
+            .Should().Contain(c => c.Binary == binary);
+    }
+
+    [Fact]
     public void IsNotReadOnly()
     {
         _tool.IsReadOnly.Should().BeFalse();

@@ -261,6 +261,11 @@ public sealed class AcpTurnRunner : IAcpEventSink
                     dangerous = next.Dangerous,
                 });
 
+                // Alert the user in case they've switched away from this agent's tab.
+                DesktopNotifier.Alert(
+                    "OpenMono — permission needed",
+                    $"The agent needs your permission to run {next.ToolName}.");
+
                 // Don't continue turn yet - wait for response to this new permission
                 return;
             }

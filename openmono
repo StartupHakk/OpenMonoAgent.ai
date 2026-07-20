@@ -330,6 +330,7 @@ cmd_help() {
     echo ""
     echo "Any box:"
     printf "  %-14s %s\n" "setup"   "Install (--full|--inference|--agent) [--gpu|--cpu]"
+    printf "  %-14s %s\n" "upgrade" "Update to the latest version + rebuild the agent (--check to preview)"
     printf "  %-14s %s\n" "config"  "Read/write ~/.openmono/settings.json (e.g. llm.endpoint, llm.api_key)"
     printf "  %-14s %s\n" "version" "Print the CLI version"
     printf "  %-14s %s\n" "help"    "Show this help"
@@ -431,19 +432,14 @@ cmd_setup() {
         esac
     done
 
-    # Source shared logging helpers for role_prompt function
-    # shellcheck source=scripts/lib/log.sh
     source "$REPO_DIR/scripts/lib/log.sh"
 
-    # Set install directory: explicit env var, or wherever the script is located
     if [[ -n "${OPENMONO_HOME:-}" ]]; then
         INSTALL_DIR="$OPENMONO_HOME"
     else
         INSTALL_DIR="$REPO_DIR"
     fi
 
-    # Set up PATH before anything else so openmono is accessible during/after setup
-    # shellcheck source=/dev/null
     source "$REPO_DIR/scripts/lib/shell-integration.sh" 2>/dev/null || true
     info "Setting up shell integration..."
     if install_to_system_path "$INSTALL_DIR"; then
@@ -457,16 +453,13 @@ cmd_setup() {
         fi
     fi
 
-    # Interactive role prompt when no --full/--inference/--agent flag was given
     role_prompt
 
-    # Share one log file across both scripts
     export OPENMONO_LOG_DIR="${OPENMONO_LOG_DIR:-$HOME/.openmono/logs}"
     mkdir -p "$OPENMONO_LOG_DIR"
     export OPENMONO_LOG_FILE="$OPENMONO_LOG_DIR/setup-$(date +%Y%m%d-%H%M%S).log"
     : > "$OPENMONO_LOG_FILE"
 
-    # Detect OS and choose the right installation scripts
     _OS=$(uname -s)
     case "$_OS" in
         Darwin)
@@ -476,9 +469,6 @@ cmd_setup() {
         Linux)
             _PREREQS_SCRIPT="$REPO_DIR/scripts/install_prereqs.sh"
             _INSTALL_SCRIPT="$REPO_DIR/scripts/install.sh"
-            # On Linux: if docker group membership is available but not active,
-            # re-exec ourselves with sg docker so the entire setup runs with
-            # the group active. This ensures docker is accessible after setup.
             if command -v docker &>/dev/null && ! docker info &>/dev/null 2>&1 && id -nG 2>/dev/null | grep -qw docker; then
                 exec sg docker "$0" setup "$@"
             fi
@@ -489,10 +479,9 @@ cmd_setup() {
             ;;
     esac
 
-    # Set env file before prereqs so both scripts can write to it
     export OPENMONO_ENV_FILE="$HOME/.openmono/.tmp_install_env"
     mkdir -p "$(dirname "$OPENMONO_ENV_FILE")"
-    : > "$OPENMONO_ENV_FILE"  # clear any previous run
+    : > "$OPENMONO_ENV_FILE"
 
     bash "$_PREREQS_SCRIPT" 2>> "$OPENMONO_LOG_FILE" || {
         echo ""
@@ -501,9 +490,6 @@ cmd_setup() {
         exit 1
     }
 
-    # Propagate GPU_MODE chosen in install_prereqs.sh to install.sh.
-    # Child processes can't modify the parent environment, so prereqs writes the
-    # choice to a temp file; we read it here before launching install.sh.
     if [[ -z "${OPENMONO_GPU:-}" && -f "$HOME/.openmono/.tmp_gpu_mode" ]]; then
         _gpu_val=$(grep '^GPU_MODE=' "$HOME/.openmono/.tmp_gpu_mode" | cut -d= -f2 | tr -d '[:space:]')
         [[ "$_gpu_val" == "1" ]] && export OPENMONO_GPU=1 || export OPENMONO_GPU=0
@@ -517,28 +503,19 @@ cmd_setup() {
         exit 1
     }
 
-    # Source env written by install.sh before printing the completion banner
-    # (needed for LLAMA_PORT, GPU_MODE, INSTALL_DIR, OPENMONO_ROLE)
     if [[ -n "${OPENMONO_ENV_FILE:-}" ]] && [[ -f "$OPENMONO_ENV_FILE" ]]; then
-        # shellcheck source=/dev/null
+
         source "$OPENMONO_ENV_FILE"
     fi
 
-    # Fallback values if not set
     INSTALL_DIR="${INSTALL_DIR:-$HOME/openmono.ai}"
     LLAMA_PORT="${LLAMA_PORT:-7474}"
-
-    # Initialize settings.json with role-appropriate defaults if it doesn't exist.
-    # Must run before prompt_optional_services: the gateway setup writes
-    # web.gateway here via cmd_config, and this block only seeds defaults when the
-    # file is still absent.
     local settings_dir="$HOME/.openmono"
     local settings_file="$settings_dir/settings.json"
     mkdir -p "$settings_dir"
     if [[ ! -f "$settings_file" ]]; then
         if [[ "${OPENMONO_ROLE:-}" == "agent" ]]; then
-            # Agent-only: leave endpoint empty (user must configure a remote server)
-            cat > "$settings_file" <<'EOF'
+             cat > "$settings_file" <<'EOF'
 {
   "llm": {
     "endpoint": "",
@@ -548,7 +525,6 @@ cmd_setup() {
 EOF
             detail "Created $settings_file for agent-only role (configure endpoint with: openmono config set llm.endpoint <url>)"
         else
-            # Full/inference roles: default to localhost (install_macos.sh will override on macOS)
             cat > "$settings_file" <<'EOF'
 {
   "llm": {
@@ -561,11 +537,7 @@ EOF
         fi
     fi
 
-    # Offer the optional web services (inference/full roles only). Runs before
-    # the completion banner so "Setup Complete" is the last thing the user sees.
     prompt_optional_services
-
-    # Print role-specific setup complete message
     echo ""
     printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
     printf "${BLUE}${BOLD}  Setup Complete${NC} (role: %s)\n" "$OPENMONO_ROLE"
@@ -645,18 +617,11 @@ EOF
     echo ""
     show_log_location
 
-    # Clear saved setup preferences so next setup starts fresh
     rm -f "$HOME/.openmono/.setup_prefs"
 
-    # Unset all setup-related environment variables so the next 'openmono setup'
-    # run in the same shell will start fresh with hardware detection
     unset OPENMONO_GPU OPENMONO_CPU OPENMONO_ROLE OPENMONO_VERBOSE OPENMONO_LOG_DIR \
           OPENMONO_LOG_FILE OPENMONO_ENV_FILE GPU_MODE AMD_IGPU_MODE AMD_IGPU_REBOOT_PENDING \
           INSTALL_DIR LLAMA_PORT OPENMONO_VERBOSE
-
-    # Restart the shell with updated PATH so openmono and docker are immediately available
-    # The docker group is already active in this process, and exec preserves it
-    # Use -l flag to start as login shell, which reads .zprofile/.bash_profile with Homebrew setup
     export PATH="$INSTALL_DIR:$PATH"
     exec -l "$SHELL"
 }
@@ -713,7 +678,6 @@ cmd_start() {
 cmd_stop() {
     if [[ "$NATIVE_INFERENCE" == "true" ]]; then
         native_cmd_stop || return $?
-        # Stop agent containers too if Docker is up
         if docker info &>/dev/null 2>&1; then
             (cd "$DOCKER_DIR" && docker compose down 2>/dev/null || true)
         fi
@@ -723,8 +687,6 @@ cmd_stop() {
     _ensure_docker
     cd "$DOCKER_DIR"
     export LLAMA_PORT
-
-    # Check health (warn only, don't fail)
     if ! curl -sf "http://localhost:${LLAMA_PORT}/health" &>/dev/null; then
         warn "llama-server is not responding on port ${LLAMA_PORT}"
     fi
@@ -733,7 +695,6 @@ cmd_stop() {
     if docker compose stop llama-server 2>/dev/null; then
         ok "Stopped"
     else
-        # If stop failed, try kill
         if docker compose kill llama-server 2>/dev/null; then
             ok "Force-stopped"
         else
@@ -742,7 +703,6 @@ cmd_stop() {
         fi
     fi
 
-    # Clean up container
     docker compose down 2>/dev/null || true
 }
 
@@ -760,19 +720,44 @@ cmd_restart() {
     ok "Restarted"
 }
 
+_refresh_update_cache() {
+    local cache="$HOME/.openmono/.update_check" notice=""
+    git -C "$REPO_DIR" fetch --quiet 2>/dev/null || true
+    local upstream behind cur
+    upstream="$(git -C "$REPO_DIR" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+    if [[ -n "$upstream" ]]; then
+        behind="$(git -C "$REPO_DIR" rev-list --count HEAD..@{u} 2>/dev/null || echo 0)"
+        if [[ "${behind:-0}" -gt 0 ]]; then
+            cur="$(cat "$REPO_DIR/VERSION" 2>/dev/null | tr -d '[:space:]')"
+            notice="Update available — ${behind} new commit(s). Exit and run: openmono upgrade  (you're on v${cur:-?})"
+        fi
+    fi
+    mkdir -p "$HOME/.openmono"
+    printf '%s\n%s\n' "$(date +%s)" "$notice" > "$cache"
+}
+
+_update_notice() {
+    [[ -d "$REPO_DIR/.git" ]] || return 0
+    command -v git &>/dev/null || return 0
+    local cache="$HOME/.openmono/.update_check" now stamp=0
+    now="$(date +%s)"
+    [[ -f "$cache" ]] && stamp="$(sed -n '1p' "$cache" 2>/dev/null || echo 0)"
+    [[ "$stamp" =~ ^[0-9]+$ ]] || stamp=0
+    if [[ $(( now - stamp )) -gt 21600 ]]; then
+        ( _refresh_update_cache ) >/dev/null 2>&1 &
+    fi
+    [[ -f "$cache" ]] && sed -n '2p' "$cache" 2>/dev/null || true
+}
+
 cmd_agent() {
     _ensure_docker
     WORKSPACE="${WORKSPACE:-$(pwd)}"
     export WORKSPACE
 
-    # Ensure ~/.openmono exists and is writable so the bind-mount inside the
-    # container doesn't get created by Docker as root:root (which causes the
-    # UnauthorizedAccessException crash in ArtifactStore).
     mkdir -p "${HOME}/.openmono"
 
     cd "$DOCKER_DIR"
 
-    # Read endpoint and API key from settings
     local settings="$HOME/.openmono/settings.json"
     local cfg_endpoint cfg_key cfg_web_gateway cfg_web_search cfg_web_scrape
     if [[ -f "$settings" ]] && command -v jq &>/dev/null; then
@@ -784,9 +769,6 @@ cmd_agent() {
         cfg_web_scrape=$(jq -r '.web.scrape // empty' "$settings")
     fi
 
-    # Forward web-gateway routing into the container. A local gateway is reached
-    # by the Caddy compose service name over openmono-network; a remote (relay)
-    # gateway is passed through as-is.
     if [[ -n "${cfg_web_gateway:-}" ]]; then
         case "$cfg_web_gateway" in
             http://localhost:* | http://127.0.0.1:* | http://host.docker.internal:*)
@@ -798,7 +780,6 @@ cmd_agent() {
         [[ -n "${cfg_web_scrape:-}" ]] && export OPENMONO_WEB_SCRAPE="$cfg_web_scrape"
     fi
 
-    # Endpoint must be configured
     if [[ -z "$cfg_endpoint" ]]; then
         err "No LLM endpoint configured in ~/.openmono/settings.json"
         err "Configure your inference server:"
@@ -806,7 +787,6 @@ cmd_agent() {
         exit 1
     fi
 
-    # Determine if endpoint is local or remote
     local is_local=false
     case "$cfg_endpoint" in
         http://localhost:* | http://127.0.0.1:* | http://host.docker.internal:*)
@@ -814,16 +794,12 @@ cmd_agent() {
             ;;
     esac
 
-    # Ensure local inference server is running
     if [[ "$is_local" == "true" ]]; then
         if [[ "$NATIVE_INFERENCE" == "true" ]]; then
-            # macOS: ensure native Metal llama-server is running
-            # shellcheck source=/dev/null
             source "$REPO_DIR/scripts/macos/inference.sh" 2>/dev/null || true
             native_load_config || exit 1
             native_ensure_running || exit 1
         else
-            # Linux/Docker: ensure docker llama-server is running
             if ! curl -sf "http://localhost:7474/health" &>/dev/null; then
                 info "llama-server not running — starting it now..."
                 docker compose up -d llama-server
@@ -841,22 +817,44 @@ cmd_agent() {
         fi
     fi
 
-    # Pass configured endpoint to container.
-    # When the configured endpoint is loopback (Linux install.sh writes
-    # http://localhost:7474) and we're running llama-server in docker, that
-    # address points at the agent container's own loopback, not the host.
-    # Rewrite to the compose service name so both containers talk over
-    # openmono-network. macOS keeps host.docker.internal as-is.
-    if [[ "$is_local" == "true" && "$NATIVE_INFERENCE" != "true" ]]; then
+     if [[ "$is_local" == "true" && "$NATIVE_INFERENCE" != "true" ]]; then
         export OPENMONO_ENDPOINT="http://llama-server:7474"
     else
         export OPENMONO_ENDPOINT="$cfg_endpoint"
     fi
 
+    local git_args=()
+    if [[ "${OPENMONO_NO_GIT_AUTH:-0}" != "1" ]]; then
+ 
+        [[ -f "$HOME/.gitconfig" ]] && git_args+=(-v "$HOME/.gitconfig:/home/agent/.gitconfig:ro")
+ 
+        [[ -d "$HOME/.ssh" ]] && git_args+=(-v "$HOME/.ssh:/home/agent/.ssh:ro")
+ 
+        [[ -f "$HOME/.git-credentials" ]] && git_args+=(-v "$HOME/.git-credentials:/home/agent/.git-credentials:ro")
+        if [[ "$_OPENMONO_OS" == "Darwin" && -d "/Applications/Docker.app" ]]; then
+            git_args+=(-v "/run/host-services/ssh-auth.sock:/ssh-agent" -e "SSH_AUTH_SOCK=/ssh-agent")
+        elif [[ "$_OPENMONO_OS" != "Darwin" && -n "${SSH_AUTH_SOCK:-}" && -S "${SSH_AUTH_SOCK}" ]]; then
+            git_args+=(-v "${SSH_AUTH_SOCK}:/ssh-agent" -e "SSH_AUTH_SOCK=/ssh-agent")
+        fi
+
+        git_args+=(-e "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes")
+ 
+        git_args+=(-e "GIT_TERMINAL_PROMPT=0")
+ 
+        git_args+=(-e "GIT_CONFIG_COUNT=1" -e "GIT_CONFIG_KEY_0=safe.directory" -e "GIT_CONFIG_VALUE_0=/workspace")
+    fi
+
+
+    local extra_env=()
+    local _upd; _upd="$(_update_notice 2>/dev/null || true)"
+    [[ -n "$_upd" ]] && extra_env+=(-e "OPENMONO_UPDATE_NOTICE=$_upd")
+
     docker compose run --rm \
         --user "$(id -u):$(id -g)" \
         -e HOME=/home/agent \
         -e WORKSPACE="$WORKSPACE" \
+        "${git_args[@]+"${git_args[@]}"}" \
+        "${extra_env[@]+"${extra_env[@]}"}" \
         agent "$@"
 }
 
@@ -928,7 +926,6 @@ cmd_status() {
 
     echo ""
     echo -e "${BLUE}── Model ────────────────────────────────────────────${NC}"
-    # Strategy 1: query the running server (/props for llama.cpp, /v1/models for relays)
     LOADED=""
     LOADED=$(curl -sf --max-time 3 "http://localhost:${LLAMA_PORT}/props" \
         | python3 -c "
@@ -953,7 +950,6 @@ print(models[0].get('id', '').strip() if models else '')
     if [ -n "$LOADED" ]; then
         ok "Model loaded: $LOADED"
     else
-        # Strategy 2: fall back to any .gguf on disk
         GGUF=$(find "$REPO_DIR/models" -maxdepth 1 -name "*.gguf" 2>/dev/null | head -1)
         if [ -n "$GGUF" ]; then
             SIZE=$(du -h "$GGUF" | cut -f1)
@@ -971,6 +967,115 @@ cmd_graph() {
 
 cmd_graphify() {
     bash "$REPO_DIR/scripts/setup-graphify.sh" "${@}"
+}
+
+cmd_upgrade() {
+    local check_only=false
+    case "${1:-}" in
+        --check|-n)
+            check_only=true ;;
+        --help|-h)
+            echo "Usage: openmono upgrade [--check]"
+            echo ""
+            echo "Updates OpenMono.ai to the latest version:"
+            echo "  1. Fast-forwards the checkout in $REPO_DIR to the latest commit"
+            echo "  2. Rebuilds the .NET agent Docker image (llama-server is left untouched)"
+            echo ""
+            echo "  --check   Report whether an update is available without applying it"
+            echo ""
+            echo "Install directory: $REPO_DIR"
+            return 0 ;;
+        "") ;;
+        *)
+            err "Unknown upgrade option: $1"
+            echo "Run: openmono upgrade --help"
+            return 1 ;;
+    esac
+
+    if [[ ! -d "$REPO_DIR/.git" ]]; then
+        err "$REPO_DIR is not a git checkout — cannot self-upgrade."
+        err "Re-install with: curl -fsSL https://raw.githubusercontent.com/StartupHakk/OpenMonoAgent.ai/main/get-openmono.sh | bash"
+        return 1
+    fi
+    if ! command -v git &>/dev/null; then
+        err "git is required for 'openmono upgrade'. Install it and retry."
+        return 1
+    fi
+
+    local current_version="$OPENMONO_VERSION"
+    local branch
+    branch="$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+
+    info "Checking for updates on branch '${branch}' (current: v${current_version})..."
+    if ! git -C "$REPO_DIR" fetch --quiet 2>/dev/null; then
+        err "Could not reach the remote — check your network connection and retry."
+        return 1
+    fi
+
+    local upstream_ref local_rev upstream_rev
+    upstream_ref="$(git -C "$REPO_DIR" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+    if [[ -z "$upstream_ref" ]]; then
+        err "Branch '${branch}' has no upstream to pull from — nothing to upgrade."
+        return 1
+    fi
+    local_rev="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)"
+    upstream_rev="$(git -C "$REPO_DIR" rev-parse '@{u}' 2>/dev/null || true)"
+
+    if [[ -n "$local_rev" && "$local_rev" == "$upstream_rev" ]]; then
+        ok "Already up to date (v${current_version}, branch ${branch})."
+        return 0
+    fi
+
+    local behind
+    behind="$(git -C "$REPO_DIR" rev-list --count HEAD..@{u} 2>/dev/null || echo '?')"
+    info "Update available: ${behind} new commit(s) on ${upstream_ref}"
+    git -C "$REPO_DIR" log --oneline --no-decorate HEAD..@{u} 2>/dev/null | head -10 | sed 's/^/    /' || true
+
+    if [[ "$check_only" == "true" ]]; then
+        echo ""
+        info "Run 'openmono upgrade' to apply."
+        return 0
+    fi
+    if [[ -n "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]]; then
+        err "Local changes in $REPO_DIR would block a clean update."
+        err "Stash or discard them, then retry:"
+        err "  git -C \"$REPO_DIR\" stash    # or: git -C \"$REPO_DIR\" checkout -- ."
+        return 1
+    fi
+
+    info "Pulling latest changes..."
+    if ! git -C "$REPO_DIR" pull --ff-only --quiet; then
+        err "git pull failed. Resolve the issue above and retry."
+        return 1
+    fi
+
+    chmod +x "$REPO_DIR/openmono" 2>/dev/null || true
+    chmod +x "$REPO_DIR/scripts/"*.sh 2>/dev/null || true
+
+    local new_version
+    new_version="$(cat "$REPO_DIR/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "$current_version")"
+    ok "Code updated: v${current_version} → v${new_version}"
+
+    if ! command -v docker &>/dev/null; then
+        warn "docker not found — code is updated but the agent image was not rebuilt."
+        warn "Install Docker, then run: cd \"$DOCKER_DIR\" && docker compose build agent"
+        return 0
+    fi
+    _ensure_docker
+
+    info "Rebuilding the agent image (llama-server is left untouched)..."
+    (cd "$DOCKER_DIR" && docker compose stop agent >/dev/null 2>&1 || true)
+    if (cd "$DOCKER_DIR" && docker compose build agent); then
+        ok "Agent image rebuilt."
+    else
+        err "Agent image build failed — code is updated but the image is stale."
+        err "Retry manually: cd \"$DOCKER_DIR\" && docker compose build agent"
+        return 1
+    fi
+
+    echo ""
+    ok "Upgrade complete — now on v${new_version}."
+    echo "  Run the agent: openmono agent"
 }
 
 cmd_config() {
@@ -1166,7 +1271,6 @@ cmd_tunnel() {
                 local new_key
                 new_key="$(openssl rand -hex 24)"
 
-                # Write new key to docker/.env
                 local tmp
                 tmp="$(mktemp)"
                 grep -v '^LLAMA_API_KEY=' "$env_file" > "$tmp" || true
@@ -1174,8 +1278,6 @@ cmd_tunnel() {
                 mv "$tmp" "$env_file"
                 chmod 0600 "$env_file"
                 ok "LLAMA_API_KEY rotated in docker/.env"
-
-                # Restart llama-server to enforce the new key immediately
                 if command -v docker &>/dev/null && docker compose version &>/dev/null 2>&1; then
                     if (cd "$REPO_DIR/docker" && docker compose ps --services 2>/dev/null | grep -q '^llama-server$'); then
                         info "Restarting llama-server with new API key..."
@@ -1188,8 +1290,6 @@ cmd_tunnel() {
                 else
                     warn "docker compose not found — restart llama-server manually to enforce the new key"
                 fi
-
-                # Read endpoint from relay cache for convenience
                 local endpoint=""
                 if [[ -f "$relay_cache" ]]; then
                     local frps_addr remote_port
@@ -1240,11 +1340,6 @@ cmd_tunnel() {
     esac
 }
 
-# ── Entry point ───────────────────────────────────────────────────────────────
-
-# Pre-parse global flags that may appear before any subcommand. Recognised
-# global flags are stripped from the positional list and (where relevant)
-# forwarded to the underlying agent binary.
 AGENT_FORWARD=()
 POSITIONAL=()
 for arg in "$@"; do
@@ -1258,9 +1353,6 @@ for arg in "$@"; do
             ;;
     esac
 done
-
-# If the only thing the user passed was a global flag (e.g. `openmono --verbose`),
-# default to running the agent. Otherwise fall back to `help` as before.
 if [ ${#POSITIONAL[@]} -eq 0 ]; then
     if [ ${#AGENT_FORWARD[@]} -gt 0 ]; then
         COMMAND="agent"
@@ -1283,7 +1375,8 @@ case "$COMMAND" in
     status)         cmd_status ;;
     graph)          cmd_graph "$@" ;;
     graphify)       cmd_graphify "$@" ;;
-    config)         cmd_config "$@" ;;    
+    upgrade|update) cmd_upgrade "$@" ;;
+    config)         cmd_config "$@" ;;
     tunnel)         cmd_tunnel "$@" ;;
     version|--version|-V) cmd_version ;;
     help|--help|-h) cmd_help ;;

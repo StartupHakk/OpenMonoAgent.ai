@@ -75,27 +75,6 @@ public static class BashParser
             var reason = CheckSegmentDestructive(seg);
             if (reason is not null)
                 return reason;
-
-            if (seg.Operator == CompoundOp.Pipe && i + 1 < segments.Count)
-            {
-                var nextSeg = segments[i + 1];
-                if (IsShellInterpreter(nextSeg.Binary))
-                    return $"Pipe to shell interpreter ({nextSeg.Binary}) is a potential injection vector";
-            }
-        }
-
-        if (segments.Count > 1)
-        {
-            var lastSeg = segments[^1];
-            if (IsShellInterpreter(lastSeg.Binary))
-            {
-
-                for (var i = 0; i < segments.Count - 1; i++)
-                {
-                    if (segments[i].Operator == CompoundOp.Pipe)
-                        return $"Pipe to shell interpreter ({lastSeg.Binary}) is a potential injection vector";
-                }
-            }
         }
 
         foreach (var redir in result.Redirections)
@@ -105,16 +84,6 @@ public static class BashParser
         }
 
         return null;
-    }
-
-    private static bool IsShellInterpreter(string binary)
-    {
-        var shellInterpreters = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "sh", "bash", "zsh", "fish", "csh", "tcsh", "ksh", "dash",
-            "/bin/sh", "/bin/bash", "/bin/zsh", "/usr/bin/sh", "/usr/bin/bash"
-        };
-        return shellInterpreters.Contains(binary);
     }
 
     private static string? CheckSegmentDestructive(CommandSegment seg)
@@ -170,28 +139,6 @@ public static class BashParser
                 if (targets.Any(t => t is "/" || IsProtectedPath(t)))
                     return $"{binary} on protected path";
             }
-        }
-
-        if (binary is "xargs")
-        {
-            var safeXargsTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                { "echo", "printf", "wc", "grep", "head", "tail" };
-
-            var flagsTakingArg = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                { "-I", "-n", "-P", "-d", "-s", "--max-args", "--max-procs", "--delimiter", "--replace" };
-            string? targetCmd = null;
-            var argList = seg.Args.ToList();
-            for (var i = 0; i < argList.Count; i++)
-            {
-                if (flagsTakingArg.Contains(argList[i])) { i++; continue; }
-                if (argList[i].StartsWith('-')) continue;
-                targetCmd = argList[i];
-                break;
-            }
-
-            if (targetCmd is not null && !safeXargsTargets.Contains(targetCmd))
-                return $"xargs with unsafe target '{targetCmd}': only echo/printf/wc/grep/head/tail are permitted. " +
-                       "Use an explicit loop or direct command instead.";
         }
 
         return null;
