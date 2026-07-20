@@ -143,7 +143,11 @@ public sealed class PlaybookExecutor : IDisposable
 
                 var stepContent = await GetStepContentAsync(step, playbook, state, ct);
 
-                if (step.Gate != GateType.None)
+                if (step.Gate != GateType.None && playbook.SkipPermissions)
+                {
+                    _renderer.WriteInfo($"  Step '{step.Id}' — gate '{step.Gate}' auto-approved (skip-permissions)");
+                }
+                else if (step.Gate != GateType.None)
                 {
                     if (IsNonInteractiveSession())
                     {
@@ -177,7 +181,7 @@ public sealed class PlaybookExecutor : IDisposable
                     }
                 }
 
-                state.CompleteStep(step.Id, output);
+                state.CompleteStep(step.Id, output, step.Output);
                 _renderer.WriteInfo($"  Step '{step.Id}' — done");
 
                 await state.SaveAsync(_config.DataDirectory, ct);

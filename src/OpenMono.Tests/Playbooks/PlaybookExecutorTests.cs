@@ -51,10 +51,107 @@ public class PlaybookExecutorTests : IDisposable
         loaded!.IsStepCompleted("step1").Should().BeTrue();
     }
 
+    [Fact]
+    public async Task ExecuteAsync_StepOutputName_ResolvesInLaterStepTemplate()
+    {
+        const string sessionId = "sess-output-key";
+        var playbook = new PlaybookDefinition
+        {
+            Name = "statetest",
+            Description = "state test",
+            Steps =
+            [
+                new StepDefinition { Id = "step_one", InlinePrompt = "say hello", Output = "greeting" },
+                new StepDefinition { Id = "step_two", Requires = ["step_one"], InlinePrompt = "Value: {{state.greeting}}" },
+            ],
+        };
+
+        var config = new AppConfig { WorkingDirectory = _tempDir, DataDirectory = _tempDir };
+        var renderer = new TerminalRenderer();
+        var permissions = new PermissionEngine(config, renderer, renderer);
+        var llm = new EchoLlmClient();
+        using var executor = new PlaybookExecutor(llm, new ToolRegistry(), renderer, config, permissions);
+
+        await executor.ExecuteAsync(
+            playbook, new Dictionary<string, object>(), resumeFrom: null, sessionId, CancellationToken.None);
+
+        // step_two's resolved prompt (echoed back verbatim by the fake LLM) must carry
+        // step_one's actual output rather than the literal unresolved "{{state.greeting}}".
+        var stepTwoUserContent = llm.Calls[1].Last(m => m.Role == MessageRole.User).Content;
+        stepTwoUserContent.Should().Be("Value: say hello");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_GateWithoutSkipPermissions_AbortsInNonInteractiveSession()
+    {
+        var playbook = new PlaybookDefinition
+        {
+            Name = "gated",
+            Description = "gated playbook",
+            Steps = [new StepDefinition { Id = "step1", InlinePrompt = "do the thing", Gate = GateType.Confirm }],
+        };
+
+        var config = new AppConfig { WorkingDirectory = _tempDir, DataDirectory = _tempDir };
+        var renderer = new TerminalRenderer();
+        var permissions = new PermissionEngine(config, renderer, renderer);
+        using var executor = new PlaybookExecutor(
+            new ImmediateLlmClient(), new ToolRegistry(), renderer, config, permissions);
+
+        var result = await executor.ExecuteAsync(
+            playbook, new Dictionary<string, object>(), resumeFrom: null, "sess-gate-block", CancellationToken.None);
+
+        result.Should().Contain("requires interactive confirmation");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SkipPermissions_BypassesStepGate_EvenNonInteractive()
+    {
+        var playbook = new PlaybookDefinition
+        {
+            Name = "gated",
+            Description = "gated playbook",
+            SkipPermissions = true,
+            Steps = [new StepDefinition { Id = "step1", InlinePrompt = "do the thing", Gate = GateType.Confirm }],
+        };
+
+        var config = new AppConfig { WorkingDirectory = _tempDir, DataDirectory = _tempDir };
+        var renderer = new TerminalRenderer();
+        var permissions = new PermissionEngine(config, renderer, renderer);
+        using var executor = new PlaybookExecutor(
+            new ImmediateLlmClient(), new ToolRegistry(), renderer, config, permissions);
+
+        var result = await executor.ExecuteAsync(
+            playbook, new Dictionary<string, object>(), resumeFrom: null, "sess-gate-skip", CancellationToken.None);
+
+        result.Should().NotContain("requires interactive confirmation");
+
+        var loaded = await PlaybookState.LoadAsync(config.DataDirectory, playbook.Name, "sess-gate-skip", CancellationToken.None);
+        loaded!.IsStepCompleted("step1").Should().BeTrue();
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempDir))
             Directory.Delete(_tempDir, recursive: true);
+    }
+
+    private sealed class EchoLlmClient : ILlmClient
+    {
+        public readonly List<IReadOnlyList<Message>> Calls = [];
+
+        public async IAsyncEnumerable<StreamChunk> StreamChatAsync(
+            IReadOnlyList<Message> messages,
+            JsonElement? tools,
+            LlmOptions options,
+            [EnumeratorCancellation] CancellationToken ct)
+        {
+            Calls.Add(messages);
+            var lastUser = messages.Last(m => m.Role == MessageRole.User).Content;
+            yield return new StreamChunk { TextDelta = lastUser, IsComplete = true };
+            await Task.CompletedTask;
+        }
+
+        public void Dispose() { }
     }
 
     private sealed class ImmediateLlmClient : ILlmClient

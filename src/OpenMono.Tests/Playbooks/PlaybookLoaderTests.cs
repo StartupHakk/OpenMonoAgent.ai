@@ -117,6 +117,53 @@ public class PlaybookLoaderTests : IDisposable
     }
 
     [Fact]
+    public void LoadAll_WithSkipPermissions_ParsesFlag()
+    {
+        var playbookDir = Path.Combine(_tempDir, "headless");
+        Directory.CreateDirectory(playbookDir);
+        File.WriteAllText(Path.Combine(playbookDir, "PLAYBOOK.md"), """
+            ---
+            name: headless
+            description: Runs with no prompts
+            allowed-tools:
+              - Bash
+            skip-permissions: true
+            ---
+
+            You are a headless playbook.
+            """);
+
+        var loader = new PlaybookLoader([_tempDir]);
+        var playbooks = loader.LoadAll();
+
+        playbooks.Should().HaveCount(1);
+        playbooks[0].SkipPermissions.Should().BeTrue();
+    }
+
+    [Fact]
+    public void LoadAll_WithoutSkipPermissions_DefaultsFalse()
+    {
+        var playbookDir = Path.Combine(_tempDir, "interactive");
+        Directory.CreateDirectory(playbookDir);
+        File.WriteAllText(Path.Combine(playbookDir, "PLAYBOOK.md"), """
+            ---
+            name: interactive
+            description: Runs normally
+            allowed-tools:
+              - Bash
+            ---
+
+            You are an interactive playbook.
+            """);
+
+        var loader = new PlaybookLoader([_tempDir]);
+        var playbooks = loader.LoadAll();
+
+        playbooks.Should().HaveCount(1);
+        playbooks[0].SkipPermissions.Should().BeFalse();
+    }
+
+    [Fact]
     public void LoadAll_NonExistentPath_Skips()
     {
         var loader = new PlaybookLoader(["/nonexistent/path"]);
