@@ -133,4 +133,15 @@ public class StackDetectorTests : IDisposable
         section.Should().Contain("npm test");
         section.Should().NotContain("dotnet test");
     }
+
+    [Fact]
+    public void BuildPromptSection_SingleStack_DoesNotForbidCreatingOtherStacks()
+    {
+        Touch("App.sln", "");
+        var section = StackDetector.BuildPromptSection(StackDetector.Detect(_dir));
+        section.Should().Contain(".NET");
+        section.Should().Contain("NOT a restriction");
+        section.Should().Contain("create-next-app");
+        section.Should().NotContain("do not substitute");
+    }
 }

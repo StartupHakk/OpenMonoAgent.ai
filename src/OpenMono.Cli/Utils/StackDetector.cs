@@ -132,9 +132,15 @@ public static class StackDetector
         var sb = new System.Text.StringBuilder();
         sb.AppendLine("# Project Stack (auto-detected)");
         sb.AppendLine();
-        sb.AppendLine("This project uses the stack(s) below. Use THESE commands to build, test, run, and");
-        sb.AppendLine("add dependencies — do not substitute another stack's tooling (e.g. do not run");
-        sb.AppendLine("`dotnet` commands unless .NET is listed here).");
+        sb.AppendLine("The stack(s) below were detected from files already in the working directory.");
+        sb.AppendLine("For work on the EXISTING code here, prefer these commands to build, test, run,");
+        sb.AppendLine("and add dependencies.");
+        sb.AppendLine();
+        sb.AppendLine("This is context, NOT a restriction on what you may build. If the user asks you");
+        sb.AppendLine("to create, scaffold, or add a project in a different stack (e.g. a Next.js app");
+        sb.AppendLine("with `npx create-next-app`, `cargo new`, `django-admin startproject`), use that");
+        sb.AppendLine("stack's own tooling freely — you are a full-stack agent and work in whatever");
+        sb.AppendLine("language and framework the user asks for, regardless of what is detected here.");
         sb.AppendLine();
         foreach (var stack in stacks)
         {

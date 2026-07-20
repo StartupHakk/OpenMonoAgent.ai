@@ -58,6 +58,15 @@ static class SystemPrompt
 
         Reserve Bash for: git commands, the project's build/test/run tools (dotnet, npm, pnpm, yarn, pytest, poetry, go, cargo, mvn, gradle, make, …), and system operations.
 
+        BASH RUNS NON-INTERACTIVELY: stdin is closed, so any command that would prompt for input hangs
+        until it is killed by the timeout. ALWAYS run commands non-interactively:
+        - Scaffolders/installers: pass flags that skip prompts (e.g. `npx --yes create-next-app@latest <dir>
+          --ts --eslint --app --tailwind --no-src-dir --use-npm --import-alias "@/*"`, `npm init -y`,
+          `yarn create ... --yes`). Prefix with `CI=1` when a tool honors it.
+        - Long downloads/installs (create-next-app, `npm install`, package restores) legitimately take
+          minutes: pass a generous `timeout_ms` (up to 600000). For servers/watchers that never exit,
+          use `background=true` instead of a long timeout.
+
         PARALLELISM: call multiple independent tools in a single response. Never serialize lookups that can run simultaneously.
         - CORRECT: call FileRead, Glob, and Grep together when they are independent
         - WRONG: call FileRead, wait for result, then call Glob, wait, then call Grep

@@ -188,7 +188,10 @@ internal sealed class AnsiInputReader(
     internal void StopBackgroundInput()
     {
         _bgInputActive = false;
+        var thread = _bgInputThread;
         _bgInputThread = null;
+        if (thread is not null && thread != Thread.CurrentThread && thread.IsAlive)
+            thread.Join(TimeSpan.FromMilliseconds(500));
         painter.Write($"{AnsiPainter.E}[?2004l");
         AnsiPainter.Flush();
     }
@@ -411,17 +414,11 @@ internal sealed class AnsiInputReader(
             ? summary[..(maxSummaryLen - 3)] + "..."
             : summary;
 
-        painter.PaintPermissionLane(
-            $"{AnsiPainter.Fy}{AnsiPainter.B}▸ Permission required: {tool}{AnsiPainter.R}",
-            $"{AnsiPainter.Fw}{truncatedSummary}{AnsiPainter.R}",
-            $"  {AnsiPainter.B}{AnsiPainter.Fg}[y]{AnsiPainter.R}{AnsiPainter.BgInput}  Allow",
-            $"  {AnsiPainter.B}{AnsiPainter.Fy}[n]{AnsiPainter.R}{AnsiPainter.BgInput}  Deny",
-            $"  {AnsiPainter.B}{AnsiPainter.Fc}[a]{AnsiPainter.R}{AnsiPainter.BgInput}  Allow all",
-            $"  {AnsiPainter.B}{AnsiPainter.Fr}[!]{AnsiPainter.R}{AnsiPainter.BgInput}  Deny all"
-        );
+        var title       = $"{AnsiPainter.Fy}{AnsiPainter.B}▸ Permission required: {tool}{AnsiPainter.R}  {AnsiPainter.Fk}↑/↓ move · Enter confirm{AnsiPainter.R}";
+        var summaryLine = $"{AnsiPainter.Fw}{truncatedSummary}{AnsiPainter.R}";
 
         PermissionResponse response;
-        try { response = ReadPermissionKey(); }
+        try { response = ReadPermissionMenu(title, summaryLine); }
         finally { painter.ClearLane(); }
         painter.Paint();
         StartBackgroundInput(saved);
@@ -848,8 +845,20 @@ internal sealed class AnsiInputReader(
         finally { Console.TreatControlCAsInput = prev; }
     }
 
-    private PermissionResponse ReadPermissionKey()
+    private PermissionResponse ReadPermissionMenu(string title, string summary)
     {
+        var options = new (string Label, PermissionResponse Resp)[]
+        {
+            ($"{AnsiPainter.B}{AnsiPainter.Fg}[y]{AnsiPainter.R}{AnsiPainter.BgInput} Allow",     PermissionResponse.Allow),
+            ($"{AnsiPainter.B}{AnsiPainter.Fc}[a]{AnsiPainter.R}{AnsiPainter.BgInput} Allow all", PermissionResponse.AllowAll),
+            ($"{AnsiPainter.B}{AnsiPainter.Fy}[n]{AnsiPainter.R}{AnsiPainter.BgInput} Deny",      PermissionResponse.Deny),
+            ($"{AnsiPainter.B}{AnsiPainter.Fr}[!]{AnsiPainter.R}{AnsiPainter.BgInput} Deny all",  PermissionResponse.DenyAll),
+        };
+        var labels = options.Select(o => o.Label).ToArray();
+
+        var selected = 0;
+        painter.PaintPermissionMenu(title, summary, labels, selected);
+
         var prev = Console.TreatControlCAsInput;
         Console.TreatControlCAsInput = true;
         try
@@ -860,15 +869,30 @@ internal sealed class AnsiInputReader(
                 if (result is null) { Thread.Sleep(20); continue; }
                 var k = result.Value;
 
+                if (k.Key is ConsoleKey.UpArrow or ConsoleKey.LeftArrow)
+                {
+                    selected = (selected - 1 + options.Length) % options.Length;
+                    painter.PaintPermissionMenu(title, summary, labels, selected);
+                    continue;
+                }
+                if (k.Key is ConsoleKey.DownArrow or ConsoleKey.RightArrow or ConsoleKey.Tab)
+                {
+                    selected = (selected + 1) % options.Length;
+                    painter.PaintPermissionMenu(title, summary, labels, selected);
+                    continue;
+                }
+                if (k.Key == ConsoleKey.Enter) return options[selected].Resp;
+
                 if (k.KeyChar is 'y' or 'Y') return PermissionResponse.Allow;
                 if (k.KeyChar is 'n' or 'N') return PermissionResponse.Deny;
                 if (k.KeyChar is 'a' or 'A') return PermissionResponse.AllowAll;
                 if (k.KeyChar == '!')         return PermissionResponse.DenyAll;
+
                 if (k.Key == ConsoleKey.Escape)
                 {
                     if (!Console.KeyAvailable) { var ms = 0; while (!Console.KeyAvailable && ms < 50) { Thread.Sleep(1); ms++; } }
-                    if (Console.KeyAvailable) { TryReadEscapeSequence(); continue; }
-                    return PermissionResponse.Deny;
+                    if (Console.KeyAvailable) TryReadEscapeSequence();
+                    continue;
                 }
 
                 if (k.Key == ConsoleKey.C && k.Modifiers.HasFlag(ConsoleModifiers.Control))
