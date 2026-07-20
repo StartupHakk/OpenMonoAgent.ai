@@ -62,13 +62,6 @@ public static class SanityCheck
     private static readonly HashSet<string> AlwaysBlockedBuiltins =
         new(StringComparer.OrdinalIgnoreCase) { "eval", "exec" };
 
-    private static readonly HashSet<string> InlineExecInterpreters =
-        new(StringComparer.OrdinalIgnoreCase)
-        { "python", "python3", "python2", "node", "nodejs", "perl", "ruby", "php", "lua" };
-
-    private static readonly HashSet<string> InlineExecFlags =
-        new(StringComparer.OrdinalIgnoreCase) { "-c", "-e", "-r" };
-
     // Shell commands that read file contents — steer to FileRead.
     private static readonly HashSet<string> FileReadCommands =
         new(StringComparer.OrdinalIgnoreCase) { "cat", "head", "tail", "nl", "less", "more" };
@@ -170,10 +163,6 @@ public static class SanityCheck
         if (AlwaysBlockedBuiltins.Contains(seg.Binary))
             return $"SanityCheck refused Bash: '{seg.Binary}' executes arbitrary code strings. " +
                    "Write the logic to a script file and execute that instead.";
-
-        if (InlineExecInterpreters.Contains(seg.Binary) && seg.Args.Any(InlineExecFlags.Contains))
-            return $"SanityCheck refused Bash: '{seg.Binary}' with inline code flag (-c/-e/-r) requires explicit " +
-                   "user approval. Write the code to a script file and run that instead.";
 
         return null;
     }
