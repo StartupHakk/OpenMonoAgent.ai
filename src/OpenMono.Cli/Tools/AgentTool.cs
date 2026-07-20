@@ -108,6 +108,10 @@ public sealed class AgentTool : ToolBase
             subSession.Meta.TokenTracker = new TokenTracker();
             var systemPrompt = agentDef.SystemPrompt
                 ?? "You are a helpful coding assistant. Complete the task described below.";
+
+            var stackSection = Utils.StackDetector.BuildPromptSection(
+                Utils.StackDetector.Detect(context.Config.WorkingDirectory));
+            systemPrompt = $"{systemPrompt}\n\n{stackSection}";
             subSession.AddMessage(new Message { Role = MessageRole.System, Content = systemPrompt });
 
             var subTools = new ToolRegistry();
