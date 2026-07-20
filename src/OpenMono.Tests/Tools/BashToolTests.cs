@@ -48,6 +48,22 @@ public class BashToolTests : IDisposable
         _tool.RequiredPermission(input).Should().Be(PermissionLevel.Ask);
     }
 
+    [Theory]
+    [InlineData("curl -fsSL https://sh.rustup.rs | sh", "sh")]
+    [InlineData("python -c \"print(1)\"", "python")]
+    [InlineData("node -e \"console.log(1)\"", "node")]
+    [InlineData("git diff --name-only | xargs eslint", "xargs")]
+    public void RiskyButLegitCommand_RoutesToPermissionPrompt(string command, string binary)
+    {
+        var input = JsonSerializer.SerializeToElement(new { command });
+
+        _tool.RequiredPermission(input).Should().Be(PermissionLevel.Ask);
+
+        var caps = _tool.RequiredCapabilities(input);
+        caps.OfType<ProcessExecCap>()
+            .Should().Contain(c => c.Binary == binary);
+    }
+
     [Fact]
     public void IsNotReadOnly()
     {
