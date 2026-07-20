@@ -113,6 +113,7 @@ public sealed class PlaybookLoader
                 ContextMode = ParseEnum<ContextMode>(GetString(frontmatter, "context-mode"), ContextMode.Selective),
                 MaxContextTokens = GetInt(frontmatter, "max-context-tokens", 3000),
                 Tags = GetStringList(frontmatter, "tags"),
+                SkipPermissions = GetBool(frontmatter, "skip-permissions", false),
                 Parameters = ParseParameters(frontmatter),
                 Steps = ParseSteps(frontmatter),
                 Constraints = ParseConstraints(frontmatter),
@@ -129,8 +130,12 @@ public sealed class PlaybookLoader
     private static string? GetString(Dictionary<string, object> dict, string key) =>
         dict.TryGetValue(key, out var val) ? val?.ToString() : null;
 
-    private static bool GetBool(Dictionary<string, object> dict, string key, bool defaultVal) =>
-        dict.TryGetValue(key, out var val) && val is bool b ? b : defaultVal;
+    private static bool GetBool(Dictionary<string, object> dict, string key, bool defaultVal)
+    {
+        if (!dict.TryGetValue(key, out var val) || val is null) return defaultVal;
+        if (val is bool b) return b;
+        return bool.TryParse(val.ToString(), out var parsed) ? parsed : defaultVal;
+    }
 
     private static int GetInt(Dictionary<string, object> dict, string key, int defaultVal) =>
         dict.TryGetValue(key, out var val) && int.TryParse(val?.ToString(), out var i) ? i : defaultVal;
