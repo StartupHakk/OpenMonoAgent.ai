@@ -156,6 +156,7 @@ install_pkg curl curl
 install_pkg jq jq
 install_pkg cmake cmake
 install_pkg pciutils lspci
+install_pkg util-linux-extra newgrp
 
 if dpkg -s build-essential &>/dev/null 2>&1; then
     ok "build-essential already installed"
