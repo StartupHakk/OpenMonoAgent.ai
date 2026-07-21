@@ -308,6 +308,16 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
 
     internal void Write(string s) => W(s);
 
+    internal void CopyToClipboardOsc52(string text)
+    {
+        var b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
+        lock (_writeLock)
+        {
+            W($"{E}]52;c;{b64}\a");
+            Flush();
+        }
+    }
+
     internal void MoveTo(int col, int row)
         => terminal.WriteAsync($"\x1b[{row};{col}H").GetAwaiter().GetResult();
 
