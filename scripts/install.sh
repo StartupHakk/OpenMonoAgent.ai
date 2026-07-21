@@ -79,7 +79,7 @@ select_model() {
 # then re-exec ourselves via `sg docker` so the group IS active in the
 # subshell. Silent if already fine.
 if command -v docker &>/dev/null && ! docker info &>/dev/null 2>&1; then
-    if id -nG 2>/dev/null | grep -qw docker; then
+    if getent group docker 2>/dev/null | grep -qw "${USER:-$(whoami)}"; then
         if command -v sg &>/dev/null && sg docker -c "docker info" &>/dev/null 2>&1; then
             info "Re-launching with docker group active (no manual 'newgrp' needed)..."
             exec sg docker -- bash "$0" "$@"
@@ -167,7 +167,7 @@ check_prerequisites() {
     # Check if user can run docker without sudo
     if command -v docker &>/dev/null; then
         if ! docker info &>/dev/null 2>&1; then
-            if id -nG 2>/dev/null | grep -qw docker; then
+            if getent group docker 2>/dev/null | grep -qw "${USER:-$(whoami)}"; then
                 warnings+=("Docker group membership exists but not active in current shell. Run: newgrp docker")
             else
                 warnings+=("User '$USER' is not in the docker group. Run: sudo usermod -aG docker \$USER && newgrp docker")

@@ -467,7 +467,7 @@ if [ "$INSTALL_DOCKER_CE" = true ] || ! command -v docker &>/dev/null; then
     run $SUDO apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
         || die "Docker install failed"
     run $SUDO groupadd docker 2>/dev/null || true
-    run $SUDO usermod -aG docker "$USER" || true
+    run $SUDO usermod -aG docker "${USER:-$(whoami)}" || true
     ok "Docker installed"
 
     # WSL2 doesn't start systemd services by default on some distros — make
@@ -498,10 +498,10 @@ fi
 
 # Ensure user is in the docker group even when Docker was pre-installed.
 # The openmono wrapper handles sg re-exec after this script exits.
-if command -v docker &>/dev/null && ! id -nG 2>/dev/null | grep -qw docker; then
+if command -v docker &>/dev/null && ! getent group docker 2>/dev/null | grep -qw "${USER:-$(whoami)}"; then
     run $SUDO groupadd docker 2>/dev/null || true
-    run $SUDO usermod -aG docker "$USER" || true
-    ok "Added '$USER' to the docker group"
+    run $SUDO usermod -aG docker "${USER:-$(whoami)}" || true
+    ok "Added '${USER:-$(whoami)}' to the docker group"
 fi
 
 if docker compose version &>/dev/null 2>&1; then

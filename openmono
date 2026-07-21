@@ -469,7 +469,7 @@ cmd_setup() {
         Linux)
             _PREREQS_SCRIPT="$REPO_DIR/scripts/install_prereqs.sh"
             _INSTALL_SCRIPT="$REPO_DIR/scripts/install.sh"
-            if command -v docker &>/dev/null && ! docker info &>/dev/null 2>&1 && id -nG 2>/dev/null | grep -qw docker; then
+            if command -v docker &>/dev/null && ! docker info &>/dev/null 2>&1 && getent group docker 2>/dev/null | grep -qw "${USER:-$(whoami)}"; then
                 exec sg docker "$0" setup "$@"
             fi
             ;;
