@@ -911,6 +911,9 @@ internal sealed class AnsiInputReader(
         try { painter.CopyToClipboardOsc52(text); }
         catch { }
 
+        try { WriteClipboardBridge(text); }
+        catch { }
+
         try
         {
             ProcessStartInfo psi;
@@ -928,6 +931,18 @@ internal sealed class AnsiInputReader(
             p.WaitForExit(2000);
         }
         catch { }
+    }
+
+    private static void WriteClipboardBridge(string text)
+    {
+        var dir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".openmono");
+        if (!Directory.Exists(dir)) return;
+
+        var target = Path.Combine(dir, ".clipboard-out");
+        var tmp    = Path.Combine(dir, ".clipboard-out.tmp");
+        File.WriteAllText(tmp, text);
+        File.Move(tmp, target, overwrite: true);
     }
 
     private static string? ReadClipboard()
