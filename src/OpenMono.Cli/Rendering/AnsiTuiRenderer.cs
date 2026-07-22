@@ -48,7 +48,7 @@ public sealed class AnsiTuiRenderer : IRenderer
     public void EnterFullScreen()
     {
         _painter.Sz();
-        _painter.Write($"{AnsiPainter.E}[?1049h{AnsiPainter.E}[?25l{AnsiPainter.E}[2J");
+        _painter.Write($"{AnsiPainter.E}[?1049h{AnsiPainter.E}[?1002h{AnsiPainter.E}[?1006h{AnsiPainter.E}[?25l{AnsiPainter.E}[2J");
         AnsiPainter.Flush();
         _inFullScreen = true;
         _painter.InvalidateCache();
