@@ -375,7 +375,9 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
 
     var compactor = new Compactor(llm, config.Llm.ContextSize);
     var loop = new ConversationLoop(llm, tools, permissions, renderer, renderer, renderer, config, session, compactor, memoryStore,
-        checkpointer: checkpointer);
+        checkpointer: checkpointer,
+        dequeuePendingUserInput: () => ansiTui?.DequeueMessage(),
+        onPendingUserInputInjected: text => ansiTui?.AddUserMessage(text));
 
     commands.Register(new RetryCommand(loop));
     commands.Register(new CompactCommand(compactor));
