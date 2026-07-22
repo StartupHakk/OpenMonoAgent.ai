@@ -749,6 +749,50 @@ _update_notice() {
     [[ -f "$cache" ]] && sed -n '2p' "$cache" 2>/dev/null || true
 }
 
+CLIPBOARD_BRIDGE_PID=""
+
+_host_clip_cmd() {
+    if command -v pbcopy &>/dev/null; then echo "pbcopy"; return 0; fi
+    if command -v wl-copy &>/dev/null; then echo "wl-copy"; return 0; fi
+    if command -v xclip &>/dev/null; then echo "xclip -selection clipboard"; return 0; fi
+    if command -v xsel &>/dev/null; then echo "xsel --clipboard --input"; return 0; fi
+    echo ""
+}
+
+_clipboard_bridge_start() {
+    local clipcmd; clipcmd="$(_host_clip_cmd)"
+    [[ -z "$clipcmd" ]] && return 0
+
+    local cbfile="$HOME/.openmono/.clipboard-out"
+    rm -f "$cbfile" 2>/dev/null || true
+
+    (
+        set +e
+        last=""
+        while :; do
+            if [[ -s "$cbfile" ]]; then
+                if command -v md5 &>/dev/null; then
+                    h="$(md5 -q "$cbfile" 2>/dev/null)"
+                elif command -v md5sum &>/dev/null; then
+                    h="$(md5sum "$cbfile" 2>/dev/null | cut -d' ' -f1)"
+                else
+                    h="$(wc -c < "$cbfile" 2>/dev/null)"
+                fi
+                if [[ -n "$h" && "$h" != "$last" ]]; then
+                    eval "$clipcmd" < "$cbfile" 2>/dev/null && last="$h"
+                fi
+            fi
+            sleep 0.3
+        done
+    ) &
+    CLIPBOARD_BRIDGE_PID=$!
+}
+
+_clipboard_bridge_stop() {
+    [[ -n "${CLIPBOARD_BRIDGE_PID:-}" ]] && kill "$CLIPBOARD_BRIDGE_PID" 2>/dev/null
+    CLIPBOARD_BRIDGE_PID=""
+}
+
 cmd_agent() {
     _ensure_docker
     WORKSPACE="${WORKSPACE:-$(pwd)}"
@@ -849,13 +893,21 @@ cmd_agent() {
     local _upd; _upd="$(_update_notice 2>/dev/null || true)"
     [[ -n "$_upd" ]] && extra_env+=(-e "OPENMONO_UPDATE_NOTICE=$_upd")
 
+    _clipboard_bridge_start
+    trap '_clipboard_bridge_stop' EXIT INT TERM
+
+    local _agent_rc=0
     docker compose run --rm \
         --user "$(id -u):$(id -g)" \
         -e HOME=/home/agent \
         -e WORKSPACE="$WORKSPACE" \
         "${git_args[@]+"${git_args[@]}"}" \
         "${extra_env[@]+"${extra_env[@]}"}" \
-        agent "$@"
+        agent "$@" || _agent_rc=$?
+
+    _clipboard_bridge_stop
+    trap - EXIT INT TERM
+    return $_agent_rc
 }
 
 cmd_logs() {

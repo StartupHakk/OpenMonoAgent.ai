@@ -73,7 +73,7 @@ internal sealed class AnsiInputReader(
                             var sel = painter.MouseSelectCommit();
                             if (!string.IsNullOrEmpty(sel))
                             {
-                                WriteClipboard(sel);
+                                CopyToClipboard(sel);
                                 var n = sel.Length;
                                 painter.ShowToast($"Copied {n} character{(n == 1 ? "" : "s")} to clipboard");
                             }
@@ -906,15 +906,23 @@ internal sealed class AnsiInputReader(
         finally { Console.TreatControlCAsInput = prev; }
     }
 
-    private static void WriteClipboard(string text)
+    private void CopyToClipboard(string text)
     {
+        try { painter.CopyToClipboardOsc52(text); }
+        catch { }
+
+        try { WriteClipboardBridge(text); }
+        catch { }
+
         try
         {
             ProcessStartInfo psi;
             if (File.Exists("/usr/bin/pbcopy"))
                 psi = new("pbcopy") { RedirectStandardInput = true, UseShellExecute = false };
-            else
+            else if (File.Exists("/usr/bin/xclip") || File.Exists("/usr/local/bin/xclip"))
                 psi = new("xclip", "-selection clipboard") { RedirectStandardInput = true, UseShellExecute = false };
+            else
+                return;
 
             var p = Process.Start(psi);
             if (p is null) return;
@@ -923,6 +931,18 @@ internal sealed class AnsiInputReader(
             p.WaitForExit(2000);
         }
         catch { }
+    }
+
+    private static void WriteClipboardBridge(string text)
+    {
+        var dir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".openmono");
+        if (!Directory.Exists(dir)) return;
+
+        var target = Path.Combine(dir, ".clipboard-out");
+        var tmp    = Path.Combine(dir, ".clipboard-out.tmp");
+        File.WriteAllText(tmp, text);
+        File.Move(tmp, target, overwrite: true);
     }
 
     private static string? ReadClipboard()
