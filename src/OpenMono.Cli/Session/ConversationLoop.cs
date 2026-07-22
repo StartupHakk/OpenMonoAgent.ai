@@ -967,6 +967,7 @@ public sealed class ConversationLoop : IDisposable
             {
                 // User interaction pending (permission, input, etc.) — propagate to turn runner to pause
                 Log.Info($"[PENDING_RESPONSE] Tool {call.Name} paused for user response — re-throwing to turn runner");
+                await PersistCompletedToolResultsAsync(toolCalls, results, ct);
                 throw;
             }
             catch (OperationCanceledException) when (siblingAbortCts.IsCancellationRequested && !ct.IsCancellationRequested)
@@ -999,11 +1000,50 @@ public sealed class ConversationLoop : IDisposable
             {
                 // User interaction pending (permission, input, etc.) — propagate to turn runner to pause
                 Log.Info($"[PENDING_RESPONSE] Tool {item.Call.Name} paused for user response — re-throwing to turn runner");
+                await PersistCompletedToolResultsAsync(toolCalls, results, ct);
                 throw;
             }
         }
 
         return [.. results];
+    }
+
+    /// <summary>
+    /// A pause (permission / user input) aborts the current batch mid-way, before the
+    /// normal result-append loop runs. Persist the results that already completed so the
+    /// resume path (ResolvePendingToolCallsAsync) sees them as answered and re-executes
+    /// only the still-pending calls — an already-executed write must never run twice.
+    /// </summary>
+    private async Task PersistCompletedToolResultsAsync(
+        List<ToolCall> toolCalls, ToolResult[] results, CancellationToken ct)
+    {
+        foreach (var (call, result) in toolCalls.Zip(results))
+        {
+            if (result is null) continue;
+
+            var content = result.Content;
+            if (content.Length > LargeResultThreshold)
+            {
+                var refPath = await StoreContentReplacementAsync(call.Name, content, ct);
+                content = $"[Result truncated — {content.Length} chars. Full output stored at: {refPath}]\n" +
+                          content[..Math.Min(2000, content.Length)] + "\n... (truncated)";
+            }
+
+            _session.AddMessage(new Message
+            {
+                Role = MessageRole.Tool,
+                ToolCallId = call.Id,
+                ToolName = call.Name,
+                Content = content,
+                IsError = result.IsError,
+            });
+
+            if (_sink is not null)
+            {
+                var artifactId = result.Artifacts.Count > 0 ? result.Artifacts[0].Id : null;
+                await _sink.OnToolResultPreviewAsync(call.Id, result.ModelPreview, artifactId);
+            }
+        }
     }
 
     private ToolContext BuildToolContext() => new()
