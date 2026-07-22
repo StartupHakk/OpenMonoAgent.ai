@@ -36,6 +36,8 @@ public sealed class ConversationLoop : IDisposable
     private readonly IAcpUserInteraction? _interaction;
     private readonly IToolExecutor _executor;
     private readonly IReadOnlyList<ITool>? _toolSubset;
+    private readonly Func<string?>? _dequeuePendingUserInput;
+    private readonly Action<string>? _onPendingUserInputInjected;
 
     private readonly DoomLoopDetector _doomLoop = new();
 
@@ -65,7 +67,9 @@ public sealed class ConversationLoop : IDisposable
         IReadOnlyList<ITool>? toolSubset = null,
         IAcpUserInteraction? interaction = null,
         int maxIterations = 1000,
-        int agentDepth = 0)
+        int agentDepth = 0,
+        Func<string?>? dequeuePendingUserInput = null,
+        Action<string>? onPendingUserInputInjected = null)
     {
         _llm = llm;
         _tools = tools;
@@ -116,6 +120,8 @@ public sealed class ConversationLoop : IDisposable
         _toolSubset = toolSubset;
         _maxIterations = maxIterations;
         _agentDepth = agentDepth;
+        _dequeuePendingUserInput = dequeuePendingUserInput;
+        _onPendingUserInputInjected = onPendingUserInputInjected;
     }
 
     public void Dispose()
@@ -299,6 +305,15 @@ public sealed class ConversationLoop : IDisposable
 
             if (i > 0)
             {
+                if (_dequeuePendingUserInput is not null)
+                {
+                    while (_dequeuePendingUserInput() is { } pendingInput)
+                    {
+                        _session.AddMessage(new Message { Role = MessageRole.User, Content = pendingInput });
+                        _onPendingUserInputInjected?.Invoke(pendingInput);
+                    }
+                }
+
                 var iterPromptTokens = _session.Meta.TokenTracker?.LastPromptTokens ?? 0;
                 if (_checkpointer.NeedsCheckpoint(_session, iterPromptTokens))
                 {
@@ -377,7 +392,12 @@ public sealed class ConversationLoop : IDisposable
             var turnTokens = 0;
             var requestSw = Stopwatch.StartNew();
             var ttft = TimeSpan.Zero;
-            UsageInfo? lastUsage = null;
+            var hasUsage = false;
+            var accumPromptTokens = 0;
+            var accumCompletionTokens = 0;
+            var accumPredictedTokens = 0;
+            var accumPredictedMs = 0.0;
+            var accumPredictedPerSecond = 0.0;
 
             var context = BuildToolContext();
             var inFlightTasks = new Dictionary<string, Task<ToolResult>>();
@@ -454,11 +474,17 @@ public sealed class ConversationLoop : IDisposable
 
                 if (chunk.Usage is not null)
                 {
-                    lastUsage = chunk.Usage;
+                    // Some providers (e.g. Anthropic) split usage across two separate stream
+                    // events — prompt tokens at the start, completion tokens at the end — each
+                    // arriving with the other field defaulted to 0. Accumulate across the whole
+                    // stream and record once below, so the second event can't clobber the first.
+                    hasUsage = true;
                     _session.TotalTokensUsed += chunk.Usage.TotalTokens;
-                    _session.Meta.TokenTracker?.RecordUsage(chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens);
-                    _session.Meta.TokenTracker?.RecordTimings(
-                        chunk.Usage.PredictedTokens, chunk.Usage.PredictedMs, chunk.Usage.PredictedPerSecond);
+                    accumPromptTokens += chunk.Usage.PromptTokens;
+                    accumCompletionTokens += chunk.Usage.CompletionTokens;
+                    accumPredictedTokens += chunk.Usage.PredictedTokens;
+                    accumPredictedMs += chunk.Usage.PredictedMs;
+                    if (chunk.Usage.PredictedPerSecond > 0) accumPredictedPerSecond = chunk.Usage.PredictedPerSecond;
                     turnTokens += chunk.Usage.TotalTokens;
                 }
 
@@ -475,16 +501,22 @@ public sealed class ConversationLoop : IDisposable
                 _output.ClearToolProgress();
             }
 
+            if (hasUsage)
+            {
+                _session.Meta.TokenTracker?.RecordUsage(accumPromptTokens, accumCompletionTokens);
+                _session.Meta.TokenTracker?.RecordTimings(accumPredictedTokens, accumPredictedMs, accumPredictedPerSecond);
+            }
+
             if (thinkingStarted && !thinkingCollapsed)
                 _output.CollapseThinking(thinkingChars);
 
             _output.EndAssistantResponse(new TurnMetrics
             {
-                PromptTokens = lastUsage?.PromptTokens ?? 0,
-                CompletionTokens = lastUsage?.CompletionTokens ?? turnTokens,
+                PromptTokens = accumPromptTokens,
+                CompletionTokens = hasUsage ? accumCompletionTokens : turnTokens,
                 TimeToFirstToken = ttft,
                 TotalElapsed = requestSw.Elapsed,
-                GenTokensPerSecond = lastUsage?.PredictedPerSecond ?? 0,
+                GenTokensPerSecond = accumPredictedPerSecond,
                 AvgGenTokensPerSecond = _session.Meta.TokenTracker?.AvgGenTokensPerSecond ?? 0,
             });
 

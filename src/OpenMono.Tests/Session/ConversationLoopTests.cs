@@ -77,6 +77,47 @@ public class ConversationLoopTests
     }
 
     [Fact]
+    public async Task RunTurn_InjectsQueuedFollowUpMidTurn_WithoutWaitingForTurnEnd()
+    {
+        var toolCallChunks = new List<StreamChunk>
+        {
+            new() { ToolCallDelta = new ToolCall { Id = "t1", Name = "TestTool", Arguments = "{}" }, IsComplete = false },
+            new() { IsComplete = true },
+        };
+        var textChunks = new List<StreamChunk>
+        {
+            new() { TextDelta = "Done!", IsComplete = false },
+            new() { IsComplete = true },
+        };
+
+        var llm = new FakeLlmClient(toolCallChunks, textChunks);
+        var tools = new ToolRegistry();
+        tools.Register(new TestTool());
+
+        var session = new SessionState();
+        session.AddMessage(new Message { Role = MessageRole.System, Content = "System" });
+
+        var renderer = new TerminalRenderer();
+        var config = new AppConfig();
+        var permissions = new PermissionEngine(config, renderer, renderer);
+
+        var dequeueCalls = 0;
+        var injected = new List<string>();
+        var loop = new ConversationLoop(llm, tools, permissions, renderer, renderer, renderer, config, session,
+            dequeuePendingUserInput: () =>
+            {
+                dequeueCalls++;
+                return dequeueCalls == 1 ? "follow-up while working" : null;
+            },
+            onPendingUserInputInjected: text => injected.Add(text));
+
+        await loop.RunTurnAsync("run test tool", null, CancellationToken.None);
+
+        injected.Should().ContainSingle().Which.Should().Be("follow-up while working");
+        session.Messages.Should().Contain(m => m.Role == MessageRole.User && m.Content == "follow-up while working");
+    }
+
+    [Fact]
     public async Task RunTurn_IncrementsTokens()
     {
         var llm = new FakeLlmClient([
