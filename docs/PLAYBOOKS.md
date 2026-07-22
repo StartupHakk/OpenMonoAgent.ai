@@ -13,6 +13,7 @@ Playbooks are structured, multi-step automation workflows that run inside OpenMo
   - [Invocation](#invocation)
   - [Parameters](#parameters)
   - [Steps](#steps)
+  - [Output Schema](#output-schema)
   - [Constraints](#constraints)
   - [Allowed Tools](#allowed-tools)
   - [Context Mode](#context-mode)
@@ -183,7 +184,102 @@ Both support template variables.
 | `requires` | Array of step IDs that must complete successfully before this step starts |
 | `gate` | Human checkpoint. See [Gates](#gates) |
 | `output` | State key name. The AI's final response for this step is stored at `{{state.<output>}}` |
+| `output-schema` | Path to a JSON Schema file. Forces the step's response to conform — see [Output Schema](#output-schema) |
 | `script` | Path to a shell script. Executed alongside the step; its stdout is embedded in the prompt via `{{shell:...}}` |
+
+### Output Schema
+
+Steps that need to hand a structured result to a later step or an external system (e.g. an `emit-findings` step)
+can declare `output-schema` — a path to a JSON Schema file, relative to the playbook directory. It guarantees
+`{{state.<output>}}` resolves to validated JSON, never prose, even though the LLM behind the step has no native
+concept of "must return JSON."
+
+#### Basic usage
+
+```yaml
+steps:
+  - id: emit-findings
+    file: steps/03-emit-findings.md
+    output: findings
+    output-schema: schemas/finding.json
+```
+
+`schemas/finding.json` must declare a typed `properties` entry for every `required` field:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "severity": { "type": "string" },
+    "file": { "type": "string" },
+    "description": { "type": "string" }
+  },
+  "required": ["severity", "file", "description"],
+  "additionalProperties": false
+}
+```
+
+`required` alone (no `properties`) is not enough — llama.cpp's json_schema-to-grammar converter needs a type for
+each field to build a real constraint. A `required`-only schema degrades to a near-unconstrained grammar, so the
+model outputs whatever shape it thinks fits and every retry fails identically. The executor warns at step start if
+your schema has this problem — fix it by adding a `properties` entry (with a `type`) for every field listed in
+`required`.
+
+Nested objects, arrays, `enum`, and `$ref`/`$defs` are all supported — the schema is passed through verbatim to
+the provider. The [SHS findings contract](../temp/SHS/contracts/findings.schema.json) is a real example: a
+top-level object with an array of finding objects, each validated against a shared `$defs` definition.
+
+#### How validation and correction work
+
+The step's main turn (and any tool calls it makes) runs normally — tools and grammar-constrained decoding aren't
+combined, since a tool call isn't valid JSON-Schema output. Once the step settles on final text, the executor
+parses **only that final turn's text** (not the whole multi-turn transcript, so earlier tool-call output can't be
+mistaken for the answer) and checks it against the schema's `required` fields. If it fails, the correction turn
+that follows offers no tools and — on llama.cpp or any OpenAI-compatible endpoint, given a properly-shaped schema
+— sends it as a grammar-constrained `response_format`, so that correction is itself guaranteed to come back valid
+(at most one retry ever needed there; verified against a real llama.cpp deployment). Providers that ignore
+`response_format` (Anthropic today) fall back to prompt-based correction with the specific validation error
+("missing required field(s): severity") for up to 3 attempts before aborting the playbook with a clear error.
+
+#### Steps that also write a file
+
+Some steps (e.g. security-scan playbooks) need to write JSON to a file via `FileWrite` for a downstream
+consumer, *and* have it validated. `output-schema` only ever looks at the step's own chat answer, not file
+contents — so the step's instructions must explicitly ask for both:
+
+```markdown
+Write the JSON to `findings.json` using FileWrite.
+
+## Final answer (required)
+
+After writing the file, your final response message — the actual text you reply with, not a tool call — must
+be **exactly** that JSON document and nothing else: no confirmation sentence, no markdown fences.
+```
+
+Without that instruction, the model's final answer is likely to be a confirmation sentence ("Wrote 3 findings to
+findings.json"), which fails JSON parsing every time and burns all 3 retries before aborting.
+
+#### State transitions and resume — what output-schema changes (and what it doesn't)
+
+- **On success**, the step completes exactly like any other step: `state.CompleteStep(step.Id, output, step.Output)`
+  runs, the step is added to `CompletedSteps`, and the state file is checkpointed to disk. The only difference is
+  the *value* stored — the validated/extracted JSON string instead of raw prose — so later steps referencing
+  `{{state.<output>}}` get guaranteed-parseable JSON.
+- **On failure** (validation still fails after exhausting retries), the executor returns the abort message
+  *before* calling `CompleteStep` or `SaveAsync`. The step is never added to `CompletedSteps`, nothing is written
+  to `StepOutputs` for it, and the state file on disk is untouched by this attempt — it still reflects the last
+  successfully completed step. This is the same pattern the existing `script:` validation failure already uses;
+  `output-schema` doesn't introduce a new failure mode, it reuses the established one.
+- **Resume** (`/playbook --resume`) is therefore unaffected: because a failed schema step was never checkpointed,
+  resuming re-runs it from scratch — there's no partial or corrupted state to clean up.
+- **Retries within a single step attempt** (the correction loop) never touch `PlaybookState` at all — they only
+  extend the in-memory LLM conversation for that one step call. A step that needed 2 corrective retries before
+  succeeding looks identical in `StepOutputs`/`CompletedSteps` to one that succeeded on the first try.
+- **Gates** (`Confirm`/`Review`/`Approve`) run *before* `RunStepAsync` is even called, previewing the step's
+  rendered prompt — not its (not-yet-produced) schema-validated output. Gate approval and output-schema
+  enforcement are fully independent; a gated step's approval flow is unchanged by adding `output-schema`.
+- **Step ordering** (`requires:`, dependency resolution) is untouched — `output-schema` only affects what happens
+  *inside* a single step's execution, never which step runs next.
 
 ### Constraints
 
@@ -563,6 +659,7 @@ Full list of frontmatter fields.
 | `requires` | string[] | No | Step IDs that must complete first |
 | `gate` | enum | No | `None`, `Confirm`, `Review`, or `Approve` |
 | `output` | string | No | State key to store the step's result |
+| `output-schema` | string | No | Path to a JSON Schema file; enforces the step's response against it (retry then abort) |
 | `script` | string | No | Shell script path; stdout embedded in prompt |
 
 \* At least one of `inline-prompt` or `file` is required per step.
