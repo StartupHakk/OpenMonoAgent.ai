@@ -226,8 +226,34 @@ your schema has this problem — fix it by adding a `properties` entry (with a `
 `required`.
 
 Nested objects, arrays, `enum`, and `$ref`/`$defs` are all supported — the schema is passed through verbatim to
-the provider. The [SHS findings contract](../temp/SHS/contracts/findings.schema.json) is a real example: a
-top-level object with an array of finding objects, each validated against a shared `$defs` definition.
+the provider. For example, a report step could declare a top-level object with an array of item objects, each
+validated against a shared `$defs` definition:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "summary": { "type": "string" },
+    "items": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/item" }
+    }
+  },
+  "required": ["summary", "items"],
+  "additionalProperties": false,
+  "$defs": {
+    "item": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "severity": { "type": "string", "enum": ["critical", "high", "medium", "low"] }
+      },
+      "required": ["name", "severity"],
+      "additionalProperties": false
+    }
+  }
+}
+```
 
 #### How validation and correction work
 
