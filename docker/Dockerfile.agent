@@ -46,12 +46,15 @@ RUN if [ -n "$APT_MIRROR" ]; then \
     fi
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
     git \
     openssh-client \
     ripgrep \
     curl \
     jq \
     tree \
+    patch \
+    unzip \
     python3 \
     python3-pip \
     python3-dev \
@@ -65,6 +68,21 @@ RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
 
 # HOME for the docker-compose TUI variant; compose mounts ~/.openmono here.
 RUN mkdir -p /home/agent && chmod 1777 /home/agent && chmod 0666 /etc/passwd
+
+# Fail the image build early if any of the agent's expected toolchain pieces
+# are unavailable. Python.h is needed by tree-sitter-dm during pip install.
+RUN python3 - <<'PY'
+import pathlib
+import sysconfig
+
+include = pathlib.Path(sysconfig.get_path("include"))
+python_h = include / "Python.h"
+
+print(f"Checking for {python_h}")
+assert python_h.exists(), f"Missing {python_h}"
+PY
+RUN command -v gcc
+RUN command -v patch
 
 # MCP servers shipped with the agent (structural + semantic graph queries).
 RUN pip3 install --no-cache-dir --break-system-packages code-review-graph graphifyy
