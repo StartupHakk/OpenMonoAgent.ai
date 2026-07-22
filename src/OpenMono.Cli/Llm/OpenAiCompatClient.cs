@@ -448,6 +448,15 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
             body["tool_choice"] = "auto";
         }
 
+        if (options.ResponseFormatSchema is { } schema)
+        {
+            body["response_format"] = new
+            {
+                type = "json_schema",
+                json_schema = new { name = "playbook_step_output", strict = true, schema },
+            };
+        }
+
         return body;
     }
 

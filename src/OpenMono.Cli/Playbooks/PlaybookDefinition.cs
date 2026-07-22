@@ -55,6 +55,7 @@ public sealed record StepDefinition
     public GateType Gate { get; init; } = GateType.None;
     public string? Agent { get; init; }
     public string? Output { get; init; }
+    public string? OutputSchema { get; init; }
     public string? Script { get; init; }
     public string? Playbook { get; init; }
     public Dictionary<string, string>? Params { get; init; }

@@ -189,6 +189,7 @@ public sealed class PlaybookLoader
             Script = ObjStr(d, "script"),
             Agent = ObjStr(d, "agent"),
             Output = ObjStr(d, "output"),
+            OutputSchema = ObjStr(d, "output-schema"),
             Playbook = ObjStr(d, "playbook"),
             Gate = ParseEnum<GateType>(ObjStr(d, "gate"), GateType.None),
             Requires = ObjStrList(d, "requires"),
