@@ -36,6 +36,8 @@ public sealed class ConversationLoop : IDisposable
     private readonly IAcpUserInteraction? _interaction;
     private readonly IToolExecutor _executor;
     private readonly IReadOnlyList<ITool>? _toolSubset;
+    private readonly Func<string?>? _dequeuePendingUserInput;
+    private readonly Action<string>? _onPendingUserInputInjected;
 
     private readonly DoomLoopDetector _doomLoop = new();
 
@@ -65,7 +67,9 @@ public sealed class ConversationLoop : IDisposable
         IReadOnlyList<ITool>? toolSubset = null,
         IAcpUserInteraction? interaction = null,
         int maxIterations = 1000,
-        int agentDepth = 0)
+        int agentDepth = 0,
+        Func<string?>? dequeuePendingUserInput = null,
+        Action<string>? onPendingUserInputInjected = null)
     {
         _llm = llm;
         _tools = tools;
@@ -116,6 +120,8 @@ public sealed class ConversationLoop : IDisposable
         _toolSubset = toolSubset;
         _maxIterations = maxIterations;
         _agentDepth = agentDepth;
+        _dequeuePendingUserInput = dequeuePendingUserInput;
+        _onPendingUserInputInjected = onPendingUserInputInjected;
     }
 
     public void Dispose()
@@ -299,6 +305,15 @@ public sealed class ConversationLoop : IDisposable
 
             if (i > 0)
             {
+                if (_dequeuePendingUserInput is not null)
+                {
+                    while (_dequeuePendingUserInput() is { } pendingInput)
+                    {
+                        _session.AddMessage(new Message { Role = MessageRole.User, Content = pendingInput });
+                        _onPendingUserInputInjected?.Invoke(pendingInput);
+                    }
+                }
+
                 var iterPromptTokens = _session.Meta.TokenTracker?.LastPromptTokens ?? 0;
                 if (_checkpointer.NeedsCheckpoint(_session, iterPromptTokens))
                 {
