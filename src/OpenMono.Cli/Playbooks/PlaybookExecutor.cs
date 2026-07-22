@@ -143,7 +143,11 @@ public sealed class PlaybookExecutor : IDisposable
 
                 var stepContent = await GetStepContentAsync(step, playbook, state, ct);
 
-                if (step.Gate != GateType.None)
+                if (step.Gate != GateType.None && playbook.SkipPermissions)
+                {
+                    _renderer.WriteInfo($"  Step '{step.Id}' — gate '{step.Gate}' auto-approved (skip-permissions)");
+                }
+                else if (step.Gate != GateType.None)
                 {
                     if (IsNonInteractiveSession())
                     {
@@ -160,7 +164,12 @@ public sealed class PlaybookExecutor : IDisposable
                     }
                 }
 
-                var output = await RunStepAsync(step, stepContent, playbook, state, ct);
+                var (output, stepError) = await RunStepAsync(step, stepContent, playbook, state, ct);
+                if (stepError is not null)
+                {
+                    _renderer.WriteWarning($"  Step '{step.Id}' aborted — {stepError}");
+                    return $"Playbook '{playbook.Name}' aborted at step '{step.Id}'.\n{stepError}";
+                }
 
                 if (step.Script is not null)
                 {
@@ -177,7 +186,7 @@ public sealed class PlaybookExecutor : IDisposable
                     }
                 }
 
-                state.CompleteStep(step.Id, output);
+                state.CompleteStep(step.Id, output, step.Output);
                 _renderer.WriteInfo($"  Step '{step.Id}' — done");
 
                 await state.SaveAsync(_config.DataDirectory, ct);
@@ -242,7 +251,7 @@ public sealed class PlaybookExecutor : IDisposable
         };
     }
 
-    private async Task<string> RunStepAsync(
+    private async Task<(string Output, string? Error)> RunStepAsync(
         StepDefinition step, string content, PlaybookDefinition playbook, PlaybookState state, CancellationToken ct)
     {
 
@@ -259,6 +268,46 @@ public sealed class PlaybookExecutor : IDisposable
         var effectiveTools = BuildEffectiveToolRegistry(step, playbook);
 
         var toolDefs = effectiveTools.BuildToolDefinitions();
+
+        JsonElement? outputSchema = null;
+        if (step.OutputSchema is not null)
+        {
+            var schemaPath = Path.Combine(playbook.BasePath, step.OutputSchema);
+            if (File.Exists(schemaPath))
+            {
+                using var schemaDoc = JsonDocument.Parse(await File.ReadAllTextAsync(schemaPath, ct));
+                outputSchema = schemaDoc.RootElement.Clone();
+
+                // llama.cpp's json_schema-to-grammar converter needs a typed `properties` entry for every
+                // `required` field to build a real constraint — `required` alone degrades to a near-unconstrained
+                // grammar, so the model outputs whatever shape it thinks fits and validation just keeps failing.
+                if (outputSchema.Value.TryGetProperty("required", out var requiredEl) &&
+                    requiredEl.ValueKind == JsonValueKind.Array)
+                {
+                    var hasProperties = outputSchema.Value.TryGetProperty("properties", out var propsEl) &&
+                        propsEl.ValueKind == JsonValueKind.Object;
+                    var missingFromProperties = requiredEl.EnumerateArray()
+                        .Select(e => e.GetString())
+                        .Where(name => !string.IsNullOrEmpty(name) && (!hasProperties || !propsEl.TryGetProperty(name!, out _)))
+                        .ToList();
+
+                    if (missingFromProperties.Count > 0)
+                    {
+                        _renderer.WriteWarning(
+                            $"Step '{step.Id}' output-schema '{step.OutputSchema}' lists required field(s) " +
+                            $"({string.Join(", ", missingFromProperties)}) with no matching typed entry in 'properties' — " +
+                            "grammar-constrained decoding will be effectively unconstrained on llama.cpp. Add a " +
+                            "'properties' entry (with a type) for every required field.");
+                    }
+                }
+            }
+            else
+            {
+                _renderer.WriteWarning(
+                    $"Step '{step.Id}' declares output-schema '{step.OutputSchema}' but the file was not found — JSON is not enforced.");
+            }
+        }
+
         var options = new LlmOptions
         {
             Model = _config.Llm.Model,
@@ -267,6 +316,7 @@ public sealed class PlaybookExecutor : IDisposable
         };
 
         var result = new StringBuilder();
+        var lastTurnText = "";
         var maxToolLoops = 10;
         var toolLoopCount = 0;
 
@@ -295,6 +345,7 @@ public sealed class PlaybookExecutor : IDisposable
 
             _renderer.EndAssistantResponse();
             result.Append(textContent);
+            lastTurnText = textContent.ToString();
 
             if (pendingToolCalls.Count == 0)
                 break;
@@ -375,7 +426,119 @@ public sealed class PlaybookExecutor : IDisposable
             _renderer.WriteWarning($"Step '{step.Id}' reached maximum tool loop count ({maxToolLoops})");
         }
 
-        return result.ToString();
+        if (outputSchema is { } schema)
+            return await EnforceJsonOutputAsync(schema, messages, options, lastTurnText, step.Id, ct);
+
+        return (result.ToString(), null);
+    }
+
+    /// <summary>Validates the step's final text against its output-schema; on mismatch, re-prompts the
+    /// LLM for a correction — with no tools offered and the schema sent as a grammar-constrained
+    /// response_format, so on llama.cpp/OpenAI-compat providers this correction is itself guaranteed
+    /// to come back valid (at most one retry ever needed there). Providers that ignore response_format
+    /// (e.g. Anthropic) fall back to prompt-based correction for up to 3 attempts.</summary>
+    private async Task<(string Output, string? Error)> EnforceJsonOutputAsync(
+        JsonElement schema,
+        List<Message> messages,
+        LlmOptions options,
+        string candidate,
+        string stepId,
+        CancellationToken ct)
+    {
+        const int maxRetries = 3;
+        var correctionOptions = options with { ResponseFormatSchema = schema };
+
+        for (var attempt = 0; ; attempt++)
+        {
+            string? problem = TryExtractJson(candidate, out var json)
+                ? FindMissingRequiredFields(json, schema)
+                : "the response was not valid JSON";
+
+            if (problem is null)
+                return (json, null);
+
+            if (attempt >= maxRetries)
+                return (candidate, $"step '{stepId}' did not produce JSON matching its output-schema after {maxRetries} retries ({problem})");
+
+            _renderer.WriteWarning($"  Step '{stepId}' — JSON attempt {attempt + 1} rejected: {problem}. Retrying.");
+
+            messages.Add(new Message { Role = MessageRole.Assistant, Content = candidate });
+            messages.Add(new Message
+            {
+                Role = MessageRole.User,
+                Content = $"Your response did not satisfy the required JSON schema: {problem}. " +
+                          "Return ONLY the corrected JSON — no prose, no markdown code fences, no tool calls.",
+            });
+
+            var retryText = new StringBuilder();
+            await foreach (var chunk in _llm.StreamChatAsync(messages, tools: null, correctionOptions, ct))
+            {
+                if (chunk.TextDelta is not null)
+                {
+                    retryText.Append(chunk.TextDelta);
+                    _renderer.StreamText(chunk.TextDelta);
+                }
+                if (chunk.IsComplete) break;
+            }
+            _renderer.EndAssistantResponse();
+            candidate = retryText.ToString();
+        }
+    }
+
+    /// <summary>Strips a markdown code fence if present, then narrows to the outermost {..}/[..] span.
+    /// Models routinely wrap JSON in prose or fences even when asked not to.</summary>
+    private static bool TryExtractJson(string text, out string json)
+    {
+        var trimmed = text.Trim();
+
+        if (trimmed.StartsWith("```", StringComparison.Ordinal))
+        {
+            var firstNewline = trimmed.IndexOf('\n');
+            var closingFence = trimmed.LastIndexOf("```", StringComparison.Ordinal);
+            if (firstNewline > 0 && closingFence > firstNewline)
+                trimmed = trimmed[(firstNewline + 1)..closingFence].Trim();
+        }
+
+        if (trimmed.Length == 0 || (trimmed[0] != '{' && trimmed[0] != '['))
+        {
+            var start = trimmed.IndexOfAny(['{', '[']);
+            if (start < 0) { json = ""; return false; }
+            var closeChar = trimmed[start] == '{' ? '}' : ']';
+            var end = trimmed.LastIndexOf(closeChar);
+            if (end <= start) { json = ""; return false; }
+            trimmed = trimmed[start..(end + 1)];
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(trimmed);
+            json = trimmed;
+            return true;
+        }
+        catch (JsonException)
+        {
+            json = "";
+            return false;
+        }
+    }
+
+    private static string? FindMissingRequiredFields(string json, JsonElement schema)
+    {
+        if (schema.ValueKind != JsonValueKind.Object ||
+            !schema.TryGetProperty("required", out var requiredEl) ||
+            requiredEl.ValueKind != JsonValueKind.Array)
+            return null;
+
+        using var doc = JsonDocument.Parse(json);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            return "expected a JSON object at the top level";
+
+        var missing = requiredEl.EnumerateArray()
+            .Select(e => e.GetString())
+            .Where(name => !string.IsNullOrEmpty(name) && !doc.RootElement.TryGetProperty(name!, out _))
+            .ToList();
+
+        return missing.Count > 0 ? $"missing required field(s): {string.Join(", ", missing)}" : null;
     }
 
     private ToolRegistry BuildEffectiveToolRegistry(StepDefinition step, PlaybookDefinition playbook)
