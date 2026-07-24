@@ -32,6 +32,9 @@ public sealed record PlaybookDefinition
 
     /// <summary>Auto-approves step gates and the Plan-to-Build mode switch — no prompts. Hard safety denies still apply.</summary>
     public bool SkipPermissions { get; init; } = false;
+
+    /// <summary>Writes each step's raw prompt and output to a file under DataDirectory/playbook-logs/ for later debugging.</summary>
+    public bool LogOutput { get; init; } = false;
 }
 
 public sealed record ParameterDefinition

@@ -74,13 +74,15 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
         await gate.WaitAsync(ct);
         try
         {
-        HttpResponseMessage? response = null;
         var lastException = default(Exception);
         TimeSpan? pendingRetryAfter = null;
         var retryDelay = TimeSpan.Zero;
 
         for (var attempt = 0; attempt <= MaxRetries; attempt++)
         {
+            HttpResponseMessage? response = null;
+            var yieldedToCaller = false;
+            string? retryableStreamError = null;
             ct.ThrowIfCancellationRequested();
 
             if (attempt > 0)
@@ -134,7 +136,6 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                 }
 
                 response.EnsureSuccessStatusCode();
-                break;
             }
             catch (HttpRequestException ex) when (attempt < MaxRetries)
             {
@@ -151,16 +152,15 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                 response?.Dispose();
                 response = null;
             }
-        }
 
-        if (response is null)
-            throw lastException ?? new HttpRequestException("Failed to connect after retries");
+            if (response is null)
+                continue;
 
-        var streamStarted = System.Diagnostics.Stopwatch.StartNew();
-        var chunkCount = 0;
+            var streamStarted = System.Diagnostics.Stopwatch.StartNew();
+            var chunkCount = 0;
 
-        using (response)
-        {
+            using (response)
+            {
             using var stream = await response.Content.ReadAsStreamAsync(ct);
             using var reader = new StreamReader(stream);
 
@@ -249,6 +249,20 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                     {
                         var errorMsg = errorEl.TryGetProperty("message", out var msgEl)
                             ? msgEl.GetString() : "Unknown API error";
+
+                        // llama.cpp raises this mid-stream (after headers are already 200 OK) when it
+                        // fails to parse the model's own generated tool-call arguments as JSON — typically
+                        // a large free-text argument that got malformed or truncated mid-string. It's a
+                        // decode-time hiccup, not a bad request, so retry the whole call like any other
+                        // transient failure — but only if nothing has been shown to the caller yet this
+                        // attempt, since a retry re-sends the full stream from scratch and would duplicate
+                        // any text/thinking already surfaced.
+                        if (!yieldedToCaller && attempt < MaxRetries)
+                        {
+                            retryableStreamError = errorMsg;
+                            break;
+                        }
+
                         throw new HttpRequestException($"LLM API error: {errorMsg}");
                     }
 
@@ -300,7 +314,10 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                         {
                             var thinking = reasoningEl.GetString();
                             if (!string.IsNullOrEmpty(thinking))
+                            {
+                                yieldedToCaller = true;
                                 yield return new StreamChunk { ThinkingDelta = thinking };
+                            }
                         }
 
                         if (delta.TryGetProperty("content", out var contentEl) &&
@@ -315,7 +332,10 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                                     if (fullText.ToString().Contains("<function="))
                                         suppressText = true;
                                     else
+                                    {
+                                        yieldedToCaller = true;
                                         yield return new StreamChunk { TextDelta = text, Usage = usage };
+                                    }
                                 }
                             }
                         }
@@ -363,7 +383,19 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                         yield return new StreamChunk { Usage = usage };
                 }
             }
+            }
+
+            if (retryableStreamError is not null)
+            {
+                lastException = new HttpRequestException($"LLM API error: {retryableStreamError}");
+                pendingRetryAfter = null;
+                continue;
+            }
+
+            yield break;
         }
+
+        throw lastException ?? new HttpRequestException("Failed to connect after retries");
         }
         finally
         {
