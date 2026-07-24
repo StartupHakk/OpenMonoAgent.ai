@@ -122,6 +122,79 @@ public class FileEditToolTests : IDisposable
         result.Content.Should().Contain("not found");
     }
 
+    [Fact]
+    public async Task MultiHunk_AppliesEachEditInOrder()
+    {
+        var filePath = Path.Combine(_tempDir, "multi.cs");
+        await File.WriteAllTextAsync(filePath, "var x = 1;\nvar y = 2;\nvar z = 3;");
+
+        var input = JsonDocument.Parse($$"""
+        {"file_path": "{{filePath}}", "edits": [
+            {"old_string": "var x = 1;", "new_string": "var x = 10;"},
+            {"old_string": "var z = 3;", "new_string": "var z = 30;"}
+        ]}
+        """).RootElement;
+
+        var result = await _tool.ExecuteAsync(input, _context, CancellationToken.None);
+
+        result.IsError.Should().BeFalse();
+        var content = await File.ReadAllTextAsync(filePath);
+        content.Should().Be("var x = 10;\nvar y = 2;\nvar z = 30;");
+    }
+
+    [Fact]
+    public async Task MultiHunk_LaterEditSeesEarlierEditsResult()
+    {
+        var filePath = Path.Combine(_tempDir, "sequential.cs");
+        await File.WriteAllTextAsync(filePath, "step one");
+
+        var input = JsonDocument.Parse($$"""
+        {"file_path": "{{filePath}}", "edits": [
+            {"old_string": "step one", "new_string": "step two"},
+            {"old_string": "step two", "new_string": "step three"}
+        ]}
+        """).RootElement;
+
+        var result = await _tool.ExecuteAsync(input, _context, CancellationToken.None);
+
+        result.IsError.Should().BeFalse();
+        (await File.ReadAllTextAsync(filePath)).Should().Be("step three");
+    }
+
+    [Fact]
+    public async Task MultiHunk_FailedHunkLeavesFileUnchanged()
+    {
+        var filePath = Path.Combine(_tempDir, "atomic.cs");
+        await File.WriteAllTextAsync(filePath, "var x = 1;\nvar y = 2;");
+
+        var input = JsonDocument.Parse($$"""
+        {"file_path": "{{filePath}}", "edits": [
+            {"old_string": "var x = 1;", "new_string": "var x = 10;"},
+            {"old_string": "not present", "new_string": "anything"}
+        ]}
+        """).RootElement;
+
+        var result = await _tool.ExecuteAsync(input, _context, CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        result.Content.Should().Contain("edits[1]");
+        (await File.ReadAllTextAsync(filePath)).Should().Be("var x = 1;\nvar y = 2;");
+    }
+
+    [Fact]
+    public async Task EmptyEditsArray_ReturnsError()
+    {
+        var filePath = Path.Combine(_tempDir, "emptyedits.cs");
+        await File.WriteAllTextAsync(filePath, "var x = 1;");
+
+        var input = JsonDocument.Parse($$"""
+        {"file_path": "{{filePath}}", "edits": []}
+        """).RootElement;
+
+        var result = await _tool.ExecuteAsync(input, _context, CancellationToken.None);
+        result.IsError.Should().BeTrue();
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempDir))

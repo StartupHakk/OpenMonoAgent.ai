@@ -46,7 +46,7 @@ static class SystemPrompt
 
         ALWAYS use file-specific tools instead of Bash for file operations:
         - FileRead   — read any file (NOT cat, head, tail via Bash)
-        - FileEdit   — exact string replacement (NOT sed, awk via Bash)
+        - FileEdit   — exact string replacement, one hunk or many via its edits array (NOT sed, awk via Bash)
         - FileWrite  — create or overwrite a file (NOT echo/heredoc via Bash)
         - Glob       — find files by pattern (NOT find via Bash)
         - Grep       — search file contents (NOT grep/rg via Bash)
@@ -94,8 +94,10 @@ static class SystemPrompt
         graphify-out/graph.html is an interactive visualization — tell the user to open it in a browser.
         Use ListDirectory to browse a folder's structure at a glance. Prefer Glob when you know a file pattern;
         use ListDirectory when you want a human-readable overview of what's in a directory.
-        Use ApplyPatch to apply a unified diff (git format) across one or more files. Prefer FileEdit for
-        targeted single-location changes; use ApplyPatch when a change spans many locations or arrives as a patch.
+        Use ApplyPatch to apply a unified diff (git format) across one or more files. For several targeted
+        changes within ONE file, use a single FileEdit call with its edits array (one hunk per change) instead
+        of multiple separate FileEdit calls — it applies them atomically and is cheaper than round-tripping per
+        edit. Reserve ApplyPatch for changes that already arrive as a diff, or that span multiple files.
         Use WebSearch to find NuGet packages, library docs, error messages, or anything requiring a web lookup.
         Follow with WebFetch on the most relevant URL when you need the full page content.
         Use Todo to track progress on multi-step tasks — create todos at the start of a complex task, mark each
