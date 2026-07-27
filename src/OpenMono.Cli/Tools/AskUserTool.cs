@@ -6,7 +6,7 @@ namespace OpenMono.Tools;
 public sealed class AskUserTool : ToolBase
 {
     public override string Name => "AskUser";
-    public override string Description => "Ask the user a question and wait for their response. Use when you need clarification or a decision.";
+    public override string Description => "Ask the user a question and wait for their response. Use when you need clarification or a decision — for example, when you cannot determine the project's language/framework/stack from the request or the working directory, ask which stack to use before running build/test/run commands. Pass 'options' to offer specific choices.";
     public override bool IsReadOnly => true;
     public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;
 
