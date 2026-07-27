@@ -117,11 +117,57 @@ public class StackDetectorTests : IDisposable
     }
 
     [Fact]
+    public void Detect_Node_PrefersBun_FromLockfile()
+    {
+        Touch("package.json", "{}");
+        Touch("bun.lockb");
+        var cmds = CommandsFor("Node.js");
+        CommandLabeled(cmds, "Install").Should().Be("bun install");
+        CommandLabeled(cmds, "Run").Should().Be("bun run start");
+    }
+
+    [Fact]
+    public void Detect_Deno()
+    {
+        Touch("deno.json", "{}");
+        CommandLabeled(CommandsFor("Deno"), "Test").Should().Be("deno test");
+    }
+
+    [Fact]
+    public void Detect_Php_Composer()
+    {
+        Touch("composer.json", "{}");
+        CommandLabeled(CommandsFor("PHP"), "Install").Should().Be("composer install");
+    }
+
+    [Fact]
+    public void Detect_Php_Laravel_AddsArtisanRun()
+    {
+        Touch("composer.json", "{}");
+        Touch("artisan");
+        CommandLabeled(CommandsFor("PHP"), "Run").Should().Be("php artisan serve");
+    }
+
+    [Fact]
+    public void Detect_Ruby_Bundler()
+    {
+        Touch("Gemfile");
+        CommandLabeled(CommandsFor("Ruby"), "Install").Should().Be("bundle install");
+    }
+
+    [Fact]
     public void BuildPromptSection_NoStacks_GivesGenericGuidance_NotDotnet()
     {
         var section = StackDetector.BuildPromptSection(StackDetector.Detect(_dir));
         section.Should().Contain("# Project Stack");
         section.Should().Contain("do not default to `dotnet`");
+    }
+
+    [Fact]
+    public void BuildPromptSection_NoStacks_InstructsAskingUser()
+    {
+        var section = StackDetector.BuildPromptSection(StackDetector.Detect(_dir));
+        section.Should().Contain("AskUser");
     }
 
     [Fact]

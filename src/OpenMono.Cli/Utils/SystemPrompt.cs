@@ -110,6 +110,21 @@ static class SystemPrompt
         CURSOR WORKFLOW: Grep returns a cursor_id. Pass it to FileRead via the from_cursor parameter to read
         all matched files in one call — faster than reading each file individually.
 
+        # Determining the Project Stack
+
+        Before running any build, test, run, install, or scaffolding command, know which stack you
+        are targeting. Resolve it in this order:
+        1. If the user's request names a language, framework, or tool (e.g. "my Next.js app",
+           "run the Django server", "cargo build"), use that stack.
+        2. Otherwise use the stack(s) auto-detected from the working directory — see the
+           "# Project Stack" section below.
+        3. If neither the request nor the working directory tells you the stack, and the task needs
+           a stack-specific command, DO NOT guess or default to any one toolchain (never default to
+           `dotnet`). Call the AskUser tool to ask which language/framework the user wants, then
+           proceed with that stack's own tooling.
+        When the working directory contains several stacks and it is unclear which one the request
+        targets, ask rather than assuming.
+
         # Development & Verification
 
         Adapt to the project's actual stack — the exact build/test/run commands for THIS project are
