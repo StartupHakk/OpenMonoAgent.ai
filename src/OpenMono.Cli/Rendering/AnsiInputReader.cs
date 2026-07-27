@@ -392,6 +392,105 @@ internal sealed class AnsiInputReader(
         return Task.FromResult(ans);
     }
 
+    public Task<string> AskUserAsync(string question, IReadOnlyList<string>? options, CancellationToken ct)
+    {
+        if (options is not { Count: > 0 })
+            return AskUserAsync(question, ct);
+
+        if (options.Count > 6)
+        {
+            var numbered = string.Join("\n", options.Select((o, i) => $"  [{i + 1}] {o}"));
+            return AskUserAsync($"{question}\n{numbered}", ct);
+        }
+
+        var saved = _bgInputBuf.ToString();
+        painter.AddMessage(new AnsiPainter.Msg("sys", $"? {question}"));
+        StopBackgroundInput();
+        Utils.DesktopNotifier.Alert("OpenMono — input needed", "The agent is waiting for your answer.");
+        painter.PaintConvThrottled(force: true);
+
+        string ans;
+        try { ans = ReadChoiceOrText(question, options); }
+        finally { painter.ClearLane(); }
+
+        painter.AddMessage(new AnsiPainter.Msg("user", ans));
+        painter.Paint();
+        StartBackgroundInput(saved);
+        return Task.FromResult(ans);
+    }
+
+    private string ReadChoiceOrText(string question, IReadOnlyList<string> options)
+    {
+        var custom = options.Count;
+        var count = options.Count + 1;
+        var selected = 0;
+        var typed = new StringBuilder();
+        bool OnCustom() => selected == custom;
+
+        void Repaint() => painter.PaintChoiceMenu(question, options, selected, typed.ToString(), OnCustom());
+        Repaint();
+
+        var prev = Console.TreatControlCAsInput;
+        Console.TreatControlCAsInput = true;
+        try
+        {
+            while (true)
+            {
+                var result = terminal.TryReadKey();
+                if (result is null) { Thread.Sleep(20); continue; }
+                var k = result.Value;
+
+                if (k.Key == ConsoleKey.Enter)
+                {
+                    if (OnCustom())
+                    {
+                        var text = typed.ToString().Trim();
+                        if (text.Length == 0) continue;
+                        return text;
+                    }
+                    return options[selected];
+                }
+
+                if (k.Key is ConsoleKey.UpArrow or ConsoleKey.LeftArrow)
+                {
+                    selected = (selected - 1 + count) % count;
+                    Repaint();
+                    continue;
+                }
+                if (k.Key is ConsoleKey.DownArrow or ConsoleKey.RightArrow or ConsoleKey.Tab)
+                {
+                    selected = (selected + 1) % count;
+                    Repaint();
+                    continue;
+                }
+                if (k.Key == ConsoleKey.Backspace)
+                {
+                    if (OnCustom() && typed.Length > 0) typed.Remove(typed.Length - 1, 1);
+                    Repaint();
+                    continue;
+                }
+                if (k.Key == ConsoleKey.Escape)
+                {
+                    if (!Console.KeyAvailable) { var ms = 0; while (!Console.KeyAvailable && ms < 50) { Thread.Sleep(1); ms++; } }
+                    if (Console.KeyAvailable) TryReadEscapeSequence();
+                    continue;
+                }
+                if (k.Key == ConsoleKey.C && k.Modifiers.HasFlag(ConsoleModifiers.Control))
+                {
+                    ProcessWatchdog.ScheduleHardKill();
+                    OnSafeExit();
+                    Environment.Exit(0);
+                }
+                if (OnCustom() && !char.IsControl(k.KeyChar))
+                {
+                    typed.Append(k.KeyChar);
+                    Repaint();
+                }
+            }
+        }
+        finally { Console.TreatControlCAsInput = prev; }
+    }
+
     public Task<PermissionResponse> AskPermissionAsync(string tool, string summary, CancellationToken ct)
     {
         var saved = _bgInputBuf.ToString();

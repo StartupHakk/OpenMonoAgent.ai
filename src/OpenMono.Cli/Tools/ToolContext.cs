@@ -16,6 +16,7 @@ public sealed class ToolContext
     public required string WorkingDirectory { get; init; }
     public required Action<string> WriteOutput { get; init; }
     public required Func<string, CancellationToken, Task<string>> AskUser { get; init; }
+    public Func<string, IReadOnlyList<string>, CancellationToken, Task<string>>? AskUserWithOptions { get; init; }
     public FileHistory? FileHistory { get; init; }
     public CursorStore? Cursors { get; init; }
 
@@ -39,6 +40,7 @@ public sealed class ToolContext
         WorkingDirectory = this.WorkingDirectory,
         WriteOutput      = this.WriteOutput,
         AskUser          = this.AskUser,
+        AskUserWithOptions = this.AskUserWithOptions,
         FileHistory      = this.FileHistory,
         Cursors          = this.Cursors,
         BeginResponse    = this.BeginResponse,
