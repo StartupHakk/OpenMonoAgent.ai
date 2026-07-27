@@ -537,6 +537,36 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         lock (_writeLock) { W(_laneOverlay); Flush(); }
     }
 
+    internal void PaintChoiceMenu(string title, IReadOnlyList<string> options, int selected, string typed, bool typing)
+    {
+        Sz();
+        var w  = _tw - _sideW;
+        var sb = new StringBuilder(512);
+        var n  = Math.Min(options.Count, 6);
+
+        void Row(int offset, string text)
+        {
+            sb.Append($"{E}[{Math.Max(1, _th - offset)};1H");
+            sb.Append($"{BgInput} {PadR(text, Math.Max(0, w - 2))}{R}");
+        }
+
+        Row(n + 3, $"{B}{Fbb}? {R}{BgInput}{title}");
+        for (var i = 0; i < n; i++)
+        {
+            var marker = (!typing && i == selected) ? $"{B}{Fbb}❯ {R}{BgInput}" : "  ";
+            Row((n - i) + 2, $"{marker}[{i + 1}] {options[i]}");
+        }
+
+        var inputMarker = typing ? $"{B}{Fbb}❯ {R}{BgInput}" : "  ";
+        var inputText   = typing ? $"{typed}▏" : $"{Fk}or type your own answer…{R}";
+        Row(2, $"{inputMarker}{inputText}");
+        Row(1, $"  {Fk}↑/↓ choose · Enter select · type to write your own{R}");
+
+        _laneOverlay = sb.ToString();
+        _laneActive  = true;
+        lock (_writeLock) { W(_laneOverlay); Flush(); }
+    }
+
     internal void ClearLane()
     {
         _laneActive  = false;

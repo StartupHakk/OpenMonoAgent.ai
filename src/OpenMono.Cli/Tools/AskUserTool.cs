@@ -20,14 +20,22 @@ public sealed class AskUserTool : ToolBase
     protected override async Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
     {
         var question = input.GetProperty("question").GetString()!;
-        var hasOptions = input.TryGetProperty("options", out var opts);
+        var hasOptions = input.TryGetProperty("options", out var opts)
+            && opts.ValueKind == JsonValueKind.Array;
+
+        var options = hasOptions
+            ? opts.EnumerateArray().Select(o => o.GetString() ?? "").Where(o => o.Length > 0).ToList()
+            : [];
+
+        if (options.Count > 0 && context.AskUserWithOptions is not null)
+        {
+            var choice = await context.AskUserWithOptions(question, options, ct);
+            return ToolResult.Success(choice);
+        }
 
         var prompt = question;
-        if (hasOptions)
-        {
-            var options = opts.EnumerateArray().Select(o => o.GetString()!).ToList();
+        if (options.Count > 0)
             prompt += "\n" + string.Join('\n', options.Select((o, i) => $"  [{i + 1}] {o}"));
-        }
 
         var response = await context.AskUser(prompt, ct);
         return ToolResult.Success(response);

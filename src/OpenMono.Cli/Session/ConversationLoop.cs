@@ -1019,6 +1019,7 @@ public sealed class ConversationLoop : IDisposable
             if (_sink is not null) _ = _sink.OnSubAgentLogAsync(text);
         },
         AskUser = (question, ct) => _input.AskUserAsync(question, ct),
+        AskUserWithOptions = (question, options, ct) => _input.AskUserAsync(question, options, ct),
         FileHistory = _session.Meta.FileHistory,
         Cursors = _cursorStore,
         BeginResponse = _output.StartAssistantResponse,

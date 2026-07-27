@@ -50,6 +50,30 @@ public class AskUserToolTests
     }
 
     [Fact]
+    public async Task Execute_WithOptions_UsesStructuredDelegate_WhenAvailable()
+    {
+        IReadOnlyList<string>? seenOptions = null;
+        var context = new ToolContext
+        {
+            ToolRegistry = new ToolRegistry(),
+            Session = new SessionState(),
+            Permissions = new PermissionEngine(new AppConfig(), new TerminalRenderer(), new TerminalRenderer()),
+            Config = new AppConfig { WorkingDirectory = Path.GetTempPath() },
+            WorkingDirectory = Path.GetTempPath(),
+            WriteOutput = _ => { },
+            AskUser = (_, _) => Task.FromResult("fallback-should-not-be-used"),
+            AskUserWithOptions = (_, options, _) => { seenOptions = options; return Task.FromResult("Go"); },
+        };
+        var input = JsonDocument.Parse(
+            """{"question": "Pick a stack", "options": ["Node.js", "Python", "Go"]}""").RootElement;
+
+        var result = await _tool.ExecuteAsync(input, context, CancellationToken.None);
+
+        result.Content.Should().Be("Go");
+        seenOptions.Should().Equal("Node.js", "Python", "Go");
+    }
+
+    [Fact]
     public async Task Execute_WithOptions_PresentsNumberedChoices()
     {
         var context = CreateContext(_ => "2", out var asked);
