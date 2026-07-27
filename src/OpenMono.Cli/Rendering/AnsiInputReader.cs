@@ -421,11 +421,13 @@ internal sealed class AnsiInputReader(
 
     private string ReadChoiceOrText(string question, IReadOnlyList<string> options)
     {
+        var custom = options.Count;
+        var count = options.Count + 1;
         var selected = 0;
         var typed = new StringBuilder();
-        bool Typing() => typed.Length > 0;
+        bool OnCustom() => selected == custom;
 
-        void Repaint() => painter.PaintChoiceMenu(question, options, selected, typed.ToString(), Typing());
+        void Repaint() => painter.PaintChoiceMenu(question, options, selected, typed.ToString(), OnCustom());
         Repaint();
 
         var prev = Console.TreatControlCAsInput;
@@ -440,25 +442,30 @@ internal sealed class AnsiInputReader(
 
                 if (k.Key == ConsoleKey.Enter)
                 {
-                    var text = typed.ToString().Trim();
-                    return text.Length > 0 ? text : options[selected];
+                    if (OnCustom())
+                    {
+                        var text = typed.ToString().Trim();
+                        if (text.Length == 0) continue;
+                        return text;
+                    }
+                    return options[selected];
                 }
 
                 if (k.Key is ConsoleKey.UpArrow or ConsoleKey.LeftArrow)
                 {
-                    if (!Typing()) selected = (selected - 1 + options.Count) % options.Count;
+                    selected = (selected - 1 + count) % count;
                     Repaint();
                     continue;
                 }
                 if (k.Key is ConsoleKey.DownArrow or ConsoleKey.RightArrow or ConsoleKey.Tab)
                 {
-                    if (!Typing()) selected = (selected + 1) % options.Count;
+                    selected = (selected + 1) % count;
                     Repaint();
                     continue;
                 }
                 if (k.Key == ConsoleKey.Backspace)
                 {
-                    if (typed.Length > 0) typed.Remove(typed.Length - 1, 1);
+                    if (OnCustom() && typed.Length > 0) typed.Remove(typed.Length - 1, 1);
                     Repaint();
                     continue;
                 }
@@ -474,7 +481,7 @@ internal sealed class AnsiInputReader(
                     OnSafeExit();
                     Environment.Exit(0);
                 }
-                if (!char.IsControl(k.KeyChar))
+                if (OnCustom() && !char.IsControl(k.KeyChar))
                 {
                     typed.Append(k.KeyChar);
                     Repaint();
