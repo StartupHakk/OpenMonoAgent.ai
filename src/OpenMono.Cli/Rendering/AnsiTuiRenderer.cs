@@ -125,6 +125,9 @@ public sealed class AnsiTuiRenderer : IRenderer
     public Task<string> AskUserAsync(string question, CancellationToken ct)
         => _inputReader.AskUserAsync(question, ct);
 
+    public Task<string> AskUserAsync(string question, IReadOnlyList<string>? options, CancellationToken ct)
+        => _inputReader.AskUserAsync(question, options, ct);
+
     public Task<PermissionResponse> AskPermissionAsync(string toolName, string summary, CancellationToken ct)
         => _inputReader.AskPermissionAsync(toolName, summary, ct);
 
