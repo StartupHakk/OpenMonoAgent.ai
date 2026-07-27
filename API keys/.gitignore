@@ -1,0 +1,5 @@
+# Never commit real secrets or backups
+.env
+.env.*
+*.env.bak
+*.env.backup
