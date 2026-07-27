@@ -35,7 +35,8 @@ public static class StackDetector
 
         if (File.Exists(Path.Combine(cwd, "package.json")))
         {
-            var pm = File.Exists(Path.Combine(cwd, "pnpm-lock.yaml")) ? "pnpm"
+            var pm = File.Exists(Path.Combine(cwd, "bun.lockb")) || File.Exists(Path.Combine(cwd, "bun.lock")) ? "bun"
+                : File.Exists(Path.Combine(cwd, "pnpm-lock.yaml")) ? "pnpm"
                 : File.Exists(Path.Combine(cwd, "yarn.lock")) ? "yarn"
                 : "npm";
             stacks.Add(new DetectedStack("Node.js", new[]
@@ -43,8 +44,19 @@ public static class StackDetector
                 new StackCommand("Install", $"{pm} install"),
                 new StackCommand("Build", $"{pm} run build"),
                 new StackCommand("Test", $"{pm} test"),
-                new StackCommand("Run", pm == "npm" ? "npm start" : $"{pm} start"),
+                new StackCommand("Run", pm == "npm" ? "npm start" : pm == "bun" ? "bun run start" : $"{pm} start"),
                 new StackCommand("Add dependency", pm == "npm" ? "npm install <name>" : $"{pm} add <name>"),
+            }));
+        }
+
+        if (File.Exists(Path.Combine(cwd, "deno.json")) ||
+            File.Exists(Path.Combine(cwd, "deno.jsonc")))
+        {
+            stacks.Add(new DetectedStack("Deno", new[]
+            {
+                new StackCommand("Run", "deno task start"),
+                new StackCommand("Test", "deno test"),
+                new StackCommand("Add dependency", "deno add <name>"),
             }));
         }
 
@@ -113,6 +125,29 @@ public static class StackDetector
             }));
         }
 
+        if (File.Exists(Path.Combine(cwd, "composer.json")))
+        {
+            var cmds = new List<StackCommand>
+            {
+                new("Install", "composer install"),
+                new("Add dependency", "composer require <name>"),
+                new("Test", "composer test"),
+            };
+            if (File.Exists(Path.Combine(cwd, "artisan")))
+                cmds.Add(new StackCommand("Run", "php artisan serve"));
+            stacks.Add(new DetectedStack("PHP", cmds));
+        }
+
+        if (File.Exists(Path.Combine(cwd, "Gemfile")))
+        {
+            stacks.Add(new DetectedStack("Ruby", new[]
+            {
+                new StackCommand("Install", "bundle install"),
+                new StackCommand("Test", "bundle exec rspec"),
+                new StackCommand("Add dependency", "bundle add <name>"),
+            }));
+        }
+
         return stacks;
     }
 
@@ -123,8 +158,18 @@ public static class StackDetector
             return """
                 # Project Stack
 
-                No standard build system was auto-detected. Inspect the project files to determine
-                the language and toolchain, then use that stack's own build, test, and run commands.
+                No standard build system was auto-detected in the working directory.
+
+                Determine the stack in this order before running any build, test, run, install, or
+                scaffolding command:
+                1. If the user's request names a language, framework, or tool (e.g. "my Next.js app",
+                   "run the Django server", "cargo build"), use that stack.
+                2. Otherwise inspect the project files to determine the language and toolchain, then
+                   use that stack's own build, test, and run commands.
+                3. If neither the request nor the files reveal the stack and the task needs a
+                   stack-specific command, ASK the user which language/framework they want to use
+                   (call the AskUser tool) before running anything.
+
                 Do not assume any particular stack (do not default to `dotnet`).
                 """;
         }
