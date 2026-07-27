@@ -64,7 +64,7 @@ public sealed class PlaybookTool : ToolBase
         Utils.Log.Info($"[PLAYBOOK_EXEC] PlaybookRequiresWriteTools={PlaybookRequiresWriteTools(playbook, context)}, requiresModeSwitch={requiresModeSwitch}");
 
         // In Plan mode with write tools: request permission with the plan shown
-        if (requiresModeSwitch && context.Permissions is not null)
+        if (requiresModeSwitch && context.Permissions is not null && !playbook.SkipPermissions)
         {
             var summary = FormatPlaybookApprovalPrompt(plan);
             var dangerous = plan.Tools.Any(t => t.Dangerous);
@@ -83,6 +83,10 @@ public sealed class PlaybookTool : ToolBase
                 return ToolResult.Error($"Playbook '{plan.PlaybookName}' execution cancelled by user");
 
             Utils.Log.Debug($"[PLAYBOOK] Permission approved (scope={scope}), switching to Build mode");
+        }
+        else if (requiresModeSwitch)
+        {
+            Console.Error.WriteLine($"[PLAYBOOK] skip-permissions enabled — auto-approving mode switch for {plan.PlaybookName}");
         }
 
         // Auto-switch from Plan to Build mode if approved
