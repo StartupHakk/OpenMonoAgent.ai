@@ -1,10 +1,5 @@
 namespace OpenMono.Config;
 
-/// <summary>
-/// User-authored overrides for the system prompt (SystemPrompt.Base) and the Plan-mode
-/// Activation text (ModeInstructions.Activation). Project file wins over the global one —
-/// same &lt;workdir&gt;/.openmono vs ~/.openmono layering ConfigLoader uses for settings.json.
-/// </summary>
 public static class PromptOverrides
 {
     public const string SystemPromptFile = "system-prompt.md";

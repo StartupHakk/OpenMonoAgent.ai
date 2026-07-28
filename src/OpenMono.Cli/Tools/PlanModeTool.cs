@@ -53,12 +53,6 @@ public sealed class EnterPlanModeTool : ToolBase
     }
 }
 
-/// <summary>
-/// Presents a completed plan to the user. Stays in Plan mode — the plan is for review,
-/// not yet implementation. The user approves, then the agent calls ImplementPlan to switch
-/// to Build mode and execute. Replaces the old ExitPlanMode, which conflated "present the
-/// plan" with "drop to Build" and let the agent start writing before the user approved.
-/// </summary>
 public sealed class CreatePlanTool : ToolBase
 {
     public override string Name => "CreatePlan";
@@ -90,21 +84,13 @@ public sealed class CreatePlanTool : ToolBase
 
         context.Session.Meta.LastPlanContent = plan;
 
-        // Persist the plan to a discoverable plans/ directory. CreatePlan writes it server-side
-        // (control tool), so plan mode stays read-only for the agent's own tools — no FileWrite
-        // gate carve-out. The saved file is reviewable/editable and feeds later implementation.
         var savedPath = await TryWritePlanFileAsync(plan, context, ct);
         context.Session.Meta.LastPlanPath = savedPath;
 
-        // The user sees the formatted plan + option buttons in the plan_ready card (extension)
-        // / the loop renderer (TUI). This result is a brief agent-facing status; the "wait,
-        // then ImplementPlan" instruction comes from the PlanPresented message.
         return ToolResult.Success("Plan presented to the user — awaiting their choice (Auto implement / Ask before edits / Keep planning).")
             .WithBreakTurn();
     }
 
-    // Writes the plan under <workspace>/.openmono/plans/ with a timestamped filename so
-    // revisions are kept. Best-effort: a write failure must not break plan presentation.
     private static async Task<string?> TryWritePlanFileAsync(string plan, ToolContext context, CancellationToken ct)
     {
         try
@@ -125,11 +111,6 @@ public sealed class CreatePlanTool : ToolBase
     }
 }
 
-/// <summary>
-/// Switches from Plan to Build mode to implement the approved plan. Call only after the
-/// user has approved. Build tools become available on the same turn (the loop rebuilds the
-/// tool set after the mode flip), and the flip is pushed to the UI/TUI automatically.
-/// </summary>
 public sealed class ImplementPlanTool : ToolBase
 {
     public override string Name => "ImplementPlan";
@@ -149,8 +130,6 @@ public sealed class ImplementPlanTool : ToolBase
     {
         var plan = context.Session.Meta.LastPlanContent is { Length: > 0 } p ? $"\n\nThe approved plan:\n{p}" : "";
 
-        // Idempotent: when the approval already flipped to Build (deterministic plan_decision
-        // routing), a redundant ImplementPlan call must SUCCEED, not error — just proceed.
         if (!context.Session.Meta.PlanMode)
             return Task.FromResult(ToolResult.Success(
                 "Already in Build mode with full tool access. Implement the approved plan now." + plan));

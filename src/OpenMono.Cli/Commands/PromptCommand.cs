@@ -1,10 +1,5 @@
 namespace OpenMono.Commands;
 
-/// <summary>
-/// Scaffolds a system-prompt or Plan-prompt override file (global or project-scoped) and
-/// hands the path back to the user — the actual editing happens in their own editor.
-/// SystemPrompt.BuildAsync / ModeInstructions.Activation pick the file up on next session start.
-/// </summary>
 public sealed class PromptCommand : ICommand
 {
     public string Name => "prompt";
@@ -16,8 +11,6 @@ public sealed class PromptCommand : ICommand
         var renderer = context.Renderer;
         var config = context.Config;
 
-        // Program.cs hands each command everything after the command name as ONE unsplit
-        // string in args[0] (e.g. "/prompt system project" -> args == ["system project"]).
         var tokens = args.Length > 0
             ? args[0].Split(' ', StringSplitOptions.RemoveEmptyEntries)
             : [];
