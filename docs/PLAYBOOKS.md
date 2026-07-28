@@ -660,6 +660,7 @@ Full list of frontmatter fields.
 | `allowed-tools` | string[] | No | `["*"]` | Tool access list |
 | `context-mode` | enum | No | `Selective` | `Full`, `Selective`, or `Fork` |
 | `max-context-tokens` | number | No | `3000` | Token cap for injected context per turn |
+| `max-tool-loops` | number | No | `10` | Cap on tool-calling round-trips per step |
 | `depends-on` | string[] | No | `[]` | Names of other playbooks this one can invoke |
 | `tags` | string[] | No | `[]` | Free-form labels for discovery and filtering |
 

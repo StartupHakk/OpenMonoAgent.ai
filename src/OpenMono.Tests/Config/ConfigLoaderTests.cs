@@ -127,6 +127,21 @@ public class ConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    public void Load_EnvironmentOverride_MaxToolIterations()
+    {
+        Environment.SetEnvironmentVariable("OPENMONO_MAX_TOOL_ITERATIONS", "50");
+        try
+        {
+            var config = ConfigLoader.Load(_tempDir);
+            config.Agents.MaxToolIterations.Should().Be(50);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OPENMONO_MAX_TOOL_ITERATIONS", null);
+        }
+    }
+
+    [Fact]
     public void Load_MalformedConfig_WarnsAndContinues()
     {
         var projectDir = Path.Combine(_tempDir, ".openmono");

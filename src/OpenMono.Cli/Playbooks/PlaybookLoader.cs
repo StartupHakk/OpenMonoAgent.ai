@@ -112,6 +112,7 @@ public sealed class PlaybookLoader
                 AllowedTools = GetStringList(frontmatter, "allowed-tools"),
                 ContextMode = ParseEnum<ContextMode>(GetString(frontmatter, "context-mode"), ContextMode.Selective),
                 MaxContextTokens = GetInt(frontmatter, "max-context-tokens", 3000),
+                MaxToolLoops = GetInt(frontmatter, "max-tool-loops", 10),
                 Tags = GetStringList(frontmatter, "tags"),
                 SkipPermissions = GetBool(frontmatter, "skip-permissions", false),
                 Parameters = ParseParameters(frontmatter),

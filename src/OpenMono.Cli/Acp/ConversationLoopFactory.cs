@@ -66,6 +66,7 @@ public sealed class ConversationLoopFactory
             _config,
             session,
             sink: sink,
-            interaction: interaction);
+            interaction: interaction,
+            maxIterations: _config.Agents.MaxToolIterations);
     }
 }

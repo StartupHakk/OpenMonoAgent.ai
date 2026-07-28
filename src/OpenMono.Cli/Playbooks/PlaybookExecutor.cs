@@ -317,7 +317,7 @@ public sealed class PlaybookExecutor : IDisposable
 
         var result = new StringBuilder();
         var lastTurnText = "";
-        var maxToolLoops = 10;
+        var maxToolLoops = playbook.MaxToolLoops;
         var toolLoopCount = 0;
 
         while (toolLoopCount < maxToolLoops)

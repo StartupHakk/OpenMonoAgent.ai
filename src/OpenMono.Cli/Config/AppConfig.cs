@@ -153,6 +153,7 @@ public sealed class AgentConfig
     public int MaxNestingDepth { get; set; } = 3;
     public int MaxQueuedAgents { get; set; } = 4;
     public int MaxConcurrentPerParent { get; set; } = 2;
+    public int MaxToolIterations { get; set; } = 1000;
 
     public void MergeFrom(AgentConfig source)
     {
@@ -160,5 +161,6 @@ public sealed class AgentConfig
         if (source.MaxNestingDepth > 0) MaxNestingDepth = source.MaxNestingDepth;
         if (source.MaxQueuedAgents > 0) MaxQueuedAgents = source.MaxQueuedAgents;
         if (source.MaxConcurrentPerParent > 0) MaxConcurrentPerParent = source.MaxConcurrentPerParent;
+        if (source.MaxToolIterations > 0) MaxToolIterations = source.MaxToolIterations;
     }
 }

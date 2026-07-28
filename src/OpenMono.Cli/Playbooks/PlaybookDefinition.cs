@@ -23,6 +23,7 @@ public sealed record PlaybookDefinition
     public string[] AllowedTools { get; init; } = [];
     public ContextMode ContextMode { get; init; } = ContextMode.Selective;
     public int MaxContextTokens { get; init; } = 3000;
+    public int MaxToolLoops { get; init; } = 10;
 
     public string[] DependsOn { get; init; } = [];
 

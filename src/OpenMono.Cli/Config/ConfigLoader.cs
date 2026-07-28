@@ -223,6 +223,10 @@ public static class ConfigLoader
         if (!string.IsNullOrEmpty(repetitionPenalty) && double.TryParse(repetitionPenalty, out var rpVal) && rpVal > 0)
             config.Llm.RepetitionPenalty = rpVal;
 
+        var maxToolIterations = Environment.GetEnvironmentVariable("OPENMONO_MAX_TOOL_ITERATIONS");
+        if (!string.IsNullOrEmpty(maxToolIterations) && int.TryParse(maxToolIterations, out var maxToolIterVal) && maxToolIterVal > 0)
+            config.Agents.MaxToolIterations = maxToolIterVal;
+
         var modelPreset = Environment.GetEnvironmentVariable("OPENMONO_MODEL_PRESET");
         if (!string.IsNullOrEmpty(modelPreset) && config.ModelPresets.TryGetValue(modelPreset, out var mp))
         {

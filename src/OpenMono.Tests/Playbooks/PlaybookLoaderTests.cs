@@ -164,6 +164,53 @@ public class PlaybookLoaderTests : IDisposable
     }
 
     [Fact]
+    public void LoadAll_WithMaxToolLoops_ParsesOverride()
+    {
+        var playbookDir = Path.Combine(_tempDir, "capped");
+        Directory.CreateDirectory(playbookDir);
+        File.WriteAllText(Path.Combine(playbookDir, "PLAYBOOK.md"), """
+            ---
+            name: capped
+            description: Caps tool loops
+            allowed-tools:
+              - Bash
+            max-tool-loops: 3
+            ---
+
+            You are a capped playbook.
+            """);
+
+        var loader = new PlaybookLoader([_tempDir]);
+        var playbooks = loader.LoadAll();
+
+        playbooks.Should().HaveCount(1);
+        playbooks[0].MaxToolLoops.Should().Be(3);
+    }
+
+    [Fact]
+    public void LoadAll_WithoutMaxToolLoops_DefaultsToTen()
+    {
+        var playbookDir = Path.Combine(_tempDir, "uncapped");
+        Directory.CreateDirectory(playbookDir);
+        File.WriteAllText(Path.Combine(playbookDir, "PLAYBOOK.md"), """
+            ---
+            name: uncapped
+            description: Uses the default cap
+            allowed-tools:
+              - Bash
+            ---
+
+            You are an uncapped playbook.
+            """);
+
+        var loader = new PlaybookLoader([_tempDir]);
+        var playbooks = loader.LoadAll();
+
+        playbooks.Should().HaveCount(1);
+        playbooks[0].MaxToolLoops.Should().Be(10);
+    }
+
+    [Fact]
     public void LoadAll_NonExistentPath_Skips()
     {
         var loader = new PlaybookLoader(["/nonexistent/path"]);

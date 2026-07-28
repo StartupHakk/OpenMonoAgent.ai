@@ -377,7 +377,8 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     var loop = new ConversationLoop(llm, tools, permissions, renderer, renderer, renderer, config, session, compactor, memoryStore,
         checkpointer: checkpointer,
         dequeuePendingUserInput: () => ansiTui?.DequeueMessage(),
-        onPendingUserInputInjected: text => ansiTui?.AddUserMessage(text));
+        onPendingUserInputInjected: text => ansiTui?.AddUserMessage(text),
+        maxIterations: config.Agents.MaxToolIterations);
 
     commands.Register(new RetryCommand(loop));
     commands.Register(new CompactCommand(compactor));

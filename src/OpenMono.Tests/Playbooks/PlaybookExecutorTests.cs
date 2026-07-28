@@ -129,10 +129,55 @@ public class PlaybookExecutorTests : IDisposable
         loaded!.IsStepCompleted("step1").Should().BeTrue();
     }
 
+    [Fact]
+    public async Task ExecuteAsync_RespectsPlaybookMaxToolLoops()
+    {
+        var playbook = new PlaybookDefinition
+        {
+            Name = "looping",
+            Description = "always calls a tool",
+            MaxToolLoops = 2,
+            Steps = [new StepDefinition { Id = "step1", InlinePrompt = "loop forever" }],
+        };
+
+        var config = new AppConfig { WorkingDirectory = _tempDir, DataDirectory = _tempDir };
+        var renderer = new TerminalRenderer();
+        var permissions = new PermissionEngine(config, renderer, renderer);
+        var llm = new AlwaysToolCallLlmClient();
+        using var executor = new PlaybookExecutor(llm, new ToolRegistry(), renderer, config, permissions);
+
+        await executor.ExecuteAsync(
+            playbook, new Dictionary<string, object>(), resumeFrom: null, "sess-max-tool-loops", CancellationToken.None);
+
+        llm.CallCount.Should().Be(2);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempDir))
             Directory.Delete(_tempDir, recursive: true);
+    }
+
+    private sealed class AlwaysToolCallLlmClient : ILlmClient
+    {
+        public int CallCount { get; private set; }
+
+        public async IAsyncEnumerable<StreamChunk> StreamChatAsync(
+            IReadOnlyList<Message> messages,
+            JsonElement? tools,
+            LlmOptions options,
+            [EnumeratorCancellation] CancellationToken ct)
+        {
+            CallCount++;
+            yield return new StreamChunk
+            {
+                ToolCallDelta = new ToolCall { Id = $"call{CallCount}", Name = "NonExistentTool", Arguments = "{}" },
+            };
+            yield return new StreamChunk { IsComplete = true };
+            await Task.CompletedTask;
+        }
+
+        public void Dispose() { }
     }
 
     private sealed class EchoLlmClient : ILlmClient
