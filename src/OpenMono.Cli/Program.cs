@@ -372,6 +372,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     commands.Register(new ThinkCommand());
     commands.Register(new ModeCommand());
     commands.Register(new ModelCommand());
+    commands.Register(new BtwCommand());
 
     var compactor = new Compactor(llm, config.Llm.ContextSize);
     var loop = new ConversationLoop(llm, tools, permissions, renderer, renderer, renderer, config, session, compactor, memoryStore,
@@ -508,6 +509,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
                     Config = config,
                     Renderer = renderer,
                     WorkingDirectory = config.WorkingDirectory,
+                    Llm = llm,
                 };
                 try
                 {

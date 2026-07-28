@@ -22,4 +22,5 @@ public sealed class CommandContext
     public required Config.AppConfig Config { get; init; }
     public required Rendering.IRenderer Renderer { get; init; }
     public required string WorkingDirectory { get; init; }
+    public required Llm.ILlmClient Llm { get; init; }
 }
