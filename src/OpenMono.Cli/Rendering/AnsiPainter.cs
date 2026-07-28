@@ -1736,8 +1736,6 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         var toolProg = _toolProgress;
         if (toolProg is not null)
         {
-            // Sticky banner: pinned to the status bar for the whole step/tool duration, instead of a
-            // scrollback line that gets buried under streamed text — this is the one place it can't scroll away.
             var spinner = SpinnerFrames[Math.Abs(_toolProgressFrame) % SpinnerFrames.Length];
             var maxLabel = Math.Max(8, _tw / 3 - 4);
             var label = toolProg.Length > maxLabel ? toolProg[..(maxLabel - 1)] + "…" : toolProg;

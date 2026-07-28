@@ -250,13 +250,6 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                         var errorMsg = errorEl.TryGetProperty("message", out var msgEl)
                             ? msgEl.GetString() : "Unknown API error";
 
-                        // llama.cpp raises this mid-stream (after headers are already 200 OK) when it
-                        // fails to parse the model's own generated tool-call arguments as JSON — typically
-                        // a large free-text argument that got malformed or truncated mid-string. It's a
-                        // decode-time hiccup, not a bad request, so retry the whole call like any other
-                        // transient failure — but only if nothing has been shown to the caller yet this
-                        // attempt, since a retry re-sends the full stream from scratch and would duplicate
-                        // any text/thinking already surfaced.
                         if (!yieldedToCaller && attempt < MaxRetries)
                         {
                             retryableStreamError = errorMsg;
