@@ -11,6 +11,7 @@ public interface ICommand
     string Name { get; }
     string Description { get; }
     CommandType Type { get; }
+    bool SafeDuringActiveTurn => false;
     Task ExecuteAsync(string[] args, CommandContext context, CancellationToken ct);
 }
 
@@ -22,4 +23,5 @@ public sealed class CommandContext
     public required Config.AppConfig Config { get; init; }
     public required Rendering.IRenderer Renderer { get; init; }
     public required string WorkingDirectory { get; init; }
+    public required Llm.ILlmClient Llm { get; init; }
 }

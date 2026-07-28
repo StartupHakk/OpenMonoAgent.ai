@@ -162,6 +162,14 @@ internal sealed class AnsiInputReader(
 
     internal CancellationTokenSource? CurrentTurnCts { get; set; }
 
+    // Lets Program.cs intercept a subset of slash commands (those flagged
+    // ICommand.SafeDuringActiveTurn) typed while a turn is active, and run them as a
+    // side channel instead of splicing the raw text into the live turn's conversation
+    // history as if it were a plain follow-up message. Returns true if it handled the
+    // text (caller must not also enqueue it as a plain message); false to fall through
+    // to the existing queueing behavior unchanged.
+    internal Func<string, bool>? TryDispatchDuringTurn { private get; set; }
+
     private Func<string>? _liveMainInput;
     internal string BgInputText => _liveMainInput?.Invoke() ?? _bgInputBuf.ToString();
     internal bool IsBackgroundInputActive => _bgInputActive;
@@ -321,7 +329,7 @@ internal sealed class AnsiInputReader(
                     if (!painter.PaintInProgress) painter.DrawInputText("", 0);
                     continue;
                 }
-                if (text.Length > 0)
+                if (text.Length > 0 && !(TryDispatchDuringTurn?.Invoke(text) ?? false))
                     painter.EnqueueUserMessage(text);
                 _bgInputBuf.Clear();
                 if (!painter.PaintInProgress) painter.DrawInputText("", 0);
@@ -740,7 +748,8 @@ internal sealed class AnsiInputReader(
                             painter.DrawInputText("", 0);
                             continue;
                         }
-                        painter.EnqueueUserMessage(text);
+                        if (!(TryDispatchDuringTurn?.Invoke(text) ?? false))
+                            painter.EnqueueUserMessage(text);
                         buf.Clear(); cur = 0;
                         painter.Write($"{AnsiPainter.E}[?25h");
                         painter.DrawInputText("", 0);
