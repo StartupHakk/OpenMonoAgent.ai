@@ -83,9 +83,14 @@ public sealed class FileEditTool : ToolBase
                 var occurrences = CountOccurrences(content, h.OldString);
 
                 if (occurrences == 0)
-                    return ToolResult.Error(
-                        $"{label}old_string not found in {resolvedPath}" +
-                        (i > 0 ? " after applying the earlier edit(s)" : ""));
+                    return ToolResult.Error(i > 0
+                        ? $"{label}old_string not found in {resolvedPath} after the earlier edit(s) were applied. " +
+                          "This usually means an earlier hunk changed the text this hunk was searching for. " +
+                          "No changes were written — the whole edit was rolled back. " +
+                          "Next: re-read the file to see its current state, then either resubmit with corrected " +
+                          "old_string values, or — if many hunks depend on each other — use FileWrite to rewrite the file in one pass."
+                        : $"{label}old_string not found in {resolvedPath}. " +
+                          "Re-read the file to confirm the exact text (including whitespace) before retrying.");
 
                 if (occurrences > 1 && !h.ReplaceAll)
                     return ToolResult.Error(

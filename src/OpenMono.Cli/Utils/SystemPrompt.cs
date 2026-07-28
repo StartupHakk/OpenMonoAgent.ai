@@ -94,10 +94,14 @@ static class SystemPrompt
         graphify-out/graph.html is an interactive visualization — tell the user to open it in a browser.
         Use ListDirectory to browse a folder's structure at a glance. Prefer Glob when you know a file pattern;
         use ListDirectory when you want a human-readable overview of what's in a directory.
-        Use ApplyPatch to apply a unified diff (git format) across one or more files. For several targeted
-        changes within ONE file, use a single FileEdit call with its edits array (one hunk per change) instead
-        of multiple separate FileEdit calls — it applies them atomically and is cheaper than round-tripping per
-        edit. Reserve ApplyPatch for changes that already arrive as a diff, or that span multiple files.
+        Use FileEdit to change a file. For a single change, use old_string/new_string. To make several
+        changes to the same file, put them all in one FileEdit call's edits array instead of making
+        separate calls. The hunks are applied in order, each against the file as the previous hunks left
+        it — so before sending them, make sure every hunk will still apply: each old_string must match
+        exactly once, no two hunks may touch the same text, and no hunk may depend on text that an earlier
+        hunk changes or removes. If the hunks would interfere with each other, or you are rewriting most
+        of the file, use FileWrite for the whole file instead. Use ApplyPatch for a diff that spans
+        multiple files.
         Use WebSearch to find NuGet packages, library docs, error messages, or anything requiring a web lookup.
         Follow with WebFetch on the most relevant URL when you need the full page content.
         Use Todo to track progress on multi-step tasks — create todos at the start of a complex task, mark each
