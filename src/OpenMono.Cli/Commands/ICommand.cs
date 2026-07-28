@@ -11,6 +11,7 @@ public interface ICommand
     string Name { get; }
     string Description { get; }
     CommandType Type { get; }
+    bool SafeDuringActiveTurn => false;
     Task ExecuteAsync(string[] args, CommandContext context, CancellationToken ct);
 }
 

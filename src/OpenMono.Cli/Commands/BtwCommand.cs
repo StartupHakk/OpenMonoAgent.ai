@@ -16,6 +16,15 @@ public sealed class BtwCommand : ICommand
     public string Description => "Ask a quick aside — answered directly by the model, skipping tool use and context bookkeeping";
     public CommandType Type => CommandType.Local;
 
+    // Safe to dispatch while a main turn is actively streaming/running tools: it never
+    // touches session.Messages and never calls the streaming-bubble renderer APIs
+    // (StartAssistantResponse/StreamText/EndAssistantResponse), which share single-slot
+    // buffers with whatever the active turn is currently rendering. Printing the answer
+    // via WriteMarkdown instead goes through the renderer's message-list path, which is
+    // already safe to call concurrently with an active turn (that's how tool-progress
+    // output interleaves with streaming today).
+    public bool SafeDuringActiveTurn => true;
+
     public async Task ExecuteAsync(string[] args, CommandContext context, CancellationToken ct)
     {
         var question = args.Length > 0 ? string.Join(' ', args).Trim() : "";
@@ -47,22 +56,14 @@ public sealed class BtwCommand : ICommand
 
         try
         {
-            var started = false;
+            var sb = new StringBuilder();
             await foreach (var chunk in context.Llm.StreamChatAsync(messages, tools: null, options, ct))
             {
-                if (chunk.TextDelta is null) continue;
-                if (!started)
-                {
-                    context.Renderer.StartAssistantResponse();
-                    started = true;
-                }
-                context.Renderer.StreamText(chunk.TextDelta);
+                if (chunk.TextDelta is not null)
+                    sb.Append(chunk.TextDelta);
             }
 
-            if (started)
-                context.Renderer.EndAssistantResponse();
-            else
-                context.Renderer.WriteWarning("No response.");
+            context.Renderer.WriteMarkdown(sb.Length > 0 ? sb.ToString() : "(no response)");
         }
         catch (OperationCanceledException)
         {

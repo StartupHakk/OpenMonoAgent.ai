@@ -119,6 +119,9 @@ public sealed class AnsiTuiRenderer : IRenderer
     public void EnableCommandSuggestions(CommandRegistry registry)
         => _inputReader.EnableCommandSuggestions(registry);
 
+    public void SetCommandDuringTurnHandler(Func<string, bool> handler)
+        => _inputReader.TryDispatchDuringTurn = handler;
+
     public string  ReadInput()                                   => _inputReader.ReadInput();
     public string? ShowCommandPicker(CommandRegistry registry)   => _inputReader.ShowCommandPicker(registry);
 

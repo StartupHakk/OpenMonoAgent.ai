@@ -386,6 +386,45 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
 
     renderer.EnableCommandSuggestions(commands);
 
+    bool TryDispatchDuringTurn(string text)
+    {
+        var parts = text.Split(' ', 2);
+        var cmdName = parts[0];
+        if (!cmdName.StartsWith('/')) return false;
+
+        var cmd = commands.Resolve(cmdName);
+        if (cmd is null || !cmd.SafeDuringActiveTurn) return false;
+
+        var cmdArgs = parts.Length > 1 ? parts[1..] : Array.Empty<string>();
+        ansiTui?.AddUserMessage(text);
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var ctx = new CommandContext
+                {
+                    Session = session,
+                    ToolRegistry = tools,
+                    CommandRegistry = commands,
+                    Config = config,
+                    Renderer = renderer,
+                    WorkingDirectory = config.WorkingDirectory,
+                    Llm = llm,
+                };
+                await cmd.ExecuteAsync(cmdArgs, ctx, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                renderer.WriteError($"/{cmd.Name} failed: {ex.Message}");
+            }
+        });
+
+        return true;
+    }
+
+    ansiTui?.SetCommandDuringTurnHandler(TryDispatchDuringTurn);
+
     await hookRunner.RunSessionStartHooksAsync(CancellationToken.None);
 
     ansiTui?.EnterFullScreen();
