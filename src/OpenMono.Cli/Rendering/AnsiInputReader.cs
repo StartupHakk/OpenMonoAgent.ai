@@ -73,7 +73,7 @@ internal sealed class AnsiInputReader(
                             var sel = painter.MouseSelectCommit();
                             if (!string.IsNullOrEmpty(sel))
                             {
-                                WriteClipboard(sel);
+                                CopyToClipboard(sel);
                                 var n = sel.Length;
                                 painter.ShowToast($"Copied {n} character{(n == 1 ? "" : "s")} to clipboard");
                             }
@@ -162,6 +162,14 @@ internal sealed class AnsiInputReader(
 
     internal CancellationTokenSource? CurrentTurnCts { get; set; }
 
+    // Lets Program.cs intercept a subset of slash commands (those flagged
+    // ICommand.SafeDuringActiveTurn) typed while a turn is active, and run them as a
+    // side channel instead of splicing the raw text into the live turn's conversation
+    // history as if it were a plain follow-up message. Returns true if it handled the
+    // text (caller must not also enqueue it as a plain message); false to fall through
+    // to the existing queueing behavior unchanged.
+    internal Func<string, bool>? TryDispatchDuringTurn { private get; set; }
+
     private Func<string>? _liveMainInput;
     internal string BgInputText => _liveMainInput?.Invoke() ?? _bgInputBuf.ToString();
     internal bool IsBackgroundInputActive => _bgInputActive;
@@ -188,7 +196,10 @@ internal sealed class AnsiInputReader(
     internal void StopBackgroundInput()
     {
         _bgInputActive = false;
+        var thread = _bgInputThread;
         _bgInputThread = null;
+        if (thread is not null && thread != Thread.CurrentThread && thread.IsAlive)
+            thread.Join(TimeSpan.FromMilliseconds(500));
         painter.Write($"{AnsiPainter.E}[?2004l");
         AnsiPainter.Flush();
     }
@@ -318,7 +329,7 @@ internal sealed class AnsiInputReader(
                     if (!painter.PaintInProgress) painter.DrawInputText("", 0);
                     continue;
                 }
-                if (text.Length > 0)
+                if (text.Length > 0 && !(TryDispatchDuringTurn?.Invoke(text) ?? false))
                     painter.EnqueueUserMessage(text);
                 _bgInputBuf.Clear();
                 if (!painter.PaintInProgress) painter.DrawInputText("", 0);
@@ -389,10 +400,117 @@ internal sealed class AnsiInputReader(
         return Task.FromResult(ans);
     }
 
+    public Task<string> AskUserAsync(string question, IReadOnlyList<string>? options, CancellationToken ct)
+    {
+        if (options is not { Count: > 0 })
+            return AskUserAsync(question, ct);
+
+        if (options.Count > 6)
+        {
+            var numbered = string.Join("\n", options.Select((o, i) => $"  [{i + 1}] {o}"));
+            return AskUserAsync($"{question}\n{numbered}", ct);
+        }
+
+        var saved = _bgInputBuf.ToString();
+        painter.AddMessage(new AnsiPainter.Msg("sys", $"? {question}"));
+        StopBackgroundInput();
+        Utils.DesktopNotifier.Alert("OpenMono — input needed", "The agent is waiting for your answer.");
+        painter.PaintConvThrottled(force: true);
+
+        string ans;
+        try { ans = ReadChoiceOrText(question, options); }
+        finally { painter.ClearLane(); }
+
+        painter.AddMessage(new AnsiPainter.Msg("user", ans));
+        painter.Paint();
+        StartBackgroundInput(saved);
+        return Task.FromResult(ans);
+    }
+
+    private string ReadChoiceOrText(string question, IReadOnlyList<string> options)
+    {
+        var custom = options.Count;
+        var count = options.Count + 1;
+        var selected = 0;
+        var typed = new StringBuilder();
+        bool OnCustom() => selected == custom;
+
+        void Repaint() => painter.PaintChoiceMenu(question, options, selected, typed.ToString(), OnCustom());
+        Repaint();
+
+        var prev = Console.TreatControlCAsInput;
+        Console.TreatControlCAsInput = true;
+        try
+        {
+            while (true)
+            {
+                var result = terminal.TryReadKey();
+                if (result is null) { Thread.Sleep(20); continue; }
+                var k = result.Value;
+
+                if (k.Key == ConsoleKey.Enter)
+                {
+                    if (OnCustom())
+                    {
+                        var text = typed.ToString().Trim();
+                        if (text.Length == 0) continue;
+                        return text;
+                    }
+                    return options[selected];
+                }
+
+                if (k.Key is ConsoleKey.UpArrow or ConsoleKey.LeftArrow)
+                {
+                    selected = (selected - 1 + count) % count;
+                    Repaint();
+                    continue;
+                }
+                if (k.Key is ConsoleKey.DownArrow or ConsoleKey.RightArrow or ConsoleKey.Tab)
+                {
+                    selected = (selected + 1) % count;
+                    Repaint();
+                    continue;
+                }
+                if (k.Key == ConsoleKey.Backspace)
+                {
+                    if (OnCustom() && typed.Length > 0) typed.Remove(typed.Length - 1, 1);
+                    Repaint();
+                    continue;
+                }
+                if (k.Key == ConsoleKey.Escape)
+                {
+                    if (!Console.KeyAvailable) { var ms = 0; while (!Console.KeyAvailable && ms < 50) { Thread.Sleep(1); ms++; } }
+                    if (Console.KeyAvailable) TryReadEscapeSequence();
+                    continue;
+                }
+                if (k.Key == ConsoleKey.C && k.Modifiers.HasFlag(ConsoleModifiers.Control))
+                {
+                    ProcessWatchdog.ScheduleHardKill();
+                    OnSafeExit();
+                    Environment.Exit(0);
+                }
+                if (OnCustom() && !char.IsControl(k.KeyChar))
+                {
+                    typed.Append(k.KeyChar);
+                    Repaint();
+                }
+            }
+        }
+        finally { Console.TreatControlCAsInput = prev; }
+    }
+
     public Task<PermissionResponse> AskPermissionAsync(string tool, string summary, CancellationToken ct)
     {
         var saved = _bgInputBuf.ToString();
         StopBackgroundInput();
+
+        // Alert the user in case the terminal/window isn't focused. Inside the
+        // container this rings the host terminal bell; on the host it raises a
+        // native OS notification.
+        Utils.DesktopNotifier.Alert(
+            "OpenMono — permission needed",
+            $"The agent needs your permission to run {tool}.");
+
         painter.AddMessage(new AnsiPainter.Msg("sys",
             $"{AnsiPainter.Fy}▶ Permission: {tool}{AnsiPainter.R}\n{summary}"));
         painter.PaintConvThrottled(force: true);
@@ -403,17 +521,11 @@ internal sealed class AnsiInputReader(
             ? summary[..(maxSummaryLen - 3)] + "..."
             : summary;
 
-        painter.PaintPermissionLane(
-            $"{AnsiPainter.Fy}{AnsiPainter.B}▸ Permission required: {tool}{AnsiPainter.R}",
-            $"{AnsiPainter.Fw}{truncatedSummary}{AnsiPainter.R}",
-            $"  {AnsiPainter.B}{AnsiPainter.Fg}[y]{AnsiPainter.R}{AnsiPainter.BgInput}  Allow",
-            $"  {AnsiPainter.B}{AnsiPainter.Fy}[n]{AnsiPainter.R}{AnsiPainter.BgInput}  Deny",
-            $"  {AnsiPainter.B}{AnsiPainter.Fc}[a]{AnsiPainter.R}{AnsiPainter.BgInput}  Allow all",
-            $"  {AnsiPainter.B}{AnsiPainter.Fr}[!]{AnsiPainter.R}{AnsiPainter.BgInput}  Deny all"
-        );
+        var title       = $"{AnsiPainter.Fy}{AnsiPainter.B}▸ Permission required: {tool}{AnsiPainter.R}  {AnsiPainter.Fk}↑/↓ move · Enter confirm{AnsiPainter.R}";
+        var summaryLine = $"{AnsiPainter.Fw}{truncatedSummary}{AnsiPainter.R}";
 
         PermissionResponse response;
-        try { response = ReadPermissionKey(); }
+        try { response = ReadPermissionMenu(title, summaryLine); }
         finally { painter.ClearLane(); }
         painter.Paint();
         StartBackgroundInput(saved);
@@ -636,7 +748,8 @@ internal sealed class AnsiInputReader(
                             painter.DrawInputText("", 0);
                             continue;
                         }
-                        painter.EnqueueUserMessage(text);
+                        if (!(TryDispatchDuringTurn?.Invoke(text) ?? false))
+                            painter.EnqueueUserMessage(text);
                         buf.Clear(); cur = 0;
                         painter.Write($"{AnsiPainter.E}[?25h");
                         painter.DrawInputText("", 0);
@@ -840,8 +953,20 @@ internal sealed class AnsiInputReader(
         finally { Console.TreatControlCAsInput = prev; }
     }
 
-    private PermissionResponse ReadPermissionKey()
+    private PermissionResponse ReadPermissionMenu(string title, string summary)
     {
+        var options = new (string Label, PermissionResponse Resp)[]
+        {
+            ($"{AnsiPainter.B}{AnsiPainter.Fg}[y]{AnsiPainter.R}{AnsiPainter.BgInput} Allow",     PermissionResponse.Allow),
+            ($"{AnsiPainter.B}{AnsiPainter.Fc}[a]{AnsiPainter.R}{AnsiPainter.BgInput} Allow all", PermissionResponse.AllowAll),
+            ($"{AnsiPainter.B}{AnsiPainter.Fy}[n]{AnsiPainter.R}{AnsiPainter.BgInput} Deny",      PermissionResponse.Deny),
+            ($"{AnsiPainter.B}{AnsiPainter.Fr}[!]{AnsiPainter.R}{AnsiPainter.BgInput} Deny all",  PermissionResponse.DenyAll),
+        };
+        var labels = options.Select(o => o.Label).ToArray();
+
+        var selected = 0;
+        painter.PaintPermissionMenu(title, summary, labels, selected);
+
         var prev = Console.TreatControlCAsInput;
         Console.TreatControlCAsInput = true;
         try
@@ -852,15 +977,30 @@ internal sealed class AnsiInputReader(
                 if (result is null) { Thread.Sleep(20); continue; }
                 var k = result.Value;
 
+                if (k.Key is ConsoleKey.UpArrow or ConsoleKey.LeftArrow)
+                {
+                    selected = (selected - 1 + options.Length) % options.Length;
+                    painter.PaintPermissionMenu(title, summary, labels, selected);
+                    continue;
+                }
+                if (k.Key is ConsoleKey.DownArrow or ConsoleKey.RightArrow or ConsoleKey.Tab)
+                {
+                    selected = (selected + 1) % options.Length;
+                    painter.PaintPermissionMenu(title, summary, labels, selected);
+                    continue;
+                }
+                if (k.Key == ConsoleKey.Enter) return options[selected].Resp;
+
                 if (k.KeyChar is 'y' or 'Y') return PermissionResponse.Allow;
                 if (k.KeyChar is 'n' or 'N') return PermissionResponse.Deny;
                 if (k.KeyChar is 'a' or 'A') return PermissionResponse.AllowAll;
                 if (k.KeyChar == '!')         return PermissionResponse.DenyAll;
+
                 if (k.Key == ConsoleKey.Escape)
                 {
                     if (!Console.KeyAvailable) { var ms = 0; while (!Console.KeyAvailable && ms < 50) { Thread.Sleep(1); ms++; } }
-                    if (Console.KeyAvailable) { TryReadEscapeSequence(); continue; }
-                    return PermissionResponse.Deny;
+                    if (Console.KeyAvailable) TryReadEscapeSequence();
+                    continue;
                 }
 
                 if (k.Key == ConsoleKey.C && k.Modifiers.HasFlag(ConsoleModifiers.Control))
@@ -874,15 +1014,23 @@ internal sealed class AnsiInputReader(
         finally { Console.TreatControlCAsInput = prev; }
     }
 
-    private static void WriteClipboard(string text)
+    private void CopyToClipboard(string text)
     {
+        try { painter.CopyToClipboardOsc52(text); }
+        catch { }
+
+        try { WriteClipboardBridge(text); }
+        catch { }
+
         try
         {
             ProcessStartInfo psi;
             if (File.Exists("/usr/bin/pbcopy"))
                 psi = new("pbcopy") { RedirectStandardInput = true, UseShellExecute = false };
-            else
+            else if (File.Exists("/usr/bin/xclip") || File.Exists("/usr/local/bin/xclip"))
                 psi = new("xclip", "-selection clipboard") { RedirectStandardInput = true, UseShellExecute = false };
+            else
+                return;
 
             var p = Process.Start(psi);
             if (p is null) return;
@@ -891,6 +1039,18 @@ internal sealed class AnsiInputReader(
             p.WaitForExit(2000);
         }
         catch { }
+    }
+
+    private static void WriteClipboardBridge(string text)
+    {
+        var dir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".openmono");
+        if (!Directory.Exists(dir)) return;
+
+        var target = Path.Combine(dir, ".clipboard-out");
+        var tmp    = Path.Combine(dir, ".clipboard-out.tmp");
+        File.WriteAllText(tmp, text);
+        File.Move(tmp, target, overwrite: true);
     }
 
     private static string? ReadClipboard()

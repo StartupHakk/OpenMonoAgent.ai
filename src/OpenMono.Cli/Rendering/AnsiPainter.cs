@@ -96,6 +96,11 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
 
     private volatile int _contextWarningPct;
 
+    // "Update available" banner text, supplied by the host launcher via env when a
+    // newer version of OpenMono is on the tracked branch. Null = up to date / unknown.
+    private readonly string? _updateNotice =
+        Environment.GetEnvironmentVariable("OPENMONO_UPDATE_NOTICE") is { Length: > 0 } n ? n : null;
+
     private string[]? _prevConvFrame;
     private string[]? _prevSideFrame;
     private int _prevFrameWidth;
@@ -303,6 +308,16 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
 
     internal void Write(string s) => W(s);
 
+    internal void CopyToClipboardOsc52(string text)
+    {
+        var b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
+        lock (_writeLock)
+        {
+            W($"{E}]52;c;{b64}\a");
+            Flush();
+        }
+    }
+
     internal void MoveTo(int col, int row)
         => terminal.WriteAsync($"\x1b[{row};{col}H").GetAwaiter().GetResult();
 
@@ -501,6 +516,64 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         Row(3, opt2);
         Row(2, opt3);
         Row(1, opt4);
+
+        _laneOverlay = sb.ToString();
+        _laneActive  = true;
+        lock (_writeLock) { W(_laneOverlay); Flush(); }
+    }
+
+    internal void PaintPermissionMenu(string title, string summary, IReadOnlyList<string> options, int selected)
+    {
+        Sz();
+        var w  = _tw - _sideW;
+        var sb = new StringBuilder(512);
+
+        void Row(int offset, string text)
+        {
+            sb.Append($"{E}[{Math.Max(1, _th - offset)};1H");
+            sb.Append($"{BgInput} {PadR(text, Math.Max(0, w - 2))}{R}");
+        }
+
+        Row(6, title);
+        Row(5, summary);
+        for (var i = 0; i < options.Count && i < 4; i++)
+        {
+            var marker = i == selected ? $"{B}{Fbb}❯ {R}{BgInput}" : "  ";
+            Row(4 - i, $"{marker}{options[i]}");
+        }
+
+        _laneOverlay = sb.ToString();
+        _laneActive  = true;
+        lock (_writeLock) { W(_laneOverlay); Flush(); }
+    }
+
+    internal void PaintChoiceMenu(string title, IReadOnlyList<string> options, int selected, string typed, bool onCustom)
+    {
+        Sz();
+        var w  = _tw - _sideW;
+        var sb = new StringBuilder(512);
+        var n  = Math.Min(options.Count, 6);
+
+        void Row(int offset, string text)
+        {
+            sb.Append($"{E}[{Math.Max(1, _th - offset)};1H");
+            sb.Append($"{BgInput} {PadR(text, Math.Max(0, w - 2))}{R}");
+        }
+
+        Row(n + 3, $"{B}{Fbb}? {R}{BgInput}{title}");
+        for (var i = 0; i < n; i++)
+        {
+            var marker = (!onCustom && i == selected) ? $"{B}{Fbb}❯ {R}{BgInput}" : "  ";
+            Row((n - i) + 2, $"{marker}[{i + 1}] {options[i]}");
+        }
+
+        var customMarker = onCustom ? $"{B}{Fbb}❯ {R}{BgInput}" : "  ";
+        string customText;
+        if (onCustom)              customText = $"✎ {typed}▏";
+        else if (typed.Length > 0) customText = $"✎ {typed}";
+        else                       customText = $"{Fk}✎ type your own answer…{R}";
+        Row(2, $"{customMarker}{customText}");
+        Row(1, $"  {Fk}↑/↓ choose · Enter select{R}");
 
         _laneOverlay = sb.ToString();
         _laneActive  = true;
@@ -1133,6 +1206,7 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
             var convH       = Math.Max(0, _th - inputH - 2);
 
             PaintConvArea(sb, mainW, convH);
+            PaintUpdateBanner(sb, convH);
             PaintInputBox(sb, mainW, convH);
             PaintTabBar(sb, mainW, convH + inputH);
             PaintSidebar(sb, mainW, convH + inputH + 1);
@@ -1168,6 +1242,7 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         var currentText = _getBgInput();
         var convH       = _th - InputContentRows(currentText, mainW) - 4;
         PaintConvArea(sb, mainW, convH);
+        PaintUpdateBanner(sb, convH);
         PaintInputBox(sb, mainW, convH);
         PaintTabBar(sb, mainW, convH + InputContentRows(currentText, mainW) + 2);
         PaintSidebar(sb, mainW, _th - 1);
@@ -1448,14 +1523,6 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
             }
         }
 
-        var toolProg = _toolProgress;
-        if (toolProg is not null)
-        {
-            var spinner = SpinnerFrames[Math.Abs(_toolProgressFrame) % SpinnerFrames.Length];
-            lines.Add("");
-            lines.Add($"  {Fbb}{spinner} {IT}{Fk}{toolProg}…{R}");
-        }
-
         lock (_queueLock)
         {
             if (_messageQueue.Count > 0)
@@ -1697,10 +1764,23 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
             : "";
         var canCancel = _isTurnActive() || QueuedCount > 0;
         var cancelHint = canCancel ? $"{Fk}esc{R}{BgStatus} {Fw}cancel{R}{BgStatus}" : "";
-        var modeIndicator = session.Meta.PlanMode
-            ? $"{Fk}[{R}{Fy}PLAN{R}{Fk}]{R}{BgStatus} "
-            : $"{Fk}[{R}{Fg}BUILD{R}{Fk}]{R}{BgStatus} ";
-        var mid   = $"{modeIndicator}{scrollIndicator}{cancelHint}";
+
+        string mid;
+        var toolProg = _toolProgress;
+        if (toolProg is not null)
+        {
+            var spinner = SpinnerFrames[Math.Abs(_toolProgressFrame) % SpinnerFrames.Length];
+            var maxLabel = Math.Max(8, _tw / 3 - 4);
+            var label = toolProg.Length > maxLabel ? toolProg[..(maxLabel - 1)] + "…" : toolProg;
+            mid = $"{Fc}{spinner} {B}{label}…{R}{BgStatus}  {cancelHint}";
+        }
+        else
+        {
+            var modeIndicator = session.Meta.PlanMode
+                ? $"{Fk}[{R}{Fy}PLAN{R}{Fk}]{R}{BgStatus} "
+                : $"{Fk}[{R}{Fg}BUILD{R}{Fk}]{R}{BgStatus} ";
+            mid = $"{modeIndicator}{scrollIndicator}{cancelHint}";
+        }
         var right = $"{Fk}ctrl+c{R}{BgStatus} {Fw}quit{R}{BgStatus}   {Fk}ctrl+p{R}{BgStatus} {Fw}commands{R}{BgStatus} ";
         var visM  = VisLen(mid);
         var visR  = VisLen(right);
@@ -1722,6 +1802,18 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         var msg    = "  ^C  Press Ctrl+C one more time to exit";
         var padded = msg.Length < w ? msg + new string(' ', w - msg.Length) : msg[..w];
         sb.Append($"{E}[{row};1H\x1b[43;30m{padded}{R}");
+    }
+
+    // Renders the "update available" banner on the line directly above the input
+    // box (like Claude Code's update notice). No-op when no update is available.
+    private void PaintUpdateBanner(StringBuilder sb, int convH)
+    {
+        if (string.IsNullOrEmpty(_updateNotice)) return;
+        var w      = _tw > 0 ? _tw : 80;
+        var msg    = $"  ⬆  {_updateNotice}";
+        var padded = msg.Length < w ? msg + new string(' ', w - msg.Length) : msg[..w];
+        var row    = Math.Max(1, convH);   // the line just above the input box
+        sb.Append($"{E}[{row};1H\x1b[42;30m{padded}{R}");
     }
 
     private void PaintContextWarning(StringBuilder sb)

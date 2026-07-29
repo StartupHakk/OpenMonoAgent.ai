@@ -1,0 +1,124 @@
+using System.Diagnostics;
+
+namespace OpenMono.Utils;
+
+public static class DesktopNotifier
+{
+    private const char Bel = '\u0007';
+
+    public static bool Enabled { get; set; } =
+        Environment.GetEnvironmentVariable("OPENMONO_NOTIFICATIONS")?.Trim().ToLowerInvariant()
+            is not ("0" or "false" or "off" or "no");
+
+
+    private static readonly bool InContainer =
+        Environment.GetEnvironmentVariable("OPENMONO_IN_CONTAINER") == "1"
+        || File.Exists("/.dockerenv");
+
+    public static void Alert(string title, string message)
+    {
+        if (!Enabled) return;
+        if (InContainer)
+            NotifyTerminal($"{title} — {message}");
+        else
+            Notify(title, message);
+    }
+
+    public static void Notify(string title, string message)
+    {
+        if (!Enabled) return;
+        _ = Task.Run(() => Send(title, message));
+    }
+
+    public static void NotifyTerminal(string message)
+    {
+        if (!Enabled) return;
+        try
+        {
+            if (Console.IsOutputRedirected) return;
+            Console.Out.Write(Bel);
+            Console.Out.Flush();
+        }
+        catch { }
+    }
+
+    private static void Send(string title, string message)
+    {
+        try
+        {
+            var psi = BuildStartInfo(title, message);
+            if (psi is null) return;
+            var p = Process.Start(psi);
+            p?.WaitForExit(3000);
+        }
+        catch (Exception ex)
+        {
+            Log.Debug($"[notify] failed to raise desktop notification: {ex.Message}");
+        }
+    }
+
+    private static ProcessStartInfo? BuildStartInfo(string title, string message)
+    {
+        if (OperatingSystem.IsMacOS())
+        {
+            var script = $"display notification {AppleScriptString(message)} " +
+                         $"with title {AppleScriptString(title)}";
+            var psi = new ProcessStartInfo("osascript")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            psi.ArgumentList.Add("-e");
+            psi.ArgumentList.Add(script);
+            return psi;
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+            var bin = new[] { "/usr/bin/notify-send", "/bin/notify-send" }
+                .FirstOrDefault(File.Exists);
+            if (bin is null) return null;
+            var psi = new ProcessStartInfo(bin)
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            psi.ArgumentList.Add(title);
+            psi.ArgumentList.Add(message);
+            return psi;
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            var script =
+                "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] > $null;" +
+                "$t=[Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02);" +
+                "$x=$t.GetElementsByTagName('text');" +
+                $"$x.Item(0).AppendChild($t.CreateTextNode({PowerShellString(title)})) > $null;" +
+                $"$x.Item(1).AppendChild($t.CreateTextNode({PowerShellString(message)})) > $null;" +
+                "$toast=[Windows.UI.Notifications.ToastNotification]::new($t);" +
+                "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('OpenMono').Show($toast);";
+            var psi = new ProcessStartInfo("powershell")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            psi.ArgumentList.Add("-NoProfile");
+            psi.ArgumentList.Add("-NonInteractive");
+            psi.ArgumentList.Add("-Command");
+            psi.ArgumentList.Add(script);
+            return psi;
+        }
+
+        return null;
+    }
+
+    private static string AppleScriptString(string value)
+        => "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+
+    private static string PowerShellString(string value)
+        => "'" + value.Replace("'", "''") + "'";
+}

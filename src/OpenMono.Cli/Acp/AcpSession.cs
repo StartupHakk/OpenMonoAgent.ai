@@ -68,6 +68,8 @@ public sealed class AcpSession
     {
         foreach (var kv in _pending) kv.Value.Tcs.TrySetCanceled();
         _pending.Clear();
+        _currentPermissionId = null;
+        _permissionQueue.Clear();
     }
 
     public void RememberPermission(string contextKey, bool allow, string scope = "session")

@@ -417,7 +417,7 @@ src/OpenMono.Cli/
 ├── Lsp/                    LspClient, LspServerManager, LspTool
 ├── Roslyn/                 RoslynTool (AdhocWorkspace, 8 actions)
 ├── Playbooks/              PlaybookExecutor, PlaybookLoader, TemplateEngine, ParameterValidator
-├── Commands/               14 slash commands (/help, /status, /model, /compact, /undo, …)
+├── Commands/               17 slash commands (/help, /status, /model, /compact, /undo, /btw, …)
 ├── Memory/                 Cross-session memory (YAML frontmatter files)
 ├── History/                File snapshots for /undo
 ├── Hooks/                  HookRunner, HookDefinition

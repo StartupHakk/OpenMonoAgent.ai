@@ -16,10 +16,12 @@ public sealed class PlaybookState
 
     public bool IsStepCompleted(string stepId) => CompletedSteps.Contains(stepId);
 
-    public void CompleteStep(string stepId, string output)
+    public void CompleteStep(string stepId, string output, string? outputKey = null)
     {
         CompletedSteps.Add(stepId);
         StepOutputs[stepId] = output;
+        if (!string.IsNullOrEmpty(outputKey) && outputKey != stepId)
+            StepOutputs[outputKey] = output;
         CurrentStepId = null;
     }
 

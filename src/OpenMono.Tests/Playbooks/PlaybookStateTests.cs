@@ -32,6 +32,22 @@ public class PlaybookStateTests : IDisposable
     }
 
     [Fact]
+    public void CompleteStep_WithOutputKey_IsRetrievableByBothIdAndOutputName()
+    {
+        var state = new PlaybookState
+        {
+            PlaybookName = "test",
+            SessionId = "abc123",
+        };
+
+        state.CompleteStep("step_one", "HELLO_STATE_TEST", outputKey: "greeting");
+
+        state.IsStepCompleted("step_one").Should().BeTrue();
+        state.StepOutputs["step_one"].Should().Be("HELLO_STATE_TEST");
+        state.StepOutputs["greeting"].Should().Be("HELLO_STATE_TEST");
+    }
+
+    [Fact]
     public async Task SaveAsync_WritesFile()
     {
         var state = new PlaybookState

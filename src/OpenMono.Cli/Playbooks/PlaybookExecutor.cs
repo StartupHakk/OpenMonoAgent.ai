@@ -117,15 +117,27 @@ public sealed class PlaybookExecutor : IDisposable
         var runId = state.SessionId;
         _permissions.PushPlaybookScope(runId, plan.Tools.Select(t => t.Name));
 
+        string? logPath = playbook.LogOutput ? BuildLogPath(_config.DataDirectory, playbook.Name, runId) : null;
+        using var log = logPath is not null ? new StreamWriter(logPath, append: true) { AutoFlush = true } : null;
+
         try
         {
             _renderer.WriteInfo($"Playbook: {playbook.Name} v{playbook.Version}");
+            if (logPath is not null)
+            {
+                log!.WriteLine($"=== Playbook '{playbook.Name}' v{playbook.Version} — run {runId} — started {DateTime.UtcNow:O} ===");
+                _renderer.WriteInfo($"  Logging raw output to {logPath}");
+            }
 
             var steps = ResolveStepOrder(playbook.Steps);
             var finalOutput = new StringBuilder();
+            var totalSteps = steps.Count;
+            var stepNumber = 0;
 
             foreach (var step in steps)
             {
+                stepNumber++;
+
                 if (state.IsStepCompleted(step.Id))
                 {
                     _renderer.WriteInfo($"  Step '{step.Id}' — already completed (resumed)");
@@ -139,11 +151,18 @@ public sealed class PlaybookExecutor : IDisposable
                 }
 
                 state.CurrentStepId = step.Id;
+                var progressLabel = $"Step {stepNumber}/{totalSteps}: {step.Id}";
+                _renderer.ShowToolProgress(progressLabel);
                 _renderer.WriteInfo($"  Step '{step.Id}' — running...");
 
                 var stepContent = await GetStepContentAsync(step, playbook, state, ct);
+                log?.WriteLine($"\n--- [{DateTime.UtcNow:O}] Step '{step.Id}' — prompt ---\n{stepContent}");
 
-                if (step.Gate != GateType.None)
+                if (step.Gate != GateType.None && playbook.SkipPermissions)
+                {
+                    _renderer.WriteInfo($"  Step '{step.Id}' — gate '{step.Gate}' auto-approved (skip-permissions)");
+                }
+                else if (step.Gate != GateType.None)
                 {
                     if (IsNonInteractiveSession())
                     {
@@ -160,7 +179,14 @@ public sealed class PlaybookExecutor : IDisposable
                     }
                 }
 
-                var output = await RunStepAsync(step, stepContent, playbook, state, ct);
+                var (output, stepError) = await RunStepAsync(step, stepContent, playbook, state, progressLabel, ct);
+                if (stepError is not null)
+                {
+                    log?.WriteLine($"--- Step '{step.Id}' — ERROR ---\n{stepError}");
+                    _renderer.WriteWarning($"  Step '{step.Id}' aborted — {stepError}");
+                    return $"Playbook '{playbook.Name}' aborted at step '{step.Id}'.\n{stepError}";
+                }
+                log?.WriteLine($"--- Step '{step.Id}' — output ---\n{output}");
 
                 if (step.Script is not null)
                 {
@@ -177,7 +203,7 @@ public sealed class PlaybookExecutor : IDisposable
                     }
                 }
 
-                state.CompleteStep(step.Id, output);
+                state.CompleteStep(step.Id, output, step.Output);
                 _renderer.WriteInfo($"  Step '{step.Id}' — done");
 
                 await state.SaveAsync(_config.DataDirectory, ct);
@@ -187,10 +213,13 @@ public sealed class PlaybookExecutor : IDisposable
             }
 
             _renderer.WriteInfo($"Playbook '{playbook.Name}' completed ({state.CompletedSteps.Count} steps)");
+            log?.WriteLine($"=== Playbook '{playbook.Name}' completed {DateTime.UtcNow:O} ({state.CompletedSteps.Count} steps) ===");
             return finalOutput.Length > 0 ? finalOutput.ToString() : "Playbook completed.";
         }
         finally
         {
+            _renderer.ClearToolProgress();
+
             try
             {
                 _permissions.PopPlaybookScope(runId);
@@ -200,6 +229,13 @@ public sealed class PlaybookExecutor : IDisposable
                 _renderer.WriteWarning($"PopPlaybookScope failed — scope stack corrupted: {ex.Message}");
             }
         }
+    }
+
+    private static string BuildLogPath(string dataDirectory, string playbookName, string runId)
+    {
+        var dir = Path.Combine(dataDirectory, "playbook-logs");
+        Directory.CreateDirectory(dir);
+        return Path.Combine(dir, $"{playbookName}_{runId}.log");
     }
 
     private async Task<string> GetStepContentAsync(
@@ -242,8 +278,8 @@ public sealed class PlaybookExecutor : IDisposable
         };
     }
 
-    private async Task<string> RunStepAsync(
-        StepDefinition step, string content, PlaybookDefinition playbook, PlaybookState state, CancellationToken ct)
+    private async Task<(string Output, string? Error)> RunStepAsync(
+        StepDefinition step, string content, PlaybookDefinition playbook, PlaybookState state, string progressLabel, CancellationToken ct)
     {
 
         var messages = new List<Message>
@@ -259,6 +295,46 @@ public sealed class PlaybookExecutor : IDisposable
         var effectiveTools = BuildEffectiveToolRegistry(step, playbook);
 
         var toolDefs = effectiveTools.BuildToolDefinitions();
+
+        JsonElement? outputSchema = null;
+        if (step.OutputSchema is not null)
+        {
+            var schemaPath = Path.Combine(playbook.BasePath, step.OutputSchema);
+            if (File.Exists(schemaPath))
+            {
+                using var schemaDoc = JsonDocument.Parse(await File.ReadAllTextAsync(schemaPath, ct));
+                outputSchema = schemaDoc.RootElement.Clone();
+
+                // llama.cpp's json_schema-to-grammar converter needs a typed `properties` entry for every
+                // `required` field to build a real constraint — `required` alone degrades to a near-unconstrained
+                // grammar, so the model outputs whatever shape it thinks fits and validation just keeps failing.
+                if (outputSchema.Value.TryGetProperty("required", out var requiredEl) &&
+                    requiredEl.ValueKind == JsonValueKind.Array)
+                {
+                    var hasProperties = outputSchema.Value.TryGetProperty("properties", out var propsEl) &&
+                        propsEl.ValueKind == JsonValueKind.Object;
+                    var missingFromProperties = requiredEl.EnumerateArray()
+                        .Select(e => e.GetString())
+                        .Where(name => !string.IsNullOrEmpty(name) && (!hasProperties || !propsEl.TryGetProperty(name!, out _)))
+                        .ToList();
+
+                    if (missingFromProperties.Count > 0)
+                    {
+                        _renderer.WriteWarning(
+                            $"Step '{step.Id}' output-schema '{step.OutputSchema}' lists required field(s) " +
+                            $"({string.Join(", ", missingFromProperties)}) with no matching typed entry in 'properties' — " +
+                            "grammar-constrained decoding will be effectively unconstrained on llama.cpp. Add a " +
+                            "'properties' entry (with a type) for every required field.");
+                    }
+                }
+            }
+            else
+            {
+                _renderer.WriteWarning(
+                    $"Step '{step.Id}' declares output-schema '{step.OutputSchema}' but the file was not found — JSON is not enforced.");
+            }
+        }
+
         var options = new LlmOptions
         {
             Model = _config.Llm.Model,
@@ -267,6 +343,7 @@ public sealed class PlaybookExecutor : IDisposable
         };
 
         var result = new StringBuilder();
+        var lastTurnText = "";
         var maxToolLoops = 10;
         var toolLoopCount = 0;
 
@@ -274,27 +351,78 @@ public sealed class PlaybookExecutor : IDisposable
         {
             var pendingToolCalls = new List<ToolCall>();
             var textContent = new StringBuilder();
+            var receivedFirstChunk = false;
+            var thinkingStarted = false;
+            var thinkingCollapsed = false;
+            var thinkingChars = 0;
 
-            await foreach (var chunk in _llm.StreamChatAsync(messages, toolDefs, options, ct))
+            var indicatorShown = false;
+            using var indicatorCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var indicatorTask = Task.Delay(500, indicatorCts.Token).ContinueWith(t =>
             {
-                if (chunk.TextDelta is not null)
-                {
-                    textContent.Append(chunk.TextDelta);
-                    _renderer.StreamText(chunk.TextDelta);
-                }
+                if (!t.IsCanceled) { _renderer.ShowWaitingIndicator(); indicatorShown = true; }
+            }, TaskScheduler.Default);
 
-                if (chunk.ToolCallDelta is not null)
+            try
+            {
+                await foreach (var chunk in _llm.StreamChatAsync(messages, toolDefs, options, ct))
                 {
-                    var tc = chunk.ToolCallDelta;
-                    if (!pendingToolCalls.Any(t => t.Id == tc.Id))
-                        pendingToolCalls.Add(tc);
-                }
+                    if (!indicatorCts.IsCancellationRequested)
+                    {
+                        indicatorCts.Cancel();
+                        if (indicatorShown) _renderer.ClearWaitingIndicator();
+                    }
 
-                if (chunk.IsComplete) break;
+                    if (chunk.ThinkingDelta is not null)
+                    {
+                        _renderer.AppendThinking(chunk.ThinkingDelta);
+                        thinkingStarted = true;
+                        thinkingChars += chunk.ThinkingDelta.Length;
+                        continue;
+                    }
+
+                    if (!receivedFirstChunk)
+                    {
+                        if (thinkingStarted && !thinkingCollapsed)
+                        {
+                            _renderer.CollapseThinking(thinkingChars);
+                            thinkingCollapsed = true;
+                        }
+                        _renderer.StartAssistantResponse();
+                        receivedFirstChunk = true;
+                    }
+
+                    if (chunk.TextDelta is not null)
+                    {
+                        textContent.Append(chunk.TextDelta);
+                        _renderer.StreamText(chunk.TextDelta);
+                    }
+
+                    if (chunk.ToolCallDelta is not null)
+                    {
+                        var tc = chunk.ToolCallDelta;
+                        if (!pendingToolCalls.Any(t => t.Id == tc.Id))
+                            pendingToolCalls.Add(tc);
+                    }
+
+                    if (chunk.IsComplete) break;
+                }
+            }
+            finally
+            {
+                if (!indicatorCts.IsCancellationRequested)
+                    indicatorCts.Cancel();
+                await indicatorTask;
+                _renderer.ClearWaitingIndicator();
             }
 
+            if (thinkingStarted && !thinkingCollapsed)
+                _renderer.CollapseThinking(thinkingChars);
+
             _renderer.EndAssistantResponse();
+            _renderer.ShowToolProgress(progressLabel);
             result.Append(textContent);
+            lastTurnText = textContent.ToString();
 
             if (pendingToolCalls.Count == 0)
                 break;
@@ -375,7 +503,119 @@ public sealed class PlaybookExecutor : IDisposable
             _renderer.WriteWarning($"Step '{step.Id}' reached maximum tool loop count ({maxToolLoops})");
         }
 
-        return result.ToString();
+        if (outputSchema is { } schema)
+            return await EnforceJsonOutputAsync(schema, messages, options, lastTurnText, step.Id, ct);
+
+        return (result.ToString(), null);
+    }
+
+    /// <summary>Validates the step's final text against its output-schema; on mismatch, re-prompts the
+    /// LLM for a correction — with no tools offered and the schema sent as a grammar-constrained
+    /// response_format, so on llama.cpp/OpenAI-compat providers this correction is itself guaranteed
+    /// to come back valid (at most one retry ever needed there). Providers that ignore response_format
+    /// (e.g. Anthropic) fall back to prompt-based correction for up to 3 attempts.</summary>
+    private async Task<(string Output, string? Error)> EnforceJsonOutputAsync(
+        JsonElement schema,
+        List<Message> messages,
+        LlmOptions options,
+        string candidate,
+        string stepId,
+        CancellationToken ct)
+    {
+        const int maxRetries = 3;
+        var correctionOptions = options with { ResponseFormatSchema = schema };
+
+        for (var attempt = 0; ; attempt++)
+        {
+            string? problem = TryExtractJson(candidate, out var json)
+                ? FindMissingRequiredFields(json, schema)
+                : "the response was not valid JSON";
+
+            if (problem is null)
+                return (json, null);
+
+            if (attempt >= maxRetries)
+                return (candidate, $"step '{stepId}' did not produce JSON matching its output-schema after {maxRetries} retries ({problem})");
+
+            _renderer.WriteWarning($"  Step '{stepId}' — JSON attempt {attempt + 1} rejected: {problem}. Retrying.");
+
+            messages.Add(new Message { Role = MessageRole.Assistant, Content = candidate });
+            messages.Add(new Message
+            {
+                Role = MessageRole.User,
+                Content = $"Your response did not satisfy the required JSON schema: {problem}. " +
+                          "Return ONLY the corrected JSON — no prose, no markdown code fences, no tool calls.",
+            });
+
+            var retryText = new StringBuilder();
+            await foreach (var chunk in _llm.StreamChatAsync(messages, tools: null, correctionOptions, ct))
+            {
+                if (chunk.TextDelta is not null)
+                {
+                    retryText.Append(chunk.TextDelta);
+                    _renderer.StreamText(chunk.TextDelta);
+                }
+                if (chunk.IsComplete) break;
+            }
+            _renderer.EndAssistantResponse();
+            candidate = retryText.ToString();
+        }
+    }
+
+    /// <summary>Strips a markdown code fence if present, then narrows to the outermost {..}/[..] span.
+    /// Models routinely wrap JSON in prose or fences even when asked not to.</summary>
+    private static bool TryExtractJson(string text, out string json)
+    {
+        var trimmed = text.Trim();
+
+        if (trimmed.StartsWith("```", StringComparison.Ordinal))
+        {
+            var firstNewline = trimmed.IndexOf('\n');
+            var closingFence = trimmed.LastIndexOf("```", StringComparison.Ordinal);
+            if (firstNewline > 0 && closingFence > firstNewline)
+                trimmed = trimmed[(firstNewline + 1)..closingFence].Trim();
+        }
+
+        if (trimmed.Length == 0 || (trimmed[0] != '{' && trimmed[0] != '['))
+        {
+            var start = trimmed.IndexOfAny(['{', '[']);
+            if (start < 0) { json = ""; return false; }
+            var closeChar = trimmed[start] == '{' ? '}' : ']';
+            var end = trimmed.LastIndexOf(closeChar);
+            if (end <= start) { json = ""; return false; }
+            trimmed = trimmed[start..(end + 1)];
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(trimmed);
+            json = trimmed;
+            return true;
+        }
+        catch (JsonException)
+        {
+            json = "";
+            return false;
+        }
+    }
+
+    private static string? FindMissingRequiredFields(string json, JsonElement schema)
+    {
+        if (schema.ValueKind != JsonValueKind.Object ||
+            !schema.TryGetProperty("required", out var requiredEl) ||
+            requiredEl.ValueKind != JsonValueKind.Array)
+            return null;
+
+        using var doc = JsonDocument.Parse(json);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            return "expected a JSON object at the top level";
+
+        var missing = requiredEl.EnumerateArray()
+            .Select(e => e.GetString())
+            .Where(name => !string.IsNullOrEmpty(name) && !doc.RootElement.TryGetProperty(name!, out _))
+            .ToList();
+
+        return missing.Count > 0 ? $"missing required field(s): {string.Join(", ", missing)}" : null;
     }
 
     private ToolRegistry BuildEffectiveToolRegistry(StepDefinition step, PlaybookDefinition playbook)

@@ -151,6 +151,7 @@ public sealed class ToolDispatcher : IDisposable
         WorkingDirectory = _config.WorkingDirectory,
         WriteOutput = text => _renderer.WriteMarkdown(text),
         AskUser = (question, ct) => _renderer.AskUserAsync(question, ct),
+        AskUserWithOptions = (question, options, ct) => _renderer.AskUserAsync(question, options, ct),
         FileHistory = _session.Meta.FileHistory,
         Cursors = _cursorStore,
         Output = _renderer,

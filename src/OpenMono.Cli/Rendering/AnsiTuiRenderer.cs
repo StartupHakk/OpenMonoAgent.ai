@@ -119,11 +119,17 @@ public sealed class AnsiTuiRenderer : IRenderer
     public void EnableCommandSuggestions(CommandRegistry registry)
         => _inputReader.EnableCommandSuggestions(registry);
 
+    public void SetCommandDuringTurnHandler(Func<string, bool> handler)
+        => _inputReader.TryDispatchDuringTurn = handler;
+
     public string  ReadInput()                                   => _inputReader.ReadInput();
     public string? ShowCommandPicker(CommandRegistry registry)   => _inputReader.ShowCommandPicker(registry);
 
     public Task<string> AskUserAsync(string question, CancellationToken ct)
         => _inputReader.AskUserAsync(question, ct);
+
+    public Task<string> AskUserAsync(string question, IReadOnlyList<string>? options, CancellationToken ct)
+        => _inputReader.AskUserAsync(question, options, ct);
 
     public Task<PermissionResponse> AskPermissionAsync(string toolName, string summary, CancellationToken ct)
         => _inputReader.AskPermissionAsync(toolName, summary, ct);

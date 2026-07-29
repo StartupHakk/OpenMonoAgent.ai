@@ -74,13 +74,15 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
         await gate.WaitAsync(ct);
         try
         {
-        HttpResponseMessage? response = null;
         var lastException = default(Exception);
         TimeSpan? pendingRetryAfter = null;
         var retryDelay = TimeSpan.Zero;
 
         for (var attempt = 0; attempt <= MaxRetries; attempt++)
         {
+            HttpResponseMessage? response = null;
+            var yieldedToCaller = false;
+            string? retryableStreamError = null;
             ct.ThrowIfCancellationRequested();
 
             if (attempt > 0)
@@ -134,7 +136,6 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                 }
 
                 response.EnsureSuccessStatusCode();
-                break;
             }
             catch (HttpRequestException ex) when (attempt < MaxRetries)
             {
@@ -151,16 +152,15 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                 response?.Dispose();
                 response = null;
             }
-        }
 
-        if (response is null)
-            throw lastException ?? new HttpRequestException("Failed to connect after retries");
+            if (response is null)
+                continue;
 
-        var streamStarted = System.Diagnostics.Stopwatch.StartNew();
-        var chunkCount = 0;
+            var streamStarted = System.Diagnostics.Stopwatch.StartNew();
+            var chunkCount = 0;
 
-        using (response)
-        {
+            using (response)
+            {
             using var stream = await response.Content.ReadAsStreamAsync(ct);
             using var reader = new StreamReader(stream);
 
@@ -249,6 +249,13 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                     {
                         var errorMsg = errorEl.TryGetProperty("message", out var msgEl)
                             ? msgEl.GetString() : "Unknown API error";
+
+                        if (!yieldedToCaller && attempt < MaxRetries)
+                        {
+                            retryableStreamError = errorMsg;
+                            break;
+                        }
+
                         throw new HttpRequestException($"LLM API error: {errorMsg}");
                     }
 
@@ -300,7 +307,10 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                         {
                             var thinking = reasoningEl.GetString();
                             if (!string.IsNullOrEmpty(thinking))
+                            {
+                                yieldedToCaller = true;
                                 yield return new StreamChunk { ThinkingDelta = thinking };
+                            }
                         }
 
                         if (delta.TryGetProperty("content", out var contentEl) &&
@@ -315,7 +325,10 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                                     if (fullText.ToString().Contains("<function="))
                                         suppressText = true;
                                     else
+                                    {
+                                        yieldedToCaller = true;
                                         yield return new StreamChunk { TextDelta = text, Usage = usage };
+                                    }
                                 }
                             }
                         }
@@ -363,7 +376,19 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                         yield return new StreamChunk { Usage = usage };
                 }
             }
+            }
+
+            if (retryableStreamError is not null)
+            {
+                lastException = new HttpRequestException($"LLM API error: {retryableStreamError}");
+                pendingRetryAfter = null;
+                continue;
+            }
+
+            yield break;
         }
+
+        throw lastException ?? new HttpRequestException("Failed to connect after retries");
         }
         finally
         {
@@ -446,6 +471,15 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
         {
             body["tools"] = tools.Value;
             body["tool_choice"] = "auto";
+        }
+
+        if (options.ResponseFormatSchema is { } schema)
+        {
+            body["response_format"] = new
+            {
+                type = "json_schema",
+                json_schema = new { name = "playbook_step_output", strict = true, schema },
+            };
         }
 
         return body;

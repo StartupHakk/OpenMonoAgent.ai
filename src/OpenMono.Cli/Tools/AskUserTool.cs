@@ -6,7 +6,7 @@ namespace OpenMono.Tools;
 public sealed class AskUserTool : ToolBase
 {
     public override string Name => "AskUser";
-    public override string Description => "Ask the user a question and wait for their response. Use when you need clarification or a decision.";
+    public override string Description => "Ask the user a question and wait for their response. Use when you need clarification or a decision — for example, when you cannot determine the project's language/framework/stack from the request or the working directory, ask which stack to use before running build/test/run commands. Pass 'options' to offer specific choices.";
     public override bool IsReadOnly => true;
     public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;
 
@@ -20,14 +20,22 @@ public sealed class AskUserTool : ToolBase
     protected override async Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
     {
         var question = input.GetProperty("question").GetString()!;
-        var hasOptions = input.TryGetProperty("options", out var opts);
+        var hasOptions = input.TryGetProperty("options", out var opts)
+            && opts.ValueKind == JsonValueKind.Array;
+
+        var options = hasOptions
+            ? opts.EnumerateArray().Select(o => o.GetString() ?? "").Where(o => o.Length > 0).ToList()
+            : [];
+
+        if (options.Count > 0 && context.AskUserWithOptions is not null)
+        {
+            var choice = await context.AskUserWithOptions(question, options, ct);
+            return ToolResult.Success(choice);
+        }
 
         var prompt = question;
-        if (hasOptions)
-        {
-            var options = opts.EnumerateArray().Select(o => o.GetString()!).ToList();
+        if (options.Count > 0)
             prompt += "\n" + string.Join('\n', options.Select((o, i) => $"  [{i + 1}] {o}"));
-        }
 
         var response = await context.AskUser(prompt, ct);
         return ToolResult.Success(response);

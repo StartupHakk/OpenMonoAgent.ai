@@ -10,6 +10,9 @@ public sealed class BashTool : ToolBase
     public override string Description =>
         "Execute a shell command. The working directory persists between calls. " +
         "Use for git, build tools, and other system operations. " +
+        "Commands run NON-INTERACTIVELY: stdin is closed, so a command that waits for input " +
+        "(e.g. `create-next-app`, `npm init`) will get EOF instead of hanging — always pass " +
+        "non-interactive flags such as `--yes`/`-y` and set CI=1 for scaffolders. " +
         "For long-running processes that do not exit on their own (servers, watchers, " +
         "`dotnet run`, `npm start`, etc.) set background=true — that spawns the process " +
         "detached, writes stdout+stderr to a log file under ~/.openmono/bg/, and returns " +
@@ -17,7 +20,7 @@ public sealed class BashTool : ToolBase
 
     protected override SchemaBuilder DefineSchema() => new SchemaBuilder()
         .AddProperty("command", new { type = "string", minLength = 1, description = "The bash command to execute" })
-        .AddInteger("timeout_ms", "Timeout in milliseconds (default: 120000, max: 600000). Ignored when background=true.", minimum: 1, maximum: 600000)
+        .AddInteger("timeout_ms", "Timeout in milliseconds (default: 300000, max: 600000). Ignored when background=true.", minimum: 1, maximum: 600000)
         .AddBoolean("background", "If true, launch the process detached, write stdout+stderr to a log file under ~/.openmono/bg/, and return the PID + log path immediately. Use for servers, watchers, or anything that never exits on its own.")
         .Require("command");
 
@@ -81,14 +84,15 @@ public sealed class BashTool : ToolBase
         if (background)
             return RunBackground(command, context);
 
-        var timeoutMs = input.TryGetProperty("timeout_ms", out var t) ? t.GetInt32() : 120_000;
-        if (timeoutMs <= 0) timeoutMs = 120_000;
+        var timeoutMs = input.TryGetProperty("timeout_ms", out var t) ? t.GetInt32() : 300_000;
+        if (timeoutMs <= 0) timeoutMs = 300_000;
         timeoutMs = Math.Min(timeoutMs, 600_000);
 
         var psi = new ProcessStartInfo
         {
             FileName = "/bin/bash",
             ArgumentList = { "-c", command },
+            RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -114,6 +118,8 @@ public sealed class BashTool : ToolBase
 
         if (process is null)
             return ToolResult.Error($"Failed to start process for command: {command}");
+
+        try { process.StandardInput.Close(); } catch { }
 
         using (process)
         {

@@ -113,6 +113,8 @@ public sealed class PlaybookLoader
                 ContextMode = ParseEnum<ContextMode>(GetString(frontmatter, "context-mode"), ContextMode.Selective),
                 MaxContextTokens = GetInt(frontmatter, "max-context-tokens", 3000),
                 Tags = GetStringList(frontmatter, "tags"),
+                SkipPermissions = GetBool(frontmatter, "skip-permissions", false),
+                LogOutput = GetBool(frontmatter, "log-output", false),
                 Parameters = ParseParameters(frontmatter),
                 Steps = ParseSteps(frontmatter),
                 Constraints = ParseConstraints(frontmatter),
@@ -129,8 +131,12 @@ public sealed class PlaybookLoader
     private static string? GetString(Dictionary<string, object> dict, string key) =>
         dict.TryGetValue(key, out var val) ? val?.ToString() : null;
 
-    private static bool GetBool(Dictionary<string, object> dict, string key, bool defaultVal) =>
-        dict.TryGetValue(key, out var val) && val is bool b ? b : defaultVal;
+    private static bool GetBool(Dictionary<string, object> dict, string key, bool defaultVal)
+    {
+        if (!dict.TryGetValue(key, out var val) || val is null) return defaultVal;
+        if (val is bool b) return b;
+        return bool.TryParse(val.ToString(), out var parsed) ? parsed : defaultVal;
+    }
 
     private static int GetInt(Dictionary<string, object> dict, string key, int defaultVal) =>
         dict.TryGetValue(key, out var val) && int.TryParse(val?.ToString(), out var i) ? i : defaultVal;
@@ -148,6 +154,13 @@ public sealed class PlaybookLoader
 
     private static string? ObjStr(Dictionary<object, object> d, string key) =>
         d.TryGetValue(key, out var v) ? v?.ToString() : null;
+
+    private static bool ObjBool(Dictionary<object, object> d, string key, bool defaultVal)
+    {
+        if (!d.TryGetValue(key, out var val) || val is null) return defaultVal;
+        if (val is bool b) return b;
+        return bool.TryParse(val.ToString(), out var parsed) ? parsed : defaultVal;
+    }
 
     private static string[] ObjStrList(Dictionary<object, object> d, string key)
     {
@@ -184,6 +197,7 @@ public sealed class PlaybookLoader
             Script = ObjStr(d, "script"),
             Agent = ObjStr(d, "agent"),
             Output = ObjStr(d, "output"),
+            OutputSchema = ObjStr(d, "output-schema"),
             Playbook = ObjStr(d, "playbook"),
             Gate = ParseEnum<GateType>(ObjStr(d, "gate"), GateType.None),
             Requires = ObjStrList(d, "requires"),
@@ -205,7 +219,7 @@ public sealed class PlaybookLoader
             result[name] = new ParameterDefinition
             {
                 Type = ParseEnum<ParameterType>(ObjStr(pd, "type"), ParameterType.String),
-                Required = pd.TryGetValue("required", out var req) && req is bool b && b,
+                Required = ObjBool(pd, "required", false),
                 Default = pd.TryGetValue("default", out var def) ? def : null,
                 Description = ObjStr(pd, "description"),
                 Hint = ObjStr(pd, "hint"),

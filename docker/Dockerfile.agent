@@ -34,8 +34,20 @@ RUN dotnet publish src/OpenMono.Cli/OpenMono.Cli.csproj \
 # those.
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS runtime
+
+# Optional apt mirror override. Leave empty (default) to use the base image's
+# mirror (ports.ubuntu.com on arm64 / archive.ubuntu.com on amd64). Set it when
+# the default mirror is blocked or slow on the build network, e.g.:
+#   docker compose build --build-arg APT_MIRROR=http://<mirror>/ubuntu-ports/ agent
+ARG APT_MIRROR=""
+RUN if [ -n "$APT_MIRROR" ]; then \
+        sed -i "s|http://ports.ubuntu.com/ubuntu-ports|$APT_MIRROR|g; s|http://archive.ubuntu.com/ubuntu|$APT_MIRROR|g" \
+            /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null || true; \
+    fi
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
+    openssh-client \
     ripgrep \
     curl \
     jq \
@@ -46,8 +58,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
+RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && node --version && npm --version
+
 # HOME for the docker-compose TUI variant; compose mounts ~/.openmono here.
-RUN mkdir -p /home/agent && chmod 1777 /home/agent
+RUN mkdir -p /home/agent && chmod 1777 /home/agent && chmod 0666 /etc/passwd
 
 # MCP servers shipped with the agent (structural + semantic graph queries).
 RUN pip3 install --no-cache-dir --break-system-packages code-review-graph graphifyy
