@@ -30,8 +30,9 @@ public sealed record PlaybookDefinition
     public string BasePath { get; init; } = "";
     public string? RoleDescription { get; init; }
 
-    /// <summary>Auto-approves step gates and the Plan-to-Build mode switch — no prompts. Hard safety denies still apply.</summary>
     public bool SkipPermissions { get; init; } = false;
+
+    public bool LogOutput { get; init; } = false;
 }
 
 public sealed record ParameterDefinition

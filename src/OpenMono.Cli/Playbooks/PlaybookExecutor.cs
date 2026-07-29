@@ -117,15 +117,27 @@ public sealed class PlaybookExecutor : IDisposable
         var runId = state.SessionId;
         _permissions.PushPlaybookScope(runId, plan.Tools.Select(t => t.Name));
 
+        string? logPath = playbook.LogOutput ? BuildLogPath(_config.DataDirectory, playbook.Name, runId) : null;
+        using var log = logPath is not null ? new StreamWriter(logPath, append: true) { AutoFlush = true } : null;
+
         try
         {
             _renderer.WriteInfo($"Playbook: {playbook.Name} v{playbook.Version}");
+            if (logPath is not null)
+            {
+                log!.WriteLine($"=== Playbook '{playbook.Name}' v{playbook.Version} — run {runId} — started {DateTime.UtcNow:O} ===");
+                _renderer.WriteInfo($"  Logging raw output to {logPath}");
+            }
 
             var steps = ResolveStepOrder(playbook.Steps);
             var finalOutput = new StringBuilder();
+            var totalSteps = steps.Count;
+            var stepNumber = 0;
 
             foreach (var step in steps)
             {
+                stepNumber++;
+
                 if (state.IsStepCompleted(step.Id))
                 {
                     _renderer.WriteInfo($"  Step '{step.Id}' — already completed (resumed)");
@@ -139,9 +151,12 @@ public sealed class PlaybookExecutor : IDisposable
                 }
 
                 state.CurrentStepId = step.Id;
+                var progressLabel = $"Step {stepNumber}/{totalSteps}: {step.Id}";
+                _renderer.ShowToolProgress(progressLabel);
                 _renderer.WriteInfo($"  Step '{step.Id}' — running...");
 
                 var stepContent = await GetStepContentAsync(step, playbook, state, ct);
+                log?.WriteLine($"\n--- [{DateTime.UtcNow:O}] Step '{step.Id}' — prompt ---\n{stepContent}");
 
                 if (step.Gate != GateType.None && playbook.SkipPermissions)
                 {
@@ -164,12 +179,14 @@ public sealed class PlaybookExecutor : IDisposable
                     }
                 }
 
-                var (output, stepError) = await RunStepAsync(step, stepContent, playbook, state, ct);
+                var (output, stepError) = await RunStepAsync(step, stepContent, playbook, state, progressLabel, ct);
                 if (stepError is not null)
                 {
+                    log?.WriteLine($"--- Step '{step.Id}' — ERROR ---\n{stepError}");
                     _renderer.WriteWarning($"  Step '{step.Id}' aborted — {stepError}");
                     return $"Playbook '{playbook.Name}' aborted at step '{step.Id}'.\n{stepError}";
                 }
+                log?.WriteLine($"--- Step '{step.Id}' — output ---\n{output}");
 
                 if (step.Script is not null)
                 {
@@ -196,10 +213,13 @@ public sealed class PlaybookExecutor : IDisposable
             }
 
             _renderer.WriteInfo($"Playbook '{playbook.Name}' completed ({state.CompletedSteps.Count} steps)");
+            log?.WriteLine($"=== Playbook '{playbook.Name}' completed {DateTime.UtcNow:O} ({state.CompletedSteps.Count} steps) ===");
             return finalOutput.Length > 0 ? finalOutput.ToString() : "Playbook completed.";
         }
         finally
         {
+            _renderer.ClearToolProgress();
+
             try
             {
                 _permissions.PopPlaybookScope(runId);
@@ -209,6 +229,13 @@ public sealed class PlaybookExecutor : IDisposable
                 _renderer.WriteWarning($"PopPlaybookScope failed — scope stack corrupted: {ex.Message}");
             }
         }
+    }
+
+    private static string BuildLogPath(string dataDirectory, string playbookName, string runId)
+    {
+        var dir = Path.Combine(dataDirectory, "playbook-logs");
+        Directory.CreateDirectory(dir);
+        return Path.Combine(dir, $"{playbookName}_{runId}.log");
     }
 
     private async Task<string> GetStepContentAsync(
@@ -252,7 +279,7 @@ public sealed class PlaybookExecutor : IDisposable
     }
 
     private async Task<(string Output, string? Error)> RunStepAsync(
-        StepDefinition step, string content, PlaybookDefinition playbook, PlaybookState state, CancellationToken ct)
+        StepDefinition step, string content, PlaybookDefinition playbook, PlaybookState state, string progressLabel, CancellationToken ct)
     {
 
         var messages = new List<Message>
@@ -324,26 +351,76 @@ public sealed class PlaybookExecutor : IDisposable
         {
             var pendingToolCalls = new List<ToolCall>();
             var textContent = new StringBuilder();
+            var receivedFirstChunk = false;
+            var thinkingStarted = false;
+            var thinkingCollapsed = false;
+            var thinkingChars = 0;
 
-            await foreach (var chunk in _llm.StreamChatAsync(messages, toolDefs, options, ct))
+            var indicatorShown = false;
+            using var indicatorCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var indicatorTask = Task.Delay(500, indicatorCts.Token).ContinueWith(t =>
             {
-                if (chunk.TextDelta is not null)
-                {
-                    textContent.Append(chunk.TextDelta);
-                    _renderer.StreamText(chunk.TextDelta);
-                }
+                if (!t.IsCanceled) { _renderer.ShowWaitingIndicator(); indicatorShown = true; }
+            }, TaskScheduler.Default);
 
-                if (chunk.ToolCallDelta is not null)
+            try
+            {
+                await foreach (var chunk in _llm.StreamChatAsync(messages, toolDefs, options, ct))
                 {
-                    var tc = chunk.ToolCallDelta;
-                    if (!pendingToolCalls.Any(t => t.Id == tc.Id))
-                        pendingToolCalls.Add(tc);
-                }
+                    if (!indicatorCts.IsCancellationRequested)
+                    {
+                        indicatorCts.Cancel();
+                        if (indicatorShown) _renderer.ClearWaitingIndicator();
+                    }
 
-                if (chunk.IsComplete) break;
+                    if (chunk.ThinkingDelta is not null)
+                    {
+                        _renderer.AppendThinking(chunk.ThinkingDelta);
+                        thinkingStarted = true;
+                        thinkingChars += chunk.ThinkingDelta.Length;
+                        continue;
+                    }
+
+                    if (!receivedFirstChunk)
+                    {
+                        if (thinkingStarted && !thinkingCollapsed)
+                        {
+                            _renderer.CollapseThinking(thinkingChars);
+                            thinkingCollapsed = true;
+                        }
+                        _renderer.StartAssistantResponse();
+                        receivedFirstChunk = true;
+                    }
+
+                    if (chunk.TextDelta is not null)
+                    {
+                        textContent.Append(chunk.TextDelta);
+                        _renderer.StreamText(chunk.TextDelta);
+                    }
+
+                    if (chunk.ToolCallDelta is not null)
+                    {
+                        var tc = chunk.ToolCallDelta;
+                        if (!pendingToolCalls.Any(t => t.Id == tc.Id))
+                            pendingToolCalls.Add(tc);
+                    }
+
+                    if (chunk.IsComplete) break;
+                }
+            }
+            finally
+            {
+                if (!indicatorCts.IsCancellationRequested)
+                    indicatorCts.Cancel();
+                await indicatorTask;
+                _renderer.ClearWaitingIndicator();
             }
 
+            if (thinkingStarted && !thinkingCollapsed)
+                _renderer.CollapseThinking(thinkingChars);
+
             _renderer.EndAssistantResponse();
+            _renderer.ShowToolProgress(progressLabel);
             result.Append(textContent);
             lastTurnText = textContent.ToString();
 

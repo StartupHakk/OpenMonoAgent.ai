@@ -1523,14 +1523,6 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
             }
         }
 
-        var toolProg = _toolProgress;
-        if (toolProg is not null)
-        {
-            var spinner = SpinnerFrames[Math.Abs(_toolProgressFrame) % SpinnerFrames.Length];
-            lines.Add("");
-            lines.Add($"  {Fbb}{spinner} {IT}{Fk}{toolProg}…{R}");
-        }
-
         lock (_queueLock)
         {
             if (_messageQueue.Count > 0)
@@ -1772,10 +1764,23 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
             : "";
         var canCancel = _isTurnActive() || QueuedCount > 0;
         var cancelHint = canCancel ? $"{Fk}esc{R}{BgStatus} {Fw}cancel{R}{BgStatus}" : "";
-        var modeIndicator = session.Meta.PlanMode
-            ? $"{Fk}[{R}{Fy}PLAN{R}{Fk}]{R}{BgStatus} "
-            : $"{Fk}[{R}{Fg}BUILD{R}{Fk}]{R}{BgStatus} ";
-        var mid   = $"{modeIndicator}{scrollIndicator}{cancelHint}";
+
+        string mid;
+        var toolProg = _toolProgress;
+        if (toolProg is not null)
+        {
+            var spinner = SpinnerFrames[Math.Abs(_toolProgressFrame) % SpinnerFrames.Length];
+            var maxLabel = Math.Max(8, _tw / 3 - 4);
+            var label = toolProg.Length > maxLabel ? toolProg[..(maxLabel - 1)] + "…" : toolProg;
+            mid = $"{Fc}{spinner} {B}{label}…{R}{BgStatus}  {cancelHint}";
+        }
+        else
+        {
+            var modeIndicator = session.Meta.PlanMode
+                ? $"{Fk}[{R}{Fy}PLAN{R}{Fk}]{R}{BgStatus} "
+                : $"{Fk}[{R}{Fg}BUILD{R}{Fk}]{R}{BgStatus} ";
+            mid = $"{modeIndicator}{scrollIndicator}{cancelHint}";
+        }
         var right = $"{Fk}ctrl+c{R}{BgStatus} {Fw}quit{R}{BgStatus}   {Fk}ctrl+p{R}{BgStatus} {Fw}commands{R}{BgStatus} ";
         var visM  = VisLen(mid);
         var visR  = VisLen(right);
