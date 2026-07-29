@@ -366,6 +366,17 @@ openmono tunnel logs     # tail frpc logs
 > openmono config set llm.api_key <value-from-inference-box>
 > ```
 
+> [!NOTE]
+> **WSL2: `mkdir`/file writes failing with "Permission denied"** — the agent container normally maps to your host user (`--user $(id -u):$(id -g)`) so it can write files without leaving root-owned output behind. That mapping breaks when your project lives on a Windows drive (e.g. `/mnt/c/Users/...`), because Docker Desktop's WSL2 file-sharing layer for those paths doesn't reliably honor it.
+>
+> `openmono agent` now detects this automatically (WSL + a `drvfs`-mounted workspace) and runs the container as root instead, which avoids the permission mismatch — you'll see a `[WARN] WSL: ... running the agent container as root` line, and things should just work. If you still hit permission errors, or want to avoid running the container as root:
+> ```bash
+> cp -r /mnt/c/Users/<you>/project ~/projects/project
+> cd ~/projects/project
+> openmono agent
+> ```
+> which puts the project on the WSL Linux filesystem, where the normal `--user` mapping works correctly.
+
 ---
 
 ## Vision

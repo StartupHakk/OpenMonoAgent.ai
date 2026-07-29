@@ -32,6 +32,19 @@ _OPENMONO_ARCH=$(uname -m)
 NATIVE_INFERENCE=false
 [[ "$_OPENMONO_OS" == "Darwin" && "$_OPENMONO_ARCH" == "arm64" ]] && NATIVE_INFERENCE=true
 
+_is_wsl() {
+    [[ -n "${WSL_DISTRO_NAME:-}" ]] && return 0
+    grep -qi microsoft /proc/version 2>/dev/null
+}
+
+_workspace_on_drvfs() {
+    local path="$1"
+    command -v findmnt &>/dev/null || return 1
+    local fstype
+    fstype="$(findmnt -no FSTYPE --target "$path" 2>/dev/null)" || return 1
+    [[ "$fstype" == "drvfs" ]]
+}
+
 # Source macOS native helpers for macOS Apple Silicon
 if [[ "$NATIVE_INFERENCE" == "true" ]]; then
     source "$REPO_DIR/scripts/macos/inference.sh"
@@ -893,12 +906,21 @@ cmd_agent() {
     local _upd; _upd="$(_update_notice 2>/dev/null || true)"
     [[ -n "$_upd" ]] && extra_env+=(-e "OPENMONO_UPDATE_NOTICE=$_upd")
 
+    local user_args=(--user "$(id -u):$(id -g)")
+    if _is_wsl && _workspace_on_drvfs "$WORKSPACE"; then
+        user_args=()
+        warn "WSL: '$WORKSPACE' is on a Windows drive (drvfs) — running the agent container as root."
+        warn "Docker Desktop's WSL2 file sharing for drvfs paths doesn't honor --user mapping, which"
+        warn "otherwise causes 'Permission denied' on mkdir/file writes. For best results, move the"
+        warn "project into the WSL Linux filesystem (e.g. ~/projects/...) and run openmono from there."
+    fi
+
     _clipboard_bridge_start
     trap '_clipboard_bridge_stop' EXIT INT TERM
 
     local _agent_rc=0
     docker compose run --rm \
-        --user "$(id -u):$(id -g)" \
+        "${user_args[@]+"${user_args[@]}"}" \
         -e HOME=/home/agent \
         -e WORKSPACE="$WORKSPACE" \
         "${git_args[@]+"${git_args[@]}"}" \

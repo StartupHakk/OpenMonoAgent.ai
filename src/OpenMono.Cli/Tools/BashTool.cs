@@ -169,7 +169,15 @@ public sealed class BashTool : ToolBase
             var content = output.Count > 0 ? string.Join('\n', output) : "(no output)";
 
             if (process.ExitCode != 0)
+            {
                 content = $"Exit code: {process.ExitCode}\n{content}";
+                if (stderr.Contains("Permission denied", StringComparison.OrdinalIgnoreCase))
+                    content += "\n\nHint: if this keeps happening for paths under the workspace, the mount may " +
+                               "not be writable by the container user — common under WSL2 + Docker Desktop when " +
+                               "the project lives on a Windows drive (e.g. /mnt/c/...). Try moving the project " +
+                               "into the WSL Linux filesystem (e.g. ~/projects/...), or run on the host: " +
+                               "chown -R $(id -u):$(id -g) <path-to-project>";
+            }
 
             const int maxLength = 50_000;
             if (content.Length > maxLength)
