@@ -84,6 +84,9 @@ for (var i = 0; i < args.Length; i++)
             Console.WriteLine("  /checkpoint        Checkpoint conversation to free context");
             Console.WriteLine("  /think             Toggle step-by-step reasoning mode");
             Console.WriteLine("  /mode              Toggle between Plan mode (read-only) and Build mode (write)");
+            Console.WriteLine("  /plan [task]       Enter Plan mode; with a task, plans it right away");
+            Console.WriteLine("  /model [name]      List available models, or switch the active model");
+            Console.WriteLine("  /btw <question>    Ask a quick aside, answered directly without tools or context");
             Console.WriteLine("  /init              Auto-generate OPENMONO.md from project");
             Console.WriteLine("  /resume [id]       Restore a previous session");
             Console.WriteLine("  /export            Export conversation (markdown/json/html)");

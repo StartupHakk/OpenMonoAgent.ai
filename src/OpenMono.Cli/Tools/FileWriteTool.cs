@@ -97,6 +97,10 @@ public sealed class FileWriteTool : ToolBase
         }
         catch (Exception ex) { OpenMono.Utils.Log.Debug($"Read-only probe failed for '{path}': {ex.Message}"); }
 
-        return $"Cannot write to '{path}': access denied. Check ownership with: ls -la {path}";
+        return $"Cannot write to '{path}': access denied. Check ownership with: ls -la {path}\n" +
+               "If this keeps happening under the workspace mount, it may not be writable by the container " +
+               "user — common under WSL2 + Docker Desktop when the project lives on a Windows drive (e.g. " +
+               "/mnt/c/...). Try moving the project into the WSL Linux filesystem (e.g. ~/projects/...), or run " +
+               "on the host: chown -R $(id -u):$(id -g) <path-to-project>";
     }
 }

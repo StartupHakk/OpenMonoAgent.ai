@@ -38,5 +38,26 @@ if ! probe_writable "${DATA_DIR}"; then
     export OPENMONO_DATA_DIR="${DATA_DIR}"
 fi
 
+probe_writable_existing() {
+    local dir="$1"
+    local probe="${dir}/.openmono-writable-test.$$"
+    ( : > "${probe}" ) 2>/dev/null || return 1
+    rm -f "${probe}" 2>/dev/null || true
+    return 0
+}
+
+WORKSPACE_DIR="${OPENMONO_WORKSPACE:-/workspace}"
+if [[ -d "${WORKSPACE_DIR}" ]] && ! probe_writable_existing "${WORKSPACE_DIR}"; then
+    echo "[openmono-entrypoint] ${WORKSPACE_DIR} is not writable by this container user ($(id -u):$(id -g))." >&2
+    echo "[openmono-entrypoint] The agent needs write access here to run commands like mkdir, edit files, etc." >&2
+    echo "[openmono-entrypoint] This commonly happens under WSL2 + Docker Desktop when the project lives on a" >&2
+    echo "[openmono-entrypoint] Windows drive (e.g. /mnt/c/...) — Docker Desktop's file-sharing layer for those" >&2
+    echo "[openmono-entrypoint] paths doesn't always honor the container's mapped user/group." >&2
+    echo "[openmono-entrypoint] Fix options:" >&2
+    echo "[openmono-entrypoint]   1. Move the project into the WSL Linux filesystem (e.g. ~/projects/...) and run openmono from there." >&2
+    echo "[openmono-entrypoint]   2. Or, from the host, run: chown -R \$(id -u):\$(id -g) <path-to-project>" >&2
+    exit 1
+fi
+
 # Execute the real openmono binary with whatever args were passed
 exec /usr/local/bin/openmono/openmono "$@"
