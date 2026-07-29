@@ -168,10 +168,6 @@ static class SystemPrompt
         Plan before delegating: tell the user what the agent will do, and why delegation makes sense.
         """;
 
-    /// <summary>
-    /// Builds the complete system prompt with project instructions, memory, git context,
-    /// environment info, and available playbooks. Shared between TUI and ACP paths.
-    /// </summary>
     public static async Task<string> BuildAsync(
         AppConfig config,
         MemoryStore? memoryStore = null,
@@ -179,7 +175,7 @@ static class SystemPrompt
     {
         var parts = new List<string>();
 
-        parts.Add(Base);
+        parts.Add(Config.PromptOverrides.LoadSystemPrompt(config) ?? Base);
 
         var detectedStacks = StackDetector.Detect(config.WorkingDirectory);
         parts.Add(StackDetector.BuildPromptSection(detectedStacks));

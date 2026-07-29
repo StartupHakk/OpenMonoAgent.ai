@@ -1,26 +1,7 @@
 namespace OpenMono.Session;
 
-/// <summary>
-/// All prompt text about Plan vs Build mode, one entry per moment it's used. The hard gate in
-/// LocalToolExecutor enforces the rules regardless of what the model was told — this text only
-/// shapes how the model behaves and explains. The members map to the lifecycle:
-///
-///   • CurrentModeBanner  — EVERY turn: prepended to the system prompt; the authoritative
-///                          statement of the current mode (the single source of mode state).
-///   • Activation         — when the agent calls EnterPlanMode: the "how to plan" workflow.
-///   • ProceedOptions     — in a CreatePlan presentation: the user's 3 choices, as text.
-///   • PlanPresented      — after CreatePlan: tells the agent to wait for the user's choice.
-///   • ResolvePlanDecision— maps that choice (auto/ask/keep) to its effect (shared by both UIs).
-///   • SwitchedToPlan/Build— one-time notice injected when the USER toggles mode mid-session.
-/// </summary>
 internal static class ModeInstructions
 {
-    // ── EVERY turn: authoritative current-mode banner ───────────────────────────────────────
-    /// <summary>
-    /// PREPENDED to the system message every turn, stating the CURRENT mode authoritatively.
-    /// This is the first thing the model reads. Plan and Build each get a banner so the model
-    /// never has to infer its mode (and never parrots a stale "I'm in plan mode" from history).
-    /// </summary>
     internal static string CurrentModeBanner(bool planMode, IReadOnlyList<string> readOnlyTools)
         => planMode ? PlanBanner(readOnlyTools) : BuildBanner;
 
@@ -44,8 +25,6 @@ internal static class ModeInstructions
             "─────────────────────────────────────────────────────────────\n\n";
     }
 
-    // Build-mode banner. Without it a weak model parrots its own earlier "I'm in Plan mode"
-    // messages still in history even after the user switched — so Build must speak too.
     private const string BuildBanner =
         "✅ ACTIVE MODE: BUILD — you have FULL tool access RIGHT NOW, including FileWrite, FileEdit, ApplyPatch, and Bash.\n" +
         "Disregard any earlier message (including your own) that said you were in Plan mode — that NO LONGER applies.\n" +
@@ -53,24 +32,12 @@ internal static class ModeInstructions
         "Do NOT say you are in Plan mode and do NOT ask the user to switch modes.\n" +
         "─────────────────────────────────────────────────────────────\n\n";
 
-    // ── CreatePlan: the user's 3 choices, shown as text (extension also renders them as buttons) ──
-    /// <summary>
-    /// Human-facing "how to proceed" options, included in every plan presentation so the
-    /// choice is always visible in the output itself — independent of the extension's buttons.
-    /// </summary>
     internal const string ProceedOptions =
         "**How would you like to proceed?**\n" +
         "1. **Auto implement** — switch to Build mode and implement the plan now.\n" +
         "2. **Ask before edits** — implement the plan, but prompt before each change.\n" +
         "3. **Keep planning** — refine the plan before implementing.";
 
-    // ── Plan decision routing (auto / ask / keep → effect) ─────────────────────────────────
-    /// <summary>
-    /// Maps a user's plan decision to its effect. Shared by both frontends (extension's
-    /// plan_decision turn and the TUI menu) so routing is identical and deterministic.
-    /// Returns: whether to implement (flip to Build), whether writes are auto-approved,
-    /// and the instruction to drive the implementation turn. "keep"/unknown → don't implement.
-    /// </summary>
     internal static (bool Implement, bool AutoApprove, string Instruction) ResolvePlanDecision(string decision)
     {
         if (decision.Equals("auto", StringComparison.OrdinalIgnoreCase))
@@ -78,13 +45,13 @@ internal static class ModeInstructions
         if (decision.Equals("gated", StringComparison.OrdinalIgnoreCase) ||
             decision.Equals("ask", StringComparison.OrdinalIgnoreCase))
             return (true, false, "I approve the plan. Implement it now — prompt me before each edit.");
-        return (false, false, ""); // "keep" / anything else → stay in Plan mode
+        return (false, false, "");
     }
 
-    // ── EnterPlanMode tool result: the "how to plan" workflow ──────────────────────────────
-    /// <summary>Tool-result text when the LLM calls EnterPlanMode.</summary>
-    internal static string Activation(string reason) =>
-        $"Plan mode activated: {reason}\n\n" +
+    internal static string Activation(string reason, string? promptOverride = null) =>
+        promptOverride is not null
+        ? promptOverride
+        : $"Plan mode activated: {reason}\n\n" +
         "IMPORTANT: You cannot create, write, or edit anything right now.\n" +
         "Do NOT say 'I'll create X' or 'I'll implement X'. You are not implementing.\n" +
         "Your only deliverable is a written plan document. Exit plan mode to implement.\n\n" +
@@ -109,8 +76,6 @@ internal static class ModeInstructions
         "You stay in Plan mode. The user reviews it; once they approve, call ImplementPlan to\n" +
         "switch to Build mode and implement. Do not write any code before ImplementPlan.";
 
-    // ── User toggled mode: one-time notice so the model registers the CHANGE ────────────────
-    // (The static per-turn banner alone doesn't grab a weak model mid-task.)
     internal const string SwitchedToPlan =
         "[The user just switched to PLAN mode (read-only). You can no longer create, edit, or run anything. " +
         "If you were about to make a change, STOP — do not call read-only tools to work around it. Tell the user " +
@@ -125,14 +90,12 @@ internal static class ModeInstructions
         "[Plan this task: investigate as needed, then call CreatePlan to present a numbered " +
         "implementation plan for approval. Do not implement anything yet.]";
 
-    // ── User picked "keep planning" and gave feedback: force a revised plan, not a chat reply ──
     internal static string RefinePlan(string feedback) =>
         $"Revise the plan based on this feedback:\n{feedback}\n\n" +
         "Investigate further if needed, then call CreatePlan again with the FULL updated plan to " +
         "present the revised version. Do NOT just reply in prose — the user is waiting for an updated " +
         "plan. Stay in Plan mode; do not implement yet.";
 
-    // ── CreatePlan: after the plan is presented, tell the agent to wait for the user ────────
     internal const string PlanPresented =
         "The plan above has been presented to the user. You are STILL in Plan mode (read-only).\n" +
         "- Ask the user whether to implement it.\n" +
