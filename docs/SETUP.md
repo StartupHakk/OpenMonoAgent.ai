@@ -202,6 +202,7 @@ openmono stop       # stop everything
 openmono restart    # restart the inference server
 openmono status     # container · model status
 openmono logs       # tail live inference logs
+openmono upgrade    # update to the latest version + rebuild the agent (--check to preview)
 openmono help       # list all commands
 ```
 
@@ -506,8 +507,10 @@ Both fall back gracefully (DuckDuckGo / direct fetch) when the gateway is unavai
 |---------|-------------|
 | `/help` | List all commands and keyboard shortcuts |
 | `/think` | Toggle step-by-step reasoning mode |
+| `/mode` | Toggle between Plan mode (read-only) and Build mode (execute actions) |
 | `/plan` | Restrict agent to read-only tools for safe exploration |
 | `/model <name>` | Switch model mid-session |
+| `/btw <question>` | Ask a quick aside, answered directly without touching tools or context |
 | `/compact [focus]` | Summarize history to free up context |
 | `/checkpoint` | Save a named checkpoint in the conversation |
 | `/undo [n]` | Revert the last n file changes |
