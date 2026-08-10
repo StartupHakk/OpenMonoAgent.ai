@@ -33,6 +33,12 @@ public sealed record PlaybookDefinition
     public bool SkipPermissions { get; init; } = false;
 
     public bool LogOutput { get; init; } = false;
+
+    /// <summary>Maximum tool-call rounds per step before aborting. Default: 10.</summary>
+    public int MaxToolLoops { get; init; } = 10;
+
+    /// <summary>When set, overrides the global config temperature for this playbook's LLM calls.</summary>
+    public double? Temperature { get; init; }
 }
 
 public sealed record ParameterDefinition

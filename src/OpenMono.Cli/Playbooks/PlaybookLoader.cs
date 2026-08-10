@@ -115,6 +115,8 @@ public sealed class PlaybookLoader
                 Tags = GetStringList(frontmatter, "tags"),
                 SkipPermissions = GetBool(frontmatter, "skip-permissions", false),
                 LogOutput = GetBool(frontmatter, "log-output", false),
+                MaxToolLoops = GetInt(frontmatter, "max-tool-loops", 10),
+                Temperature = GetDoubleOrNull(frontmatter, "temperature"),
                 Parameters = ParseParameters(frontmatter),
                 Steps = ParseSteps(frontmatter),
                 Constraints = ParseConstraints(frontmatter),
@@ -140,6 +142,11 @@ public sealed class PlaybookLoader
 
     private static int GetInt(Dictionary<string, object> dict, string key, int defaultVal) =>
         dict.TryGetValue(key, out var val) && int.TryParse(val?.ToString(), out var i) ? i : defaultVal;
+
+    private static double? GetDoubleOrNull(Dictionary<string, object> dict, string key)
+    {
+        return dict.TryGetValue(key, out var val) && double.TryParse(val?.ToString(), out var d) ? d : null;
+    }
 
     private static T ParseEnum<T>(string? value, T defaultVal) where T : struct =>
         value is not null && System.Enum.TryParse<T>(value, ignoreCase: true, out var result)
