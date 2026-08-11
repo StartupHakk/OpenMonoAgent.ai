@@ -338,13 +338,13 @@ public sealed class PlaybookExecutor : IDisposable
         var options = new LlmOptions
         {
             Model = _config.Llm.Model,
-            Temperature = _config.Llm.Temperature,
+            Temperature = playbook.Temperature ?? _config.Llm.Temperature,
             MaxTokens = _config.Llm.MaxOutputTokens,
         };
 
         var result = new StringBuilder();
         var lastTurnText = "";
-        var maxToolLoops = 10;
+        var maxToolLoops = playbook.MaxToolLoops;
         var toolLoopCount = 0;
 
         while (toolLoopCount < maxToolLoops)
