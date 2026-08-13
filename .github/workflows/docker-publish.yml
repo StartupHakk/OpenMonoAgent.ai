@@ -45,7 +45,10 @@ jobs:
         with:
           cosign-release: 'v2.2.4'
 
-      # Set up BuildKit Docker container builder to be able to build
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+            # Set up BuildKit Docker container builder to be able to build
       # multi-platform images and export cache
       # https://github.com/docker/setup-buildx-action
       - name: Set up Docker Buildx
@@ -77,6 +80,7 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile.agent
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
