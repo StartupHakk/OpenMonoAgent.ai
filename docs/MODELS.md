@@ -46,8 +46,11 @@ The 35B-A3B MoE activates only ~3B parameters per token, so on a high-bandwidth 
 
 Qwen was chosen because it's the best open-weight model family for agentic coding tasks at consumer hardware sizes — not just in raw benchmark numbers, but in how it handles tool use, multi-step reasoning, and real-world code iteration.
 
-**Qwen3.8-27B (dense)** — the GPU model:
-- Benchmarks (SWE-bench, etc.) not yet measured on this build — check the [Qwen3.8-27B model card](https://huggingface.co/Qwen/Qwen3.8-27B) for upstream numbers
+**Qwen3.8-27B (dense)** — the GPU model, our strongest yet. Large jump over Qwen3.6-27B on agentic coding benchmarks (upstream numbers, [full model card](https://huggingface.co/Qwen/Qwen3.8-27B)):
+- **Terminal Bench 2.1: 73.0** (vs 63.4 on Qwen3.6-27B) — agentic terminal use
+- **SWE-bench Pro: 61.7** (vs 53.5) — agentic coding
+- **QwenSWEBench: 79.0** (vs 49.3) — software engineering
+- **OSWorld-Verified: 84.3** (vs 63.9) — computer use, relevant if vision/mmproj is enabled
 - Fits in 24 GB VRAM quantised, runs at ~60 tok/s — same footprint and bandwidth profile as Qwen3.6-27B
 - Native reasoning mode (`/think`) carries over from the Qwen3.x line
 
