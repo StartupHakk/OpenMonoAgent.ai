@@ -17,6 +17,9 @@
 
 <div align="center">
   <img src="https://img.shields.io/badge/status-beta-FF8C00?style=for-the-badge&labelColor=555555" alt="Status: Beta" />
+  <a href="docs/MODELS.md#why-qwen38-gpu--qwen36-cpu">
+    <img src="https://img.shields.io/badge/🚀_now_running-Qwen3.8--27B-A3FF66?style=for-the-badge&labelColor=555555" alt="Now running Qwen3.8-27B" />
+  </a>
 </div>
 
 <br>
