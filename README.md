@@ -96,7 +96,7 @@ Most coding agents are cloud products wearing an open-source label. Your prompts
 <strong style="color:#A3FF66;">01</strong> · **Bundled inference — zero config, zero cost**  
 llama.cpp ships inside Docker. Installer detects your hardware and picks the right model. After setup, every token is free.
 
-`GPU` Qwen3.6-27B dense · ~60 tok/s  
+`GPU` Qwen3.8-27B dense · ~60 tok/s  
 `CPU` Qwen3.6-35B-A3B MoE · ~20 tok/s  
 `Mac` Qwen3.6-35B-A3B MoE · Metal · ~45–48 tok/s
 

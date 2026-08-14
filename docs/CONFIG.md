@@ -99,7 +99,7 @@ Read and write settings.json from the terminal without editing the file directly
 
 ```bash
 openmono config set llm.endpoint http://localhost:7474
-openmono config set llm.model qwen3.6-27b
+openmono config set llm.model qwen3.8-27b
 openmono config get llm.endpoint
 openmono config unset llm.api_key
 ```
@@ -114,7 +114,7 @@ By default these write to the project-level `.openmono/settings.json`. Pass `--g
 {
   "llm": {
     "endpoint": "http://localhost:7474",
-    "model": "qwen3.6-27b",
+    "model": "qwen3.8-27b",
     "max_output_tokens": 16384,
     "temperature": 0.7,
     "top_p": 0.8,

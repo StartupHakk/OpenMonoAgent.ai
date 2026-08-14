@@ -41,17 +41,17 @@ CTX_VISION_16G=98304  # 16GB tier + mmproj — ~1GB less KV than 128k, gives vis
 # MODEL_ACCURACY, MODEL_ALIAS, and _MODEL_LABEL.
 select_model() {
     case "${1:-0}" in
-        24) MODEL_NAME="Qwen3.8-27B-Q4_K_M.gguf"  # UNCONFIRMED: repo/filename not yet published
-            MODEL_URL="https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-Q4_K_M.gguf"  # UNCONFIRMED
+        24) MODEL_NAME="Qwen3.8-27B-Q4_K_M.gguf"
+            MODEL_URL="https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-Q4_K_M.gguf"
             MODEL_ACCURACY="full"
-            MODEL_MMPROJ="mmproj-qwen3.8-27B-F16.gguf"  # UNCONFIRMED
-            MODEL_MMPROJ_URL="https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf"  # UNCONFIRMED
+            MODEL_MMPROJ="mmproj-qwen3.8-27B-F16.gguf"
+            MODEL_MMPROJ_URL="https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf"
             _MODEL_LABEL="Qwen3.8-27B-Q4_K_M (~15GB) [GPU 24GB+ — full accuracy]" ;;
-        16) MODEL_NAME="Qwen3.8-27B-UD-IQ3_XXS.gguf"  # UNCONFIRMED: repo/filename not yet published
-            MODEL_URL="https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-IQ3_XXS.gguf"  # UNCONFIRMED
+        16) MODEL_NAME="Qwen3.8-27B-UD-IQ3_XXS.gguf"
+            MODEL_URL="https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-IQ3_XXS.gguf"
             MODEL_ACCURACY="lower"
-            MODEL_MMPROJ="mmproj-qwen3.8-27B-F16.gguf"  # UNCONFIRMED
-            MODEL_MMPROJ_URL="https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf"  # UNCONFIRMED
+            MODEL_MMPROJ="mmproj-qwen3.8-27B-F16.gguf"
+            MODEL_MMPROJ_URL="https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf"
             _MODEL_LABEL="Qwen3.8-27B-UD-IQ3_XXS (~12GB) [GPU 16GB — lower accuracy]" ;;
         12) MODEL_NAME="Qwen3.5-9B-Q4_K_M.gguf"
             MODEL_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"

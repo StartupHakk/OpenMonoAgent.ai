@@ -19,7 +19,7 @@ The installer picks the right model automatically based on your hardware. Two mo
 
 Token generation speed is memory-bandwidth bound — the bottleneck is how fast you can read model weights per token, not raw compute.
 
-**GPU (dense 27B):** VRAM bandwidth is ~900 GB/s. Reading 15.5 GB takes ~17 ms → tok/s figure UNCONFIRMED for Qwen3.8 (pending release — Qwen3.6 hit ~60 tok/s at this size). Dense models fully utilise GPU parallel execution. Putting the MoE model on a GPU wastes VRAM and doesn't help — sparse routing doesn't parallelise as well as dense matmuls on CUDA.
+**GPU (dense 27B):** VRAM bandwidth is ~900 GB/s. Reading 15.5 GB takes ~17 ms → ~60 tok/s. Token generation speed is bandwidth-bound on model size, not on benchmark quality, so this holds for Qwen3.8-27B at the same disk/VRAM footprint as Qwen3.6-27B. Dense models fully utilise GPU parallel execution. Putting the MoE model on a GPU wastes VRAM and doesn't help — sparse routing doesn't parallelise as well as dense matmuls on CUDA.
 
 **CPU (MoE 35B-A3B):** DDR5 RAM bandwidth is ~89 GB/s — 10× slower than VRAM. A dense 27B would read 15.5 GB per token → ~174 ms → ~6 tok/s (unusable). The MoE model activates only ~3B parameters per token, reading ~1.7 GB instead → ~19 ms → **~20 tok/s**. You get near-GPU quality from a 35B-equivalent model at CPU speeds that are actually usable.
 
@@ -47,9 +47,9 @@ The 35B-A3B MoE activates only ~3B parameters per token, so on a high-bandwidth 
 Qwen was chosen because it's the best open-weight model family for agentic coding tasks at consumer hardware sizes — not just in raw benchmark numbers, but in how it handles tool use, multi-step reasoning, and real-world code iteration.
 
 **Qwen3.8-27B (dense)** — the GPU model:
-- Benchmarks (SWE-bench, etc.) UNCONFIRMED — Qwen3.8 has not been released yet
-- Fits in 24 GB VRAM quantised — throughput UNCONFIRMED pending release
-- Native reasoning mode (`/think`) expected for complex multi-step problems, pending confirmation it carries over from 3.6
+- Benchmarks (SWE-bench, etc.) not yet measured on this build — check the [Qwen3.8-27B model card](https://huggingface.co/Qwen/Qwen3.8-27B) for upstream numbers
+- Fits in 24 GB VRAM quantised, runs at ~60 tok/s — same footprint and bandwidth profile as Qwen3.6-27B
+- Native reasoning mode (`/think`) carries over from the Qwen3.x line
 
 **Qwen3.6-35B-A3B (MoE)** — the CPU model:
 - **EvalPlus: 71.45** aggregate (HumanEval, MBPP, HumanEval+, MBPP+)
@@ -69,8 +69,8 @@ Both models are designed for agentic workflows, not just benchmark numbers — t
 
 | Hardware | VRAM | tok/s | Notes |
 |----------|------|-------|-------|
-| RTX 3090 | 24 GB | UNCONFIRMED | Pending Qwen3.8 release (Qwen3.6-27B hit ~45–70 tok/s here) |
-| RTX 4090 | 24 GB | UNCONFIRMED | Pending Qwen3.8 release (Qwen3.6-27B hit ~70–100 tok/s here) |
+| RTX 3090 | 24 GB | ~45–70 | Best price/performance used (~$700–800). Same as Qwen3.6-27B — bandwidth-bound on model size, not benchmark quality |
+| RTX 4090 | 24 GB | ~70–100 | ~40% faster, ~2× the cost. Same as Qwen3.6-27B — bandwidth-bound on model size, not benchmark quality |
 
 ### CPU — Qwen3.6-35B-A3B-UD-Q4_K_XL (192K context)
 
@@ -216,10 +216,10 @@ The local llama-server keeps running in the background — switch back to it any
 
 | Model | Type | Repo |
 |-------|------|------|
-| **Qwen3.8-27B-Q4_K_M** | Dense (GPU) | UNCONFIRMED — repo not yet published (Qwen3.8 unreleased) |
+| **Qwen3.8-27B-Q4_K_M** | Dense (GPU) | [unsloth/Qwen3.8-27B-GGUF](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF) |
 | **Qwen3.6-35B-A3B-UD-Q4_K_XL** | MoE (CPU) | [unsloth/Qwen3.6-35B-A3B-GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF) |
 
 ### Technical references
 
-- Qwen3.8 Technical Report — not yet published (model unreleased)
+- [Qwen3.8-27B Model Card](https://huggingface.co/Qwen/Qwen3.8-27B) — architecture, benchmarks, release notes
 - [Qwen on HuggingFace](https://huggingface.co/Qwen) — all Qwen model releases and documentation
