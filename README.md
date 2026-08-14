@@ -3,6 +3,10 @@
 </div>
 
 <div align="center">
+  <h2><strong>Now shipping with Qwen 3.8 - 27B </strong><br/></h2>
+</div>
+
+<div align="center">
   <strong>Open-source coding agent. Local-first. Zero cost. Zero cloud.</strong><br/>
   <sub>Built to democratize AI. Powered by .NET.</sub>
 </div>
