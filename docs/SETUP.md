@@ -86,8 +86,8 @@ The only slow step. The installer picks the right model based on your VRAM:
 
 | VRAM | Model | Size | Accuracy | Context (vision on) |
 |------|-------|------|----------|---------------------|
-| 24 GB+ | Qwen3.6-27B-Q4_K_M | ~15.5 GB | Full | 168k |
-| 16 GB | Qwen3.6-35B-A3B-UD-IQ3_S | ~12 GB | Lower | 96k |
+| 24 GB+ | Qwen3.8-27B-Q4_K_M | ~15.5 GB | Full | 168k |
+| 16 GB | Qwen3.8-27B-UD-IQ3_XXS | ~12 GB | Lower | 96k |
 | 12 GB | Qwen3.5-9B-Q4_K_M | ~5 GB | Lower | 168k |
 | CPU | Qwen3.6-35B-A3B-UD-Q4_K_XL | ~17.6 GB | Full | 168k |
 
@@ -547,7 +547,7 @@ Settings live in `~/.openmono/settings.json` (user-wide) or `.openmono/settings.
 
 ```bash
 openmono config set llm.endpoint http://localhost:7474
-openmono config set llm.model qwen3.6-27b
+openmono config set llm.model qwen3.8-27b
 openmono config get llm.endpoint
 ```
 
