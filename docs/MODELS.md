@@ -8,7 +8,7 @@ The installer picks the right model automatically based on your hardware. Two mo
 
 | | GPU | CPU |
 |--|-----|-----|
-| **Model** | Qwen3.6-27B-Q4_K_M | Qwen3.6-35B-A3B-UD-Q4_K_XL |
+| **Model** | Qwen3.8-27B-Q4_K_M | Qwen3.6-35B-A3B-UD-Q4_K_XL |
 | **Type** | Dense | MoE (Mixture of Experts) |
 | **Disk** | ~15.5 GB | ~17.6 GB |
 | **VRAM / RAM** | ~23 GB (model + KV cache) | ~20 GB |
@@ -19,7 +19,7 @@ The installer picks the right model automatically based on your hardware. Two mo
 
 Token generation speed is memory-bandwidth bound — the bottleneck is how fast you can read model weights per token, not raw compute.
 
-**GPU (dense 27B):** VRAM bandwidth is ~900 GB/s. Reading 15.5 GB takes ~17 ms → ~60 tok/s. Dense models fully utilise GPU parallel execution. Putting the MoE model on a GPU wastes VRAM and doesn't help — sparse routing doesn't parallelise as well as dense matmuls on CUDA.
+**GPU (dense 27B):** VRAM bandwidth is ~900 GB/s. Reading 15.5 GB takes ~17 ms → tok/s figure UNCONFIRMED for Qwen3.8 (pending release — Qwen3.6 hit ~60 tok/s at this size). Dense models fully utilise GPU parallel execution. Putting the MoE model on a GPU wastes VRAM and doesn't help — sparse routing doesn't parallelise as well as dense matmuls on CUDA.
 
 **CPU (MoE 35B-A3B):** DDR5 RAM bandwidth is ~89 GB/s — 10× slower than VRAM. A dense 27B would read 15.5 GB per token → ~174 ms → ~6 tok/s (unusable). The MoE model activates only ~3B parameters per token, reading ~1.7 GB instead → ~19 ms → **~20 tok/s**. You get near-GPU quality from a 35B-equivalent model at CPU speeds that are actually usable.
 
@@ -42,15 +42,14 @@ The 35B-A3B MoE activates only ~3B parameters per token, so on a high-bandwidth 
 
 ---
 
-## Why Qwen3.6?
+## Why Qwen3.8 (GPU) / Qwen3.6 (CPU)?
 
-Qwen3.6 was chosen because it's the best open-weight model family for agentic coding tasks at consumer hardware sizes — not just in raw benchmark numbers, but in how it handles tool use, multi-step reasoning, and real-world code iteration.
+Qwen was chosen because it's the best open-weight model family for agentic coding tasks at consumer hardware sizes — not just in raw benchmark numbers, but in how it handles tool use, multi-step reasoning, and real-world code iteration.
 
-**Qwen3.6-27B (dense)** — the GPU model:
-- **77.2% on SWE-bench Verified** — competitive with frontier proprietary models. For reference, Claude Opus 4.7 scores 80.8%.
-- Outperforms its predecessor (Qwen2.5-72B) on most coding benchmarks at less than half the parameter count
-- Fits in 24 GB VRAM quantised, runs at ~60 tok/s — the same speed tier as fast cloud APIs
-- Native reasoning mode (`/think`) for complex multi-step problems
+**Qwen3.8-27B (dense)** — the GPU model:
+- Benchmarks (SWE-bench, etc.) UNCONFIRMED — Qwen3.8 has not been released yet
+- Fits in 24 GB VRAM quantised — throughput UNCONFIRMED pending release
+- Native reasoning mode (`/think`) expected for complex multi-step problems, pending confirmation it carries over from 3.6
 
 **Qwen3.6-35B-A3B (MoE)** — the CPU model:
 - **EvalPlus: 71.45** aggregate (HumanEval, MBPP, HumanEval+, MBPP+)
@@ -60,18 +59,18 @@ Qwen3.6 was chosen because it's the best open-weight model family for agentic co
 Both models are designed for agentic workflows, not just benchmark numbers — the training emphasises tool calling, code iteration, and multi-turn task completion.
 
 > [!NOTE]
-> You're not locked to Qwen3.6. Any GGUF model that fits your hardware can be configured via `settings.json` — point `llm.model_path` to a local GGUF file or use `/model <name>` to switch providers mid-session.
+> You're not locked to Qwen. Any GGUF model that fits your hardware can be configured via `settings.json` — point `llm.model_path` to a local GGUF file or use `/model <name>` to switch providers mid-session.
 
 ---
 
 ## Hardware benchmarks
 
-### GPU — Qwen3.6-27B-Q4_K_M (192K context)
+### GPU — Qwen3.8-27B-Q4_K_M (192K context)
 
 | Hardware | VRAM | tok/s | Notes |
 |----------|------|-------|-------|
-| RTX 3090 | 24 GB | ~45–70 | Best price/performance used (~$700–800) |
-| RTX 4090 | 24 GB | ~70–100 | ~40% faster, ~2× the cost |
+| RTX 3090 | 24 GB | UNCONFIRMED | Pending Qwen3.8 release (Qwen3.6-27B hit ~45–70 tok/s here) |
+| RTX 4090 | 24 GB | UNCONFIRMED | Pending Qwen3.8 release (Qwen3.6-27B hit ~70–100 tok/s here) |
 
 ### CPU — Qwen3.6-35B-A3B-UD-Q4_K_XL (192K context)
 
@@ -112,7 +111,7 @@ For agentic coding tasks the agent typically makes many short tool calls with br
 
 ## Reasoning mode (`/think`)
 
-Qwen3.6 has a native reasoning mode that makes the model think step-by-step before responding. Toggle it with `/think` or `Ctrl+T`.
+Qwen has a native reasoning mode that makes the model think step-by-step before responding. Toggle it with `/think` or `Ctrl+T`.
 
 ### How it works
 
@@ -205,23 +204,22 @@ Or set permanently in `settings.json`:
 }
 ```
 
-The local llama-server keeps running in the background — switch back to it any time with `/model qwen3.6-27b`.
+The local llama-server keeps running in the background — switch back to it any time with `/model qwen3.8-27b` (GPU) or `/model qwen3.6-35b-a3b` (CPU).
 
 ---
 
 ## Credits & resources
 
-**Qwen3.6** is built by [Alibaba](https://qwenlm.github.io/). OpenMono bundles quantized GGUF versions from [Unsloth](https://github.com/unslothai/unsloth) for optimal consumer hardware performance.
+**Qwen** is built by [Alibaba](https://qwenlm.github.io/). OpenMono bundles quantized GGUF versions from [Unsloth](https://github.com/unslothai/unsloth) for optimal consumer hardware performance.
 
 ### Model repositories
 
 | Model | Type | Repo |
 |-------|------|------|
-| **Qwen3.6-27B-Q4_K_M** | Dense (GPU) | [unsloth/Qwen3.6-27B-GGUF](https://huggingface.co/unsloth/Qwen3.6-27B-GGUF) |
+| **Qwen3.8-27B-Q4_K_M** | Dense (GPU) | UNCONFIRMED — repo not yet published (Qwen3.8 unreleased) |
 | **Qwen3.6-35B-A3B-UD-Q4_K_XL** | MoE (CPU) | [unsloth/Qwen3.6-35B-A3B-GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF) |
 
 ### Technical references
 
-- [Qwen3.6 Technical Report](https://arxiv.org/pdf/2505.09388) — benchmarks, training methodology, reasoning mode details
-- [Qwen Blog Post](https://qwen.ai/blog?id=qwen3.6-27b) — release announcement and key improvements over Qwen2.5
+- Qwen3.8 Technical Report — not yet published (model unreleased)
 - [Qwen on HuggingFace](https://huggingface.co/Qwen) — all Qwen model releases and documentation
