@@ -35,15 +35,28 @@ public sealed class AcpSession
 
     public SemaphoreSlim TurnLock { get; } = new(1, 1);
 
+    private readonly Queue<string> _pendingMessages = new();
+    private readonly object _pendingMessagesLock = new();
+
+    public bool TryEnqueuePendingMessage(string text)
+    {
+        lock (_pendingMessagesLock)
+        {
+            if (_pendingMessages.Count >= 2) return false;
+            _pendingMessages.Enqueue(text);
+            return true;
+        }
+    }
+
+    public string? DequeuePendingMessage()
+    {
+        lock (_pendingMessagesLock)
+            return _pendingMessages.Count > 0 ? _pendingMessages.Dequeue() : null;
+    }
+
     private readonly ConcurrentDictionary<string, PendingPause> _pending = new();
-    // Permission cache: (Allow: bool, Scope: "once"|"session")
-    // "once" scope = temporary grant for this tool call, forgotten after execution
-    // "session" scope = persistent grant for remainder of session
     private readonly ConcurrentDictionary<string, (bool Allow, string Scope)> _rememberedPermissions = new();
     private readonly ConcurrentDictionary<string, string> _rememberedUserInputs = new();
-
-    // Permission queue: max 1 permission in flight per session
-    // Additional permissions queued until current one resolves
     private readonly Queue<(string Id, string ToolName, string Summary, bool Dangerous)> _permissionQueue = new();
     private string? _currentPermissionId;
 
@@ -78,25 +91,19 @@ public sealed class AcpSession
     public (bool Allow, string Scope)? TryGetRememberedPermission(string contextKey)
         => _rememberedPermissions.TryGetValue(contextKey, out var v) ? v : null;
 
-    // Drop a remembered decision. Used for "once" scope: a temporary grant is
-    // seeded so the resumed tool execution passes without re-prompting, then
-    // forgotten immediately so a later call this session prompts again.
     public void ForgetPermission(string contextKey)
         => _rememberedPermissions.TryRemove(contextKey, out _);
 
-    // Permission queue management (Phase 2 feature)
     public bool TryEnqueuePermission(string id, string toolName, string summary, bool dangerous)
     {
-        // If no permission currently in flight, process immediately
         if (_currentPermissionId == null)
         {
             _currentPermissionId = id;
-            return true; // Process immediately
+            return true;
         }
 
-        // Otherwise queue it
         _permissionQueue.Enqueue((id, toolName, summary, dangerous));
-        return false; // Queued, don't process yet
+        return false;
     }
 
     public (string Id, string ToolName, string Summary, bool Dangerous)? DequeueNextPermission()

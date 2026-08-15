@@ -24,6 +24,7 @@ public static class AcpEndpoints
         app.MapGet("/api/v1/sessions/{id}", GetSession);
         app.MapGet("/api/v1/sessions/{id}/messages", GetMessages);
         app.MapPost("/api/v1/sessions/{id}/turn", PostTurn);
+        app.MapPost("/api/v1/sessions/{id}/queue", PostQueuedMessage);
         app.MapDelete("/api/v1/sessions/{id}", DeleteSession);
     }
 
@@ -249,6 +250,41 @@ public static class AcpEndpoints
             session.LastActivityAt = DateTime.UtcNow;
             store.Save(session);
             session.TurnLock.Release();
+        }
+    }
+
+
+
+    // Push a follow-up user message onto the session's pending-message queue
+    // while a turn is already running. Deliberately does NOT take TurnLock —
+    // that lock is held by the in-flight turn for the whole request, and this
+    // is exactly the concurrent-with-a-running-turn path. ConversationLoop
+    // drains the queue (dequeuePendingUserInput) at the top of each loop
+    // iteration, same mechanism the TUI already uses via AnsiPainter.
+    private static async Task<IResult> PostQueuedMessage(HttpContext ctx, string id, AcpSessionStore store)
+    {
+        var session = store.TryGet(id);
+        if (session is null) return Results.NotFound();
+
+        JsonDocument body;
+        try
+        {
+            body = await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ctx.RequestAborted);
+        }
+        catch (JsonException ex)
+        {
+            return Results.BadRequest(new { error = "invalid_json", detail = ex.Message });
+        }
+
+        using (body)
+        {
+            if (!body.RootElement.TryGetProperty("message", out var msgEl) || msgEl.GetString() is not { Length: > 0 } text)
+                return Results.BadRequest(new { error = "invalid_body", detail = "body must contain a non-empty `message` string" });
+
+            if (!session.TryEnqueuePendingMessage(text))
+                return Results.Conflict(new { error = "queue_full" });
+
+            return Results.Ok(new { queued = true });
         }
     }
 
