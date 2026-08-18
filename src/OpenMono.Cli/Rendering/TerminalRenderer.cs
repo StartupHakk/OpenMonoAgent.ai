@@ -40,6 +40,19 @@ public sealed class TerminalRenderer : IRenderer
 
     public string ReadInput()
     {
+        if (Console.IsInputRedirected)
+        {
+            Console.Error.WriteLine("Error: OpenMono requires an interactive terminal (keyboard input).");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("  - Run from a terminal prompt (cmd, PowerShell, bash)");
+            Console.Error.WriteLine("  - Do not redirect stdin/stdout");
+            Console.Error.WriteLine("  - Use --classic for a simpler terminal UI");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("Example: openmono --classic");
+            Environment.Exit(1);
+            return "";
+        }
+
         if (_commandInput is not null)
         {
             try
