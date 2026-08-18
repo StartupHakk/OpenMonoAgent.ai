@@ -355,6 +355,10 @@ public sealed class ConversationLoop : IDisposable
             // nothing about the current mode. Both Plan and Build get a banner so the model
             // never infers its mode or parrots a stale "I'm in plan mode" from history.
             {
+                // BuildContextWindow may return the session's live message list; mutate a copy,
+                // or the banner is persisted and stacks up on every iteration — which also
+                // shifts the prompt prefix each call and defeats llama.cpp's KV cache.
+                contextWindow = new List<Message>(contextWindow);
                 var sysIdx = contextWindow.FindIndex(m => m.Role == MessageRole.System);
                 if (sysIdx >= 0)
                 {
