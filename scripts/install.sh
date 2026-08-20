@@ -41,24 +41,24 @@ CTX_VISION_16G=98304  # 16GB tier + mmproj — ~1GB less KV than 128k, gives vis
 # MODEL_ACCURACY, MODEL_ALIAS, and _MODEL_LABEL.
 select_model() {
     case "${1:-0}" in
-        24) MODEL_NAME="Qwen3.8-27B-Q4_K_M.gguf"
-            MODEL_URL="https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-Q4_K_M.gguf"
+        24) MODEL_NAME="Qwen3.8-27B-UD-Q4_K_M.gguf"
+            MODEL_URL="https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf"
             MODEL_ACCURACY="full"
             MODEL_MMPROJ="mmproj-qwen3.8-27B-F16.gguf"
             MODEL_MMPROJ_URL="https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf"
-            _MODEL_LABEL="Qwen3.8-27B-Q4_K_M (~15GB) [GPU 24GB+ — full accuracy]" ;;
+            _MODEL_LABEL="Qwen3.8-27B-UD-Q4_K_M (~15GB) [GPU 24GB+ — full accuracy]" ;;
         16) MODEL_NAME="Qwen3.8-27B-UD-IQ3_XXS.gguf"
             MODEL_URL="https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-IQ3_XXS.gguf"
             MODEL_ACCURACY="lower"
             MODEL_MMPROJ="mmproj-qwen3.8-27B-F16.gguf"
             MODEL_MMPROJ_URL="https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf"
             _MODEL_LABEL="Qwen3.8-27B-UD-IQ3_XXS (~12GB) [GPU 16GB — lower accuracy]" ;;
-        12) MODEL_NAME="Qwen3.5-9B-Q4_K_M.gguf"
-            MODEL_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
+        12) MODEL_NAME="Qwen3.5-9B-UD-Q4_K_XL.gguf"
+            MODEL_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q4_K_XL.gguf"
             MODEL_ACCURACY="lower"
             MODEL_MMPROJ="mmproj-qwen3.5-9B-F16.gguf"
             MODEL_MMPROJ_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/mmproj-F16.gguf"
-            _MODEL_LABEL="Qwen3.5-9B-Q4_K_M (~5GB) [GPU 12GB — lower accuracy]" ;;
+            _MODEL_LABEL="Qwen3.5-9B-UD-Q4_K_XL (~5GB) [GPU 12GB — lower accuracy]" ;;
         *)  MODEL_NAME="Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
             MODEL_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
             MODEL_ACCURACY="standard"
