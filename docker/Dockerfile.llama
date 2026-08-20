@@ -6,7 +6,7 @@ FROM ${BUILD_IMAGE} AS build
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     build-essential \
     gcc-14 \
     g++-14 \
@@ -42,7 +42,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Include CUDA compat libs injected by nvidia-container-toolkit
 ENV LD_LIBRARY_PATH=/usr/local/cuda/compat:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     libopenblas0 \
     libgomp1 \
     curl \
