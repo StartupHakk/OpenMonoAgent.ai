@@ -307,6 +307,34 @@ MCP servers started as subprocesses on session init. Each server's tools are reg
 }
 ```
 
+### Example: Build Remote Agent (phone spectator)
+
+Independent product by Linespotting AB. Not affiliated with xAI or SpaceX.
+Protocol `gbr/1`. Pairing stays `gbr-agent pair` then `gbr-agent run` on this
+PC; OpenMono only attaches. Phone is spectator + veto, not orchestrator.
+This does not replace OpenMono's own iOS/Play companions.
+
+```bash
+curl -fsSL https://grokbuildremote.com/install.sh | bash   # Windows: irm https://grokbuildremote.com/install.ps1 | iex
+gbr-agent version    # need v0.6.0+
+gbr-agent pair && gbr-agent run
+```
+
+Clone `gbr-mcp` and use an **absolute** path. Never put mailbox keys here.
+
+```jsonc
+"mcp_servers": {
+  "gbr": {
+    "command": "node",
+    "args": ["/absolute/path/to/GrokBuildRemote-Agents/mcp/gbr-mcp/bin/gbr-mcp.js"],
+    "enabled": true
+  }
+}
+```
+
+HTTP attach without MCP: `curl -sS http://127.0.0.1:8788/health` after `gbr-agent run`.
+Website: https://grokbuildremote.com/ · Agent: https://github.com/LinespottingOrg/GrokBuildRemote-Agents
+
 | Key | Required | Description |
 |-----|----------|-------------|
 | `command` | yes | Executable to run |
