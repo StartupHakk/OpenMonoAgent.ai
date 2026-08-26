@@ -86,6 +86,82 @@ public sealed class AcpEventSinkTests
     }
 
     [Fact]
+    public async Task TotalTokensUsed_is_single_sourced_not_double_counted_across_calls()
+    {
+        var sink = new RecordingSink();
+        var session = new SessionState();
+        session.AddMessage(new Message { Role = MessageRole.System, Content = "sys" });
+        session.Meta.TokenTracker = new TokenTracker();
+
+        // Two API calls (a tool round-trip) each reporting prompt+completion tokens. The session
+        // total must equal the sum of each call's usage — NOT double-counted (the old bug added
+        // chunk.Usage.TotalTokens in the loop AND again via the tracker).
+        var tools = new ToolRegistry();
+        tools.Register(new PreviewTool());
+
+        var (loop, _) = BuildLoop(sink, new FakeLlm(
+            new List<StreamChunk>
+            {
+                new() { ToolCallDelta = new ToolCall { Id = "c1", Name = "PreviewTool", Arguments = "{}" }, IsComplete = false },
+                new() { IsComplete = true, Usage = new UsageInfo { PromptTokens = 100, CompletionTokens = 20 } },
+            },
+            new List<StreamChunk>
+            {
+                new() { TextDelta = "done", IsComplete = false },
+                new() { IsComplete = true, Usage = new UsageInfo { PromptTokens = 150, CompletionTokens = 30 } },
+            }),
+            session: session, tools: tools);
+
+        await loop.RunTurnAsync("go", null, CancellationToken.None);
+
+        // 100+20 + 150+30 = 300 total across both calls, counted exactly once.
+        session.TotalTokensUsed.Should().Be(300);
+        session.Meta.TokenTracker.TotalTokens.Should().Be(300);
+    }
+
+    [Fact]
+    public async Task Compaction_emits_start_event_and_result_with_before_after_tokens()
+    {
+        var sink = new RecordingSink();
+        var session = new SessionState();
+        session.AddMessage(new Message { Role = MessageRole.System, Content = "sys" });
+        session.Meta.TokenTracker = new TokenTracker();
+
+        // 20 user/assistant messages → more than the 4-turn keep window, so the compactor
+        // actually summarizes (not the empty-report fast path).
+        for (var i = 0; i < 20; i++)
+        {
+            session.AddMessage(new Message { Role = MessageRole.User, Content = $"question {i} " + new string('a', 40) });
+            session.AddMessage(new Message { Role = MessageRole.Assistant, Content = $"answer {i} " + new string('b', 40) });
+        }
+
+        // CompactAsync streams a summary from the LLM; this round supplies it.
+        var (loop, _) = BuildLoop(sink, new FakeLlm(new List<StreamChunk>
+        {
+            new() { TextDelta = "Summary: the conversation covered many things.", IsComplete = false },
+            new() { IsComplete = true },
+        }), session: session);
+
+        await loop.RunManualCompactionAsync(null, CancellationToken.None);
+
+        // A "compacting" start event fires (so the frontend shows its spinner immediately)…
+        sink.CompactingStartedCount.Should().Be(1);
+
+        // …followed by exactly one compaction result carrying before/after message + token counts.
+        sink.Compactions.Should().ContainSingle();
+        var c = sink.Compactions[0];
+        c.msgsBefore.Should().Be(41);          // 1 system + 40 msgs
+        c.msgsAfter.Should().BeLessThan(c.msgsBefore);
+        c.msgsAfter.Should().BeGreaterThan(0);
+        c.tokBefore.Should().BeGreaterThan(c.tokAfter);
+        c.compressed.Should().Be(32); // 40 msgs − 4 kept recent turns − 4 system/summary = summarized set
+
+        // History shrank to exactly the post-compaction count and the flag cleared.
+        session.Messages.Count.Should().Be(c.msgsAfter);
+        session.Meta.IsCompacting.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Tool_result_preview_fires_for_each_executed_tool_with_call_id_and_preview()
     {
         var sink = new RecordingSink();
@@ -273,7 +349,7 @@ public sealed class AcpEventSinkTests
         public List<(string callId, string name, bool ok, double durationMs)> ToolEnds { get; } = new();
         public List<(string callId, string preview, string? artifactId)> ToolPreviews { get; } = new();
         public List<(int input, int output, int total, int contextTokens, int contextWindow)> UsageEvents { get; } = new();
-        public List<(int compressed, double seconds, int idx)> Compactions { get; } = new();
+        public List<(int compressed, double seconds, int idx, int msgsBefore, int msgsAfter, int tokBefore, int tokAfter)> Compactions { get; } = new();
         public List<string> ModeChanges { get; } = new();
 
         public List<string?> PlanReady { get; } = new();
@@ -289,11 +365,16 @@ public sealed class AcpEventSinkTests
         { ToolStatuses.Add((callId, status)); return Task.CompletedTask; }
         public Task OnToolEndAsync(string callId, string name, bool ok, double durationMs)
         { ToolEnds.Add((callId, name, ok, durationMs)); return Task.CompletedTask; }
-        public Task OnCompactionAsync(int m, double s, int i) { Compactions.Add((m, s, i)); return Task.CompletedTask; }
+        public Task OnCompactionAsync(int m, double s, int i, int mb, int ma, int tb, int ta)
+        { Compactions.Add((m, s, i, mb, ma, tb, ta)); return Task.CompletedTask; }
         public Task OnUsageAsync(int i, int o, int t, int ctx, int win, double genTps, double avgTps) { UsageEvents.Add((i, o, t, ctx, win)); return Task.CompletedTask; }
         public Task OnToolResultPreviewAsync(string callId, string preview, string? artifactId)
         { ToolPreviews.Add((callId, preview, artifactId)); return Task.CompletedTask; }
         public Task OnSubAgentLogAsync(string line) => Task.CompletedTask;
+        public List<string> OutputTruncated { get; } = new();
+        public Task OnOutputTruncatedAsync(string toolName) { OutputTruncated.Add(toolName); return Task.CompletedTask; }
+        public int CompactingStartedCount { get; private set; }
+        public Task OnCompactingStartedAsync() { CompactingStartedCount++; return Task.CompletedTask; }
     }
 
     private sealed class RecordingWriteTool : ITool

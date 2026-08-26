@@ -169,6 +169,19 @@ public class PermissionEngineTests
         input.PromptCount.Should().Be(2, "a one-time Deny must prompt again on the next write");
     }
 
+    [Fact]
+    public async Task Bash_PermissionPrompt_SummaryIsRawCommand_NotJson()
+    {
+        var input = new ScriptedInputReader(PermissionResponse.Deny);
+        var engine = new PermissionEngine(new AppConfig(), new TerminalRenderer(), input);
+        var json = JsonDocument.Parse("""{"command":"dotnet build --configuration Release -v d","timeout_ms":60000}""").RootElement;
+
+        await engine.CheckAsync("Bash", json, PermissionLevel.Ask, CancellationToken.None);
+
+        input.LastSummary.Should().Be("dotnet build --configuration Release -v d",
+            "the permission prompt must show the raw shell command, not the JSON wrapper");
+    }
+
     private static PermissionEngine CreateEngine() =>
         new(new AppConfig(), new TerminalRenderer(), new TerminalRenderer());
 
@@ -176,12 +189,14 @@ public class PermissionEngineTests
     {
         private readonly PermissionResponse _response;
         public int PromptCount { get; private set; }
+        public string? LastSummary { get; private set; }
 
         public ScriptedInputReader(PermissionResponse response) => _response = response;
 
         public Task<PermissionResponse> AskPermissionAsync(string toolName, string summary, CancellationToken ct)
         {
             PromptCount++;
+            LastSummary = summary;
             return Task.FromResult(_response);
         }
 

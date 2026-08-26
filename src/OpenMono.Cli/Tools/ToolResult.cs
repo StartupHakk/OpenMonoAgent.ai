@@ -78,6 +78,14 @@ public sealed record ToolResult
 
     public bool BreakTurn { get; init; }
     public ToolResult WithBreakTurn() => this with { BreakTurn = true };
+
+    /// <summary>
+    /// True when this result is a Tier-3 doom-loop escalation: the agent repeated the same
+    /// tool calls 5+ times and the turn must end so the harness (SHS) can surface it to the
+    /// user / re-run the step. Distinct from BreakTurn, which is the plan-presentation path.
+    /// </summary>
+    public bool EscalatedToUser { get; init; }
+    public ToolResult WithEscalation() => this with { EscalatedToUser = true };
 }
 
 public enum ResultClass

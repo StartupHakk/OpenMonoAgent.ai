@@ -23,6 +23,14 @@ public sealed class LocalToolExecutor : IToolExecutor
     private readonly IAcpEventSink? _sink;
     private int _activeToolCount;
 
+    // Throttled live context-usage emission while tools run, so the client's context ring
+    // moves during long tool execution instead of freezing until the next API call reports
+    // usage. The numerator = last real prompt tokens + estimated growth of tool results
+    // already appended to history since that call (chars/4, same estimator as Compactor).
+    private static readonly TimeSpan LiveUsageMinInterval = TimeSpan.FromSeconds(2);
+    private DateTime _lastLiveUsageUtc = DateTime.MinValue;
+    private int _lastEmittedContextTokens;
+
     public LocalToolExecutor(
         TurnJournal journal,
         IOutputSink output,
@@ -95,6 +103,7 @@ public sealed class LocalToolExecutor : IToolExecutor
         {
             Log.Info($"[OMA_TOOLSTART] Sending tool_start: {call.Name}");
             await _sink.OnToolStartAsync(call.Id, call.Name, SummarizeToolArgs(call.Arguments), call.Arguments);
+            await EmitLiveContextUsageAsync(force: true);
         }
 
         // HARD plan-mode gate. Enforced here regardless of the system prompt or tool-def
@@ -217,21 +226,46 @@ public sealed class LocalToolExecutor : IToolExecutor
 
         try
         {
-            var hookDecision = await _hookRunner.RunPreToolUseHooksAsync(call.Name, call.Arguments, ct);
-            if (!hookDecision.Allowed)
+            // While the tool runs, keep the client's context ring fresh with a throttled
+            // heartbeat (2s) — a single long tool (build, install, sub-agent) would otherwise
+            // leave the ring frozen until the tool finishes and the next API call reports usage.
+            var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var heartbeat = Task.Run(async () =>
             {
-                var hookReason = hookDecision.Reason ?? "Blocked by a PreToolUse hook";
-                Log.Info($"Tool blocked by PreToolUse hook: {call.Name} — {hookReason}");
-                result = ToolResult.PermissionDenied(
-                    $"{call.Name} was blocked by a PreToolUse hook: {hookReason}. " +
-                    "Do not retry; address the hook's requirement or ask the user how to proceed.");
-            }
-            else
-            {
-                Log.Debug($"Tool executing: {call.Name}");
-                result = await tool.ExecuteAsync(input, ctx, execCt);
+                try
+                {
+                    while (!heartbeatCts.IsCancellationRequested)
+                    {
+                        await Task.Delay(LiveUsageMinInterval, heartbeatCts.Token);
+                        await EmitLiveContextUsageAsync(force: false);
+                    }
+                }
+                catch (OperationCanceledException) { }
+            });
 
-                await _hookRunner.RunPostToolUseHooksAsync(call.Name, result.Content, ct);
+            try
+            {
+                var hookDecision = await _hookRunner.RunPreToolUseHooksAsync(call.Name, call.Arguments, ct);
+                if (!hookDecision.Allowed)
+                {
+                    var hookReason = hookDecision.Reason ?? "Blocked by a PreToolUse hook";
+                    Log.Info($"Tool blocked by PreToolUse hook: {call.Name} — {hookReason}");
+                    result = ToolResult.PermissionDenied(
+                        $"{call.Name} was blocked by a PreToolUse hook: {hookReason}. " +
+                        "Do not retry; address the hook's requirement or ask the user how to proceed.");
+                }
+                else
+                {
+                    Log.Info($"Tool executing: {call.Name} args={call.Arguments}");
+                    result = await tool.ExecuteAsync(input, ctx, execCt);
+
+                    await _hookRunner.RunPostToolUseHooksAsync(call.Name, result.Content, ct);
+                }
+            }
+            finally
+            {
+                heartbeatCts.Cancel();
+                await heartbeat;
             }
 
             if (result.Class == ResultClass.Success && result.ModelPreview.Length > _artifactStore.LargeOutputThreshold)
@@ -325,7 +359,61 @@ public sealed class LocalToolExecutor : IToolExecutor
             await _sink.OnToolEndAsync(call.Id, call.Name, ok: !result.IsError, durationMs: stopwatch.Elapsed.TotalMilliseconds);
         }
 
+        await EmitLiveContextUsageAsync(force: true);
+
         return result;
+    }
+
+    /// <summary>
+    /// Emit a context-usage update for the client's context ring while tools are running.
+    /// <paramref name="force"/> bypasses the throttle (used at each tool boundary); otherwise
+    /// emissions are limited to one per <see cref="LiveUsageMinInterval"/> so a burst of fast
+    /// tools doesn't spam the SSE stream.
+    /// </summary>
+    private async Task EmitLiveContextUsageAsync(bool force)
+    {
+        if (_sink is null) return;
+        var tracker = _session.Meta.TokenTracker;
+        if (tracker is null || tracker.LastPromptTokens <= 0) return;
+
+        var now = DateTime.UtcNow;
+        if (!force && (now - _lastLiveUsageUtc) < LiveUsageMinInterval) return;
+        _lastLiveUsageUtc = now;
+
+        var contextTokens = tracker.LastPromptTokens + EstimateNewToolResultTokens();
+        if (contextTokens == _lastEmittedContextTokens) return;
+        _lastEmittedContextTokens = contextTokens;
+
+        await _sink.OnUsageAsync(
+            tracker.TotalPromptTokens,
+            tracker.TotalCompletionTokens,
+            tracker.TotalTokens,
+            contextTokens,
+            _config.Llm.ContextSize,
+            tracker.LastGenTokensPerSecond,
+            tracker.AvgGenTokensPerSecond);
+    }
+
+    /// <summary>
+    /// Estimate the token growth of tool results appended to history after the last API call
+    /// (the last assistant message). chars/4 matches Compactor.EstimateTokens.
+    /// </summary>
+    private int EstimateNewToolResultTokens()
+    {
+        var messages = _session.Messages;
+        var lastAssistant = -1;
+        for (var i = messages.Count - 1; i >= 0; i--)
+            if (messages[i].Role == MessageRole.Assistant) { lastAssistant = i; break; }
+        if (lastAssistant < 0) return 0;
+
+        var chars = 0;
+        for (var i = lastAssistant + 1; i < messages.Count; i++)
+        {
+            var m = messages[i];
+            if (m.Role != MessageRole.Tool) continue;
+            chars += (m.Content?.Length ?? 0) + 20;
+        }
+        return chars / 4;
     }
 
 

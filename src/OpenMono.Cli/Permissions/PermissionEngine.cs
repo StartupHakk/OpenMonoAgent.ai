@@ -426,7 +426,7 @@ public sealed class PermissionEngine
     private static string BuildToolSummary(string toolName, JsonElement input)
     {
         if (toolName == "Bash" && input.TryGetProperty("command", out var cmd))
-            return $"$ {cmd.GetString()}";
+            return cmd.GetString() ?? input.ToString();
 
         if ((toolName == "FileWrite" || toolName == "FileEdit") &&
             input.TryGetProperty("file_path", out var fp))

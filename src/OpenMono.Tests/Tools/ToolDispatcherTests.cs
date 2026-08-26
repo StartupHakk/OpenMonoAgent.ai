@@ -50,6 +50,65 @@ public class ToolDispatcherTests : IDisposable
     }
 
     [Fact]
+    public async Task DoomLoop_FirstTwoDetections_NudgeWithoutEscalation()
+    {
+        var tool = new FlagTool();
+        using var dispatcher = MakeDispatcher(4, tool);
+        var calls = new List<ToolCall> { new() { Id = "1", Name = tool.Name, Arguments = "{}" } };
+
+        // The detector needs 3 identical batches, so:
+        //   batch 1,2 → execute (no detection)
+        //   batch 3 → detection 1 → Nudge (blocked)
+        //   batch 4 → detection 2 → Nudge (blocked)
+        await dispatcher.ExecuteToolCallsAsync(calls, CancellationToken.None); // executes
+        await dispatcher.ExecuteToolCallsAsync(calls, CancellationToken.None); // executes
+        var r3 = await dispatcher.ExecuteToolCallsAsync(calls, CancellationToken.None); // hit 1
+        var r4 = await dispatcher.ExecuteToolCallsAsync(calls, CancellationToken.None); // hit 2
+
+        tool.Executed.Should().BeTrue("the first two batches run; the next two are nudges");
+        r3[0].IsError.Should().BeTrue("a nudged batch is blocked, not executed");
+        r4[0].IsError.Should().BeTrue();
+        r3[0].EscalatedToUser.Should().BeFalse("detections 1-4 are nudges, not escalations");
+        r4[0].EscalatedToUser.Should().BeFalse();
+        r4[0].Content.Should().Contain("Doom loop");
+    }
+
+    [Fact]
+    public async Task DoomLoop_FifthDetection_EscalatesToUser()
+    {
+        var tool = new FlagTool();
+        using var dispatcher = MakeDispatcher(4, tool);
+        var calls = new List<ToolCall> { new() { Id = "1", Name = tool.Name, Arguments = "{}" } };
+
+        // detections map to batches 3,4,5,6,7 → tiers Nudge,Nudge,StrongNudge,StrongNudge,Escalate
+        ToolResult[] r = [];
+        for (var i = 0; i < 7; i++)
+            r = await dispatcher.ExecuteToolCallsAsync(calls, CancellationToken.None);
+
+        r[0].EscalatedToUser.Should().BeTrue("the 5th detection is a Tier-3 escalation");
+        r[0].IsError.Should().BeTrue();
+        tool.Executed.Should().BeTrue("only the first two batches ran before the guard kicked in");
+        r[0].Content.Should().Contain("escalated to the user");
+    }
+
+    [Fact]
+    public async Task DoomLoop_StreakAccumulatesWhileSignatureIsIdentical()
+    {
+        var tool = new FlagTool();
+        using var dispatcher = MakeDispatcher(4, tool);
+        var same = new List<ToolCall> { new() { Id = "1", Name = tool.Name, Arguments = "{}" } };
+
+        // batches 1,2 execute; batches 3..7 → detections 1..5. The streak climbs while the
+        // signature is identical and hits Tier-3 at detection 5 (batch 7).
+        ToolResult[] r = [];
+        for (var i = 0; i < 7; i++)
+            r = await dispatcher.ExecuteToolCallsAsync(same, CancellationToken.None);
+
+        r[0].EscalatedToUser.Should().BeTrue("5 consecutive identical detections reach Tier-3");
+        r[0].IsError.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task PreToolUseHook_ExitingWithCode2_BlocksTheTool()
     {
         var tool = new FlagTool();

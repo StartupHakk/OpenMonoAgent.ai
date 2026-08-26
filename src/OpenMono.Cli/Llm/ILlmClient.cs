@@ -28,6 +28,11 @@ public sealed record StreamChunk
     public string? ToolCallProgress { get; init; }
     public bool IsComplete { get; init; }
     public UsageInfo? Usage { get; init; }
+
+    /// <summary>True when the model hit its output token limit (finish_reason=length /
+    /// stop_reason=max_tokens) and in-flight tool calls were dropped to avoid storing
+    /// truncated JSON in history. The caller should tell the model to retry smaller.</summary>
+    public bool OutputTruncated { get; init; }
 }
 
 public sealed record UsageInfo

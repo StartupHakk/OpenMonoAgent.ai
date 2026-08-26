@@ -26,6 +26,9 @@ public sealed class ToolDispatcher : IDisposable
 
     private readonly DoomLoopDetector _doomLoop = new();
 
+    /// <summary>Shared per-session tiered escalation state (nudge → strong nudge → escalate).</summary>
+    public DoomLoopState DoomLoop { get; } = new();
+
     public ToolDispatcher(
         ToolRegistry tools,
         PermissionEngine permissions,
@@ -74,10 +77,29 @@ public sealed class ToolDispatcher : IDisposable
 
         if (_doomLoop.Check(toolCalls))
         {
-            _renderer.WriteWarning("Doom loop detected — same tool calls repeated 3 times");
-            return [ToolResult.InvalidInput(
-                "[System: Doom loop detected — you called the same tools 3 times in a row with identical arguments. Stop repeating and try a different approach, or ask the user for help.]",
-                "Try a different approach or ask the user for clarification.")];
+            var tier = DoomLoop.RecordHit(DoomLoopDetector.SignatureFor(toolCalls));
+            var names = string.Join(", ", toolCalls.Select(tc => tc.Name).Distinct());
+
+            switch (tier)
+            {
+                case DoomLoopTier.Nudge:
+                    _renderer.WriteWarning("Doom loop detected — same tool calls repeated; nudging the agent to vary its approach");
+                    return [ToolResult.InvalidInput(
+                        $"[System: Doom loop (1st) — you called {names} again with identical arguments. The previous attempt did not make progress. Do NOT repeat the exact same call: inspect the earlier output and take a structurally different step (change an argument, use a different tool, or gather more information first).]",
+                        "Vary the call: change an argument, try a different tool, or inspect prior output before proceeding.")];
+
+                case DoomLoopTier.StrongNudge:
+                    _renderer.WriteWarning("Doom loop detected — same tool calls repeated 3+ times; escalating the nudge");
+                    return [ToolResult.InvalidInput(
+                        $"[System: Doom loop (escalated) — {names} has been repeated with identical arguments. Repeating it will not help and the turn will be aborted if it continues. You MUST stop calling {names}. Either: (a) fix the underlying problem first (check file contents / command output / errors already shown), (b) use a different tool or a different set of arguments, or (c) stop and explain to the user what is blocking you and what you need.]",
+                        "Stop repeating. Change your approach structurally, or ask the user for help.")];
+
+                default: // DoomLoopTier.Escalate
+                    _renderer.WriteWarning("Doom loop detected — same tool calls repeated 5+ times; escalating to the user and ending the turn");
+                    return [ToolResult.InvalidInput(
+                        $"[System: Doom loop (max) — {names} has been repeated too many times with identical arguments. The turn is being ended and escalated to the user. Do not attempt further tool calls in this step.]",
+                        "Escalated to the user — the step will be re-run or the user will be asked for direction.").WithEscalation()];
+            }
         }
 
         var context = BuildToolContext();

@@ -41,6 +41,9 @@ public sealed class ConversationLoop : IDisposable
 
     private readonly DoomLoopDetector _doomLoop = new();
 
+    /// <summary>Tiered escalation state for the doom loop (nudge → strong nudge → escalate).</summary>
+    private readonly DoomLoopState _doomLoopState = new();
+
     private const int LargeResultThreshold = 20_000;
 
     private readonly int _maxIterations;
@@ -134,6 +137,7 @@ public sealed class ConversationLoop : IDisposable
     public async Task RunTurnAsync(string userInput, IReadOnlyList<ContentPart>? imageParts, CancellationToken ct)
     {
         _doomLoop.Reset();
+        _doomLoopState.Reset();
         _session.AddMessage(new Message {
             Role = MessageRole.User,
             Content = imageParts is { Count: > 0 }
@@ -252,6 +256,9 @@ public sealed class ConversationLoop : IDisposable
     {
         _doomLoop.Reset();
         _liveFeedback?.BeginTurn();
+        // TokenTracker is the single source of truth for cumulative token totals; mirror them
+        // into the session-level counter so persistence, /status and exporters stay in sync.
+        _session.Meta.TokenTracker?.OnTotalsChanged = totals => _session.TotalTokensUsed = totals;
 
         try
         {
@@ -393,6 +400,7 @@ public sealed class ConversationLoop : IDisposable
             var requestSw = Stopwatch.StartNew();
             var ttft = TimeSpan.Zero;
             var hasUsage = false;
+            var outputTruncated = false;
             var accumPromptTokens = 0;
             var accumCompletionTokens = 0;
             var accumPredictedTokens = 0;
@@ -454,10 +462,24 @@ public sealed class ConversationLoop : IDisposable
                     if (_sink is not null) await _sink.OnTextDeltaAsync(chunk.TextDelta);
                 }
 
+                if (chunk.OutputTruncated)
+                    outputTruncated = true;
+
                 if (chunk.ToolCallDelta is not null)
                 {
                     _output.ClearToolProgress();
                     var call = chunk.ToolCallDelta;
+
+                    // Defense in depth: even if a client failed to flag truncation, never store
+                    // broken JSON in history — it would 400 the next request.
+                    if (!MessageSanitizer.IsValidJsonObject(call.Arguments))
+                    {
+                        outputTruncated = true;
+                        _output.WriteWarning($"⚠ Tool call {call.Name} had malformed arguments and was dropped.");
+                        Log.Warn($"[OMA_TOOLCALL] Dropped tool call with invalid JSON: {call.Name}");
+                        continue;
+                    }
+
                     toolCalls.Add(call);
 
                     var tool = _tools.Resolve(call.Name);
@@ -479,7 +501,6 @@ public sealed class ConversationLoop : IDisposable
                     // arriving with the other field defaulted to 0. Accumulate across the whole
                     // stream and record once below, so the second event can't clobber the first.
                     hasUsage = true;
-                    _session.TotalTokensUsed += chunk.Usage.TotalTokens;
                     accumPromptTokens += chunk.Usage.PromptTokens;
                     accumCompletionTokens += chunk.Usage.CompletionTokens;
                     accumPredictedTokens += chunk.Usage.PredictedTokens;
@@ -526,7 +547,43 @@ public sealed class ConversationLoop : IDisposable
                 Content = textBuffer.Length > 0 ? textBuffer.ToString() : null,
                 ToolCalls = toolCalls.Count > 0 ? toolCalls : null,
             };
-            _session.AddMessage(assistantMsg);
+
+            if (outputTruncated)
+            {
+                // Tell the model its output was cut off so it retries with smaller content —
+                // e.g. split a large FileWrite into chunks instead of one huge call.
+                _output.WriteWarning("⚠ Response hit the output token limit — incomplete tool calls were dropped. Retrying with smaller content.");
+                Log.Warn($"[OMA_LLM] Output truncated: {toolCalls.Count} tool call(s) survived");
+                if (_sink is not null) await _sink.OnOutputTruncatedAsync(toolCalls.Count == 0 ? "unknown" : toolCalls[^1].Name);
+
+                var assistantContent = assistantMsg.Content ?? "";
+                if (string.IsNullOrEmpty(assistantContent))
+                    assistantContent = "[Response was truncated by the output token limit before any text could be produced.]";
+                _session.AddMessage(new Message
+                {
+                    Role = MessageRole.User,
+                    Content = "[System: Your previous response was cut off by the output token limit. The incomplete tool call(s) were discarded — do NOT repeat them as-is. Retry with smaller content, e.g. split large file writes/edits into multiple smaller calls.]",
+                });
+                _session.AddMessage(new Message
+                {
+                    Role = MessageRole.Assistant,
+                    Content = assistantContent,
+                    ToolCalls = toolCalls.Count > 0 ? toolCalls : null,
+                });
+
+                if (toolCalls.Count == 0)
+                {
+                    // Nothing survived — end the iteration so the loop re-enters with the
+                    // truncation notice in context and the model can retry.
+                    _journal.FinishTurn("truncated");
+                    await EmitUsageAsync();
+                    return;
+                }
+            }
+            else
+            {
+                _session.AddMessage(assistantMsg);
+            }
 
             if (toolCalls.Count == 0)
             {
@@ -537,18 +594,38 @@ public sealed class ConversationLoop : IDisposable
 
             if (_doomLoop.Check(toolCalls))
             {
-                await siblingAbortCts.CancelAsync();
-                const string doomMsg = "⚠ Doom loop detected: agent is repeating the same tool calls. Stopping.";
-                _output.WriteWarning(doomMsg);
-                if (_sink is not null) _ = _sink.OnSubAgentLogAsync(doomMsg);
-                _session.AddMessage(new Message
+                var tier = _doomLoopState.RecordHit(DoomLoopDetector.SignatureFor(toolCalls));
+                var names = string.Join(", ", toolCalls.Select(tc => tc.Name).Distinct());
+
+                if (tier == DoomLoopTier.Escalate)
                 {
-                    Role = MessageRole.User,
-                    Content = "[System: Doom loop detected — you called the same tools 3 times in a row with identical arguments. Stop repeating and try a different approach, or ask the user for help.]",
-                });
-                _journal.FinishTurn("doom_loop");
-                await EmitUsageAsync();
-                return;
+                    // Tier 3: the agent is stuck. End the turn with a distinct journal reason so
+                    // the SHS harness can detect it (and re-run the step / surface to the user)
+                    // instead of the turn silently burning its iteration budget.
+                    await siblingAbortCts.CancelAsync();
+                    var escMsg = "⚠ Doom loop detected 5+ times: agent is repeating the same tool calls. Escalating to the user.";
+                    _output.WriteWarning(escMsg);
+                    if (_sink is not null) _ = _sink.OnSubAgentLogAsync(escMsg);
+                    _session.AddMessage(new Message
+                    {
+                        Role = MessageRole.User,
+                        Content = $"[System: Doom loop (max) — {names} has been repeated too many times with identical arguments. This turn is being ended and escalated to the user. Do not attempt further tool calls in this turn.]",
+                    });
+                    _journal.FinishTurn("doom_loop_escalated");
+                    await EmitUsageAsync();
+                    return;
+                }
+
+                // Tier 1 / Tier 2: nudge the model to change course, then let the tool calls run.
+                var nudge = tier == DoomLoopTier.Nudge
+                    ? $"[System: Doom loop (1st) — you called {names} again with identical arguments. The previous attempt did not make progress. Do NOT repeat the exact same call: inspect the earlier output and take a structurally different step (change an argument, use a different tool, or gather more information first).]"
+                    : $"[System: Doom loop (escalated) — {names} has been repeated with identical arguments. Repeating it will not help. You MUST stop calling {names}. Either fix the underlying problem first, use a different tool/arguments, or stop and explain to the user what is blocking you and what you need. If you keep repeating, the turn will be ended and escalated.]";
+
+                var nudgeLabel = tier == DoomLoopTier.Nudge ? "nudging" : "escalating the nudge";
+                var nudgeMsg = $"⚠ Doom loop detected — same tool calls repeated; {nudgeLabel} the agent.";
+                _output.WriteWarning(nudgeMsg);
+                if (_sink is not null) _ = _sink.OnSubAgentLogAsync(nudgeMsg);
+                _session.AddMessage(new Message { Role = MessageRole.User, Content = nudge });
             }
 
             // Capture mode before tools run so an agent-initiated change (EnterPlanMode /
@@ -796,6 +873,10 @@ public sealed class ConversationLoop : IDisposable
         _output.WriteDebug($"[Compact] Triggered — messages={_session.Messages.Count} lastPromptTokens={promptTokens}");
         _session.Meta.IsCompacting = true;
         _output.ShowWaitingIndicator("Compacting");
+        // Let the frontend flip into its "compacting" state (ring spinner + status line)
+        // immediately, rather than waiting for the multi-second rewrite to finish.
+        if (_sink is not null)
+            await _sink.OnCompactingStartedAsync();
         CompactionReport report;
         try
         {
@@ -827,7 +908,9 @@ public sealed class ConversationLoop : IDisposable
         _output.WriteDebug($"[Compact] Done — {_session.Messages.Count} messages remaining");
 
         if (_sink is not null)
-            await _sink.OnCompactionAsync(report.MessagesCompressed, report.Duration.TotalSeconds, _session.Checkpoints.Count);
+            await _sink.OnCompactionAsync(
+                report.MessagesCompressed, report.Duration.TotalSeconds, _session.Checkpoints.Count,
+                report.MessagesBefore, report.MessagesAfter, report.TokensBefore, report.TokensAfter);
     }
 
     private Task EmitUsageAsync()
