@@ -284,18 +284,23 @@ public sealed class ConversationLoop : IDisposable
         }
 
         var thinking = _session.Meta.ThinkingEnabled;
+        var thinkingLevel = _session.Meta.ThinkingLevel ?? "off";
+        var profile = Utils.ModelReasoningProfile.Resolve(_config.Llm.Model);
+
         var options = new LlmOptions
         {
             Model = _config.Llm.Model,
             MaxTokens = _config.Llm.MaxOutputTokens,
-            TopP = _config.Llm.TopP,
+            TopP = thinking && profile.ThinkingTopP is { } ttp ? ttp : _config.Llm.TopP,
             TopK = _config.Llm.TopK,
             MinP = _config.Llm.MinP,
             RepetitionPenalty = _config.Llm.RepetitionPenalty,
 
-            Temperature = thinking ? 0.6 : _config.Llm.Temperature,
+            Temperature = thinking && profile.ThinkingTemperature is { } tt ? tt : _config.Llm.Temperature,
             PresencePenalty = thinking ? 0.0 : _config.Llm.PresencePenalty,
             EnableThinking = thinking,
+            ReasoningEffort = profile.Kind == ReasoningKind.EffortLevels && thinking && !string.IsNullOrEmpty(thinkingLevel) && thinkingLevel != "off" ? thinkingLevel : null,
+            PreserveThinking = profile.PreserveThinking && thinking,
         };
 
         var maxIterations = _maxIterations;

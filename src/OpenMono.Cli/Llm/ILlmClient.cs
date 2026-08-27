@@ -14,6 +14,8 @@ public sealed record LlmOptions
     public double MinP { get; init; } = 0.0;
     public double RepetitionPenalty { get; init; } = 1.0;
     public bool? EnableThinking { get; init; }
+    public string? ReasoningEffort { get; init; }
+    public bool? PreserveThinking { get; init; }
 
     /// <summary>When set, constrains decoding to this JSON Schema (grammar-based on llama.cpp) so the
     /// response is guaranteed-valid JSON — no parsing/retry needed on providers that support it.</summary>

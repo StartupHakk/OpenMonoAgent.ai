@@ -23,6 +23,16 @@ public static class ConfigLoader
             RepetitionPenalty = 1.0,
         };
 
+        config.ModelPresets["qwen38"] = new ModelPresetSettings
+        {
+            Temperature = 0.7,
+            TopP = 0.8,
+            TopK = 20,
+            PresencePenalty = 1.5,
+            MinP = 0.0,
+            RepetitionPenalty = 1.0,
+        };
+
         var userConfigPath = Path.Combine(config.DataDirectory, "settings.json");
         MergeFromFile(config, userConfigPath, warn);
 
