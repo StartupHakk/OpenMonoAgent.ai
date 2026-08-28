@@ -10,13 +10,16 @@
 <br>
 
 <div align="center">
-  <a href="#quickstart">Quickstart</a> · <a href="#whats-shipping">What's shipping</a> · <a href="#how-it-compares">How it compares</a> · <a href="#whats-inside">What's inside</a> · <a href="#supported-hardware">Hardware</a> · <a href="#docs">Docs</a> · <a href="ROADMAP.md">Roadmap</a> · <a href="#contributing">Contributing</a>
+  <a href="#quickstart">Quickstart</a> · <a href="#free-course--get-started-with-oma">Free OMA Course</a> · <a href="#whats-shipping">What's shipping</a> · <a href="#how-it-compares">How it compares</a> · <a href="#whats-inside">What's inside</a> · <a href="#supported-hardware">Hardware</a> · <a href="#docs">Docs</a> · <a href="ROADMAP.md">Roadmap</a> · <a href="#contributing">Contributing</a>
 </div>
 
 <br>
 
 <div align="center">
   <img src="https://img.shields.io/badge/status-beta-FF8C00?style=for-the-badge&labelColor=555555" alt="Status: Beta" />
+  <a href="https://www.youtube.com/playlist?list=PLJ7vIYQ-dfw4">
+    <img src="https://img.shields.io/badge/FREE%20COURSE-OMA%20%7C%20YouTube-FF0000?style=for-the-badge&labelColor=555555" alt="Free OMA Course on YouTube" />
+  </a>
   <a href="docs/MODELS.md#why-qwen38-gpu--qwen36-cpu">
     <img src="https://img.shields.io/badge/🚀_now_running-Qwen3.8--27B-A3FF66?style=for-the-badge&labelColor=555555" alt="Now running Qwen3.8-27B" />
   </a>
@@ -37,6 +40,17 @@
 ---
 
 OpenMono is a coding agent that runs **entirely on your hardware** — no subscriptions, no data leaving your network, no per-token billing. It pairs a .NET 10 CLI with its own llama.cpp inference server, giving you a full agentic loop with **20 built-in tools**, Docker sandboxing, and deep code intelligence. NVIDIA GPU, CPU, or Apple Silicon (Metal) — **it auto-configures itself**. You own the model, the compute, and the data.
+
+---
+
+<!--  ── FREE OMA COURSE ─────────────────────────────────────── -->
+## Free Course — Get Started with OMA
+
+<div align="center">
+  <a href="https://www.youtube.com/playlist?list=PLJ7vIYQ-dfw4">
+    <img src="docs/assets/free-course-banner.svg" alt="A FREE COURSE on how to get up and running with OMA — build your site, build your web-game, publish it live on the web. Click to watch the full playlist on YouTube." width="800" />
+  </a>
+</div>
 
 ---
 
