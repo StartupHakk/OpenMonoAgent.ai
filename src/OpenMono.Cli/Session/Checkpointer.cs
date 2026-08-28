@@ -30,7 +30,7 @@ public sealed class Checkpointer
         else
         {
             var effective = BuildContextWindow(session);
-            tokens = EstimateTokens(effective);
+            tokens = TokenEstimator.EstimateMessages(effective);
         }
         var threshold = (int)(_contextSize * TriggerThreshold);
         return tokens > threshold;
@@ -192,14 +192,6 @@ public sealed class Checkpointer
                 return i;
         }
         return null;
-    }
-
-    internal static int EstimateTokens(IReadOnlyList<Message> messages)
-    {
-        var chars = messages.Sum(m => (m.Content?.Length ?? 0)
-            + (m.ToolCalls?.Sum(c => c.Arguments?.Length ?? 0) ?? 0)
-            + 20);
-        return chars / 4;
     }
 
     private static string BuildConversationText(List<Message> messages)

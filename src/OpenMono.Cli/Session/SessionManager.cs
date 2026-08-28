@@ -85,16 +85,19 @@ public sealed class SessionManager
             if (header.Todos.Count > 0) session.Todos.AddRange(header.Todos);
 
             // Restore the token tracker so compaction/checkpoint thresholds work
-            // correctly after an ACP session reload.
+            // correctly after an ACP session reload, and mirror restored totals back into the
+            // session-level counter exactly like ConversationLoop does on new turns.
             if (header.ApiCalls > 0 || header.TotalPromptTokens > 0)
             {
                 session.Meta.TokenTracker = new TokenTracker();
-                session.Meta.TokenTracker.Restore(
+                var tracker = session.Meta.TokenTracker;
+                tracker.Restore(
                     header.TotalPromptTokens,
                     header.TotalCompletionTokens,
                     header.MaxPromptTokens,
                     header.ApiCalls,
                     header.LastPromptTokens);
+                tracker.OnTotalsChanged = totals => session.TotalTokensUsed = totals;
             }
         }
 

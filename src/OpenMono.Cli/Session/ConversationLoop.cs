@@ -573,11 +573,10 @@ public sealed class ConversationLoop : IDisposable
 
                 if (toolCalls.Count == 0)
                 {
-                    // Nothing survived — end the iteration so the loop re-enters with the
-                    // truncation notice in context and the model can retry.
-                    _journal.FinishTurn("truncated");
-                    await EmitUsageAsync();
-                    return;
+                    // Nothing survived — continue the iteration loop (bounded by maxIterations)
+                    // so it re-enters with the truncation notice in context and the model retries
+                    // with smaller content instead of the turn silently ending.
+                    continue;
                 }
             }
             else
@@ -594,7 +593,7 @@ public sealed class ConversationLoop : IDisposable
 
             if (_doomLoop.Check(toolCalls))
             {
-                var tier = _doomLoopState.RecordHit(DoomLoopDetector.SignatureFor(toolCalls));
+                var tier = _doomLoopState.RecordHit();
                 var names = string.Join(", ", toolCalls.Select(tc => tc.Name).Distinct());
 
                 if (tier == DoomLoopTier.Escalate)
@@ -609,7 +608,7 @@ public sealed class ConversationLoop : IDisposable
                     _session.AddMessage(new Message
                     {
                         Role = MessageRole.User,
-                        Content = $"[System: Doom loop (max) — {names} has been repeated too many times with identical arguments. This turn is being ended and escalated to the user. Do not attempt further tool calls in this turn.]",
+                        Content = DoomLoopPrompts.Max(names),
                     });
                     _journal.FinishTurn("doom_loop_escalated");
                     await EmitUsageAsync();
@@ -617,15 +616,11 @@ public sealed class ConversationLoop : IDisposable
                 }
 
                 // Tier 1 / Tier 2: nudge the model to change course, then let the tool calls run.
-                var nudge = tier == DoomLoopTier.Nudge
-                    ? $"[System: Doom loop (1st) — you called {names} again with identical arguments. The previous attempt did not make progress. Do NOT repeat the exact same call: inspect the earlier output and take a structurally different step (change an argument, use a different tool, or gather more information first).]"
-                    : $"[System: Doom loop (escalated) — {names} has been repeated with identical arguments. Repeating it will not help. You MUST stop calling {names}. Either fix the underlying problem first, use a different tool/arguments, or stop and explain to the user what is blocking you and what you need. If you keep repeating, the turn will be ended and escalated.]";
-
-                var nudgeLabel = tier == DoomLoopTier.Nudge ? "nudging" : "escalating the nudge";
+                var nudgeLabel = DoomLoopPrompts.NudgeLabel(tier);
                 var nudgeMsg = $"⚠ Doom loop detected — same tool calls repeated; {nudgeLabel} the agent.";
                 _output.WriteWarning(nudgeMsg);
                 if (_sink is not null) _ = _sink.OnSubAgentLogAsync(nudgeMsg);
-                _session.AddMessage(new Message { Role = MessageRole.User, Content = nudge });
+                _session.AddMessage(new Message { Role = MessageRole.User, Content = DoomLoopPrompts.Nudge(names, tier) });
             }
 
             // Capture mode before tools run so an agent-initiated change (EnterPlanMode /
@@ -908,9 +903,7 @@ public sealed class ConversationLoop : IDisposable
         _output.WriteDebug($"[Compact] Done — {_session.Messages.Count} messages remaining");
 
         if (_sink is not null)
-            await _sink.OnCompactionAsync(
-                report.MessagesCompressed, report.Duration.TotalSeconds, _session.Checkpoints.Count,
-                report.MessagesBefore, report.MessagesAfter, report.TokensBefore, report.TokensAfter);
+            await _sink.OnCompactionAsync(report, _session.Checkpoints.Count);
     }
 
     private Task EmitUsageAsync()

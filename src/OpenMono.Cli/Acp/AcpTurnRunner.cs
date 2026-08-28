@@ -580,17 +580,16 @@ public sealed class AcpTurnRunner : IAcpEventSink
     public Task OnCompactingStartedAsync()
         => _writer.WriteEventAsync("compacting", new { });
 
-    public Task OnCompactionAsync(int messagesCompressed, double durationSeconds, int checkpointIndex,
-        int messagesBefore, int messagesAfter, int tokensBefore, int tokensAfter)
+    public Task OnCompactionAsync(CompactionReport report, int checkpointIndex)
         => _writer.WriteEventAsync("compaction", new
         {
-            messages_compressed = messagesCompressed,
-            duration_seconds = durationSeconds,
+            messages_compressed = report.MessagesCompressed,
+            duration_seconds = report.Duration.TotalSeconds,
             checkpoint_index = checkpointIndex,
-            messages_before = messagesBefore,
-            messages_after = messagesAfter,
-            tokens_before = tokensBefore,
-            tokens_after = tokensAfter,
+            messages_before = report.MessagesBefore,
+            messages_after = report.MessagesAfter,
+            tokens_before = report.TokensBefore,
+            tokens_after = report.TokensAfter,
         });
 
     public Task OnUsageAsync(int inputTokens, int outputTokens, int totalTokens, int contextTokens, int contextWindow, double genTps, double avgTps)

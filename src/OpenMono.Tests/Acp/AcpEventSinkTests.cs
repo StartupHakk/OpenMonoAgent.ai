@@ -150,14 +150,15 @@ public sealed class AcpEventSinkTests
         // …followed by exactly one compaction result carrying before/after message + token counts.
         sink.Compactions.Should().ContainSingle();
         var c = sink.Compactions[0];
-        c.msgsBefore.Should().Be(41);          // 1 system + 40 msgs
-        c.msgsAfter.Should().BeLessThan(c.msgsBefore);
-        c.msgsAfter.Should().BeGreaterThan(0);
-        c.tokBefore.Should().BeGreaterThan(c.tokAfter);
-        c.compressed.Should().Be(32); // 40 msgs − 4 kept recent turns − 4 system/summary = summarized set
+        c.report.MessagesBefore.Should().Be(41);          // 1 system + 40 msgs
+        c.report.MessagesAfter.Should().BeLessThan(c.report.MessagesBefore);
+        c.report.MessagesAfter.Should().BeGreaterThan(0);
+        c.report.TokensBefore.Should().BeGreaterThan(c.report.TokensAfter);
+        c.report.MessagesCompressed.Should().Be(32); // 40 msgs − 4 kept recent turns − 4 system/summary = summarized set
+        c.checkpointIndex.Should().BeGreaterThanOrEqualTo(0);
 
         // History shrank to exactly the post-compaction count and the flag cleared.
-        session.Messages.Count.Should().Be(c.msgsAfter);
+        session.Messages.Count.Should().Be(c.report.MessagesAfter);
         session.Meta.IsCompacting.Should().BeFalse();
     }
 
@@ -349,7 +350,7 @@ public sealed class AcpEventSinkTests
         public List<(string callId, string name, bool ok, double durationMs)> ToolEnds { get; } = new();
         public List<(string callId, string preview, string? artifactId)> ToolPreviews { get; } = new();
         public List<(int input, int output, int total, int contextTokens, int contextWindow)> UsageEvents { get; } = new();
-        public List<(int compressed, double seconds, int idx, int msgsBefore, int msgsAfter, int tokBefore, int tokAfter)> Compactions { get; } = new();
+        public List<(CompactionReport report, int checkpointIndex)> Compactions { get; } = new();
         public List<string> ModeChanges { get; } = new();
 
         public List<string?> PlanReady { get; } = new();
@@ -365,8 +366,8 @@ public sealed class AcpEventSinkTests
         { ToolStatuses.Add((callId, status)); return Task.CompletedTask; }
         public Task OnToolEndAsync(string callId, string name, bool ok, double durationMs)
         { ToolEnds.Add((callId, name, ok, durationMs)); return Task.CompletedTask; }
-        public Task OnCompactionAsync(int m, double s, int i, int mb, int ma, int tb, int ta)
-        { Compactions.Add((m, s, i, mb, ma, tb, ta)); return Task.CompletedTask; }
+        public Task OnCompactionAsync(CompactionReport report, int checkpointIndex)
+        { Compactions.Add((report, checkpointIndex)); return Task.CompletedTask; }
         public Task OnUsageAsync(int i, int o, int t, int ctx, int win, double genTps, double avgTps) { UsageEvents.Add((i, o, t, ctx, win)); return Task.CompletedTask; }
         public Task OnToolResultPreviewAsync(string callId, string preview, string? artifactId)
         { ToolPreviews.Add((callId, preview, artifactId)); return Task.CompletedTask; }

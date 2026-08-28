@@ -18,36 +18,48 @@ public class DoomLoopStateTests
     }
 
     [Fact]
-    public void RecordHit_SameSignature_Accumulates()
+    public void RecordHit_EachDetection_AccumulatesTowardEscalation()
     {
         var state = new DoomLoopState();
-        state.RecordHit("sig").Should().Be(DoomLoopTier.Nudge);
-        state.RecordHit("sig").Should().Be(DoomLoopTier.Nudge);
-        state.RecordHit("sig").Should().Be(DoomLoopTier.StrongNudge);
-        state.RecordHit("sig").Should().Be(DoomLoopTier.StrongNudge);
-        state.RecordHit("sig").Should().Be(DoomLoopTier.Escalate);
+        state.RecordHit().Should().Be(DoomLoopTier.Nudge);
+        state.RecordHit().Should().Be(DoomLoopTier.Nudge);
+        state.RecordHit().Should().Be(DoomLoopTier.StrongNudge);
+        state.RecordHit().Should().Be(DoomLoopTier.StrongNudge);
+        state.RecordHit().Should().Be(DoomLoopTier.Escalate);
         state.ConsecutiveHits.Should().Be(5);
     }
 
     [Fact]
-    public void RecordHit_DifferentSignature_RestartsStreak()
+    public void DetectorFirings_AccumulateAcrossAlternatingSignatures()
     {
+        // A model stuck in a period-2 loop (A,B,A,B,…) never repeats the same signature back-to-back.
+        // The detector fires on the looping window regardless, so the tier must still climb.
         var state = new DoomLoopState();
-        state.RecordHit("a");
-        state.RecordHit("a");
-        state.RecordHit("a"); // StrongNudge (3)
-        state.RecordHit("b").Should().Be(DoomLoopTier.Nudge, "a new signature restarts the streak at 1");
-        state.ConsecutiveHits.Should().Be(1);
+        state.RecordHit(); // firing on "a" (e.g. A,B,A,B window)
+        state.RecordHit(); // next firing on "b"
+        state.RecordHit(); // next firing on "a"
+        state.Tier.Should().Be(DoomLoopTier.StrongNudge);
+        state.ConsecutiveHits.Should().Be(3);
     }
 
     [Fact]
     public void Reset_ClearsStreak()
     {
         var state = new DoomLoopState();
-        state.RecordHit("a");
-        state.RecordHit("a");
+        state.RecordHit();
+        state.RecordHit();
         state.Reset();
         state.ConsecutiveHits.Should().Be(0);
         state.Tier.Should().Be(DoomLoopTier.None);
+    }
+
+    [Fact]
+    public void SharedPrompts_ProduceEveryTierVariant()
+    {
+        DoomLoopPrompts.Nudge("T", DoomLoopTier.Nudge).Should().Contain("Doom loop (1st)");
+        DoomLoopPrompts.Nudge("T", DoomLoopTier.StrongNudge).Should().Contain("Doom loop (escalated)");
+        DoomLoopPrompts.Max("T").Should().Contain("Doom loop (max)");
+        DoomLoopPrompts.NudgeLabel(DoomLoopTier.Nudge).Should().Be("nudging");
+        DoomLoopPrompts.NudgeLabel(DoomLoopTier.Escalate).Should().Be("escalating the nudge");
     }
 }

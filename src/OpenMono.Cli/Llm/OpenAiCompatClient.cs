@@ -188,7 +188,7 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                         // If the model hit max_tokens mid-JSON, the accumulated arguments are
                         // truncated. Storing broken JSON in history makes the next request 400,
                         // so drop the call and flag truncation instead.
-                        if (outputTruncated || !IsValidJsonObject(args))
+                        if (outputTruncated || !MessageSanitizer.IsValidJsonObject(args))
                         {
                             outputTruncated = true;
                             OnDebug?.Invoke($"[SSE] tool_call DROPPED (truncated/invalid JSON): {tc.Name}");
@@ -513,19 +513,6 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
     }
 
     public void Dispose() => _http.Dispose();
-
-    internal static bool IsValidJsonObject(string json)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            return doc.RootElement.ValueKind == JsonValueKind.Object;
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
 
     private sealed class ToolCallAccumulator
     {

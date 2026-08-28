@@ -1,9 +1,6 @@
 namespace OpenMono.Acp;
 
-
-
-
-
+using OpenMono.Session;
 
 public interface IAcpEventSink
 {
@@ -30,10 +27,10 @@ public interface IAcpEventSink
     // through a plan_decision turn.
     Task OnPlanReadyAsync(string planContent, string? planPath);
 
-    // tokensBefore/After and messagesBefore/After describe the compaction's effect so the
-    // frontend can render a "N msgs → M tokens (−X%)" line without a second usage round-trip.
-    Task OnCompactionAsync(int messagesCompressed, double durationSeconds, int checkpointIndex,
-        int messagesBefore, int messagesAfter, int tokensBefore, int tokensAfter);
+    // The report describes the compaction's effect (messages/tokens before & after and duration)
+    // so the frontend can render a "N msgs → M tokens (−X%)" line without a second usage round-trip.
+    // checkpointIndex identifies which checkpoint the compaction is tied to.
+    Task OnCompactionAsync(CompactionReport report, int checkpointIndex);
     // contextTokens = prompt tokens of the most recent API call (current context occupancy);
     // contextWindow = the model's n_ctx (denominator for a context-usage gauge).
     // genTps = most recent turn's live generation rate; avgTps = session rolling average (tok/s).

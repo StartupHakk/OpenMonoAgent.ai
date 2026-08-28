@@ -178,7 +178,7 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
                                 // If the stream was cut by max_tokens, the buffer holds partial
                                 // JSON. Storing it in history makes the next request 400, so
                                 // drop the call and flag truncation instead.
-                                if (!OpenAiCompatClient.IsValidJsonObject(argsPreview))
+                                if (!MessageSanitizer.IsValidJsonObject(argsPreview))
                                 {
                                     outputTruncated = true;
                                     OnDebug?.Invoke($"[SSE] tool_call DROPPED (truncated/invalid JSON): {currentToolName}");

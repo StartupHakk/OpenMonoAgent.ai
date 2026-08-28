@@ -256,7 +256,7 @@ public sealed class LocalToolExecutor : IToolExecutor
                 }
                 else
                 {
-                    Log.Info($"Tool executing: {call.Name} args={call.Arguments}");
+                    Log.Debug($"Tool executing: {call.Name} args={call.Arguments}");
                     result = await tool.ExecuteAsync(input, ctx, execCt);
 
                     await _hookRunner.RunPostToolUseHooksAsync(call.Name, result.Content, ct);
@@ -396,7 +396,7 @@ public sealed class LocalToolExecutor : IToolExecutor
 
     /// <summary>
     /// Estimate the token growth of tool results appended to history after the last API call
-    /// (the last assistant message). chars/4 matches Compactor.EstimateTokens.
+    /// (the last assistant message). Shared chars/4 estimator (see TokenEstimator).
     /// </summary>
     private int EstimateNewToolResultTokens()
     {
@@ -413,7 +413,7 @@ public sealed class LocalToolExecutor : IToolExecutor
             if (m.Role != MessageRole.Tool) continue;
             chars += (m.Content?.Length ?? 0) + 20;
         }
-        return chars / 4;
+        return TokenEstimator.EstimateForChars(chars);
     }
 
 
