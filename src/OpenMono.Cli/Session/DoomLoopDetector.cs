@@ -11,9 +11,13 @@ internal sealed class DoomLoopDetector
 
     public void Reset() => _signatures.Clear();
 
+    /// <summary>Builds the canonical signature for a batch of tool calls (normalized args, stable order).</summary>
+    public static string SignatureFor(List<ToolCall> calls) =>
+        string.Join("|", calls.Select(c => $"{c.Name}:{Normalize(c.Arguments)}"));
+
     public bool Check(List<ToolCall> calls)
     {
-        var sig = string.Join("|", calls.Select(c => $"{c.Name}:{Normalize(c.Arguments)}"));
+        var sig = SignatureFor(calls);
         _signatures.Add(sig);
 
         if (_signatures.Count > MaxHistory)

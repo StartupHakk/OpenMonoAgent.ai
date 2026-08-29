@@ -225,10 +225,14 @@ public class ConversationLoopTests
             new() { IsComplete = true },
         ];
 
-
+        // A,B,A,B is a period-2 loop. The detector needs 2 full periods (4 rounds) to fire, so
+        // it first fires at round 4; detections continue rounds 5..8 → Nudge,Nudge,StrongNudge,
+        // StrongNudge,Escalate,Escalate, ending the turn at round 8.
         var llm = new FakeLlmClient(
             Round("ToolA"), Round("ToolB"),
-            Round("ToolA"), Round("ToolB")
+            Round("ToolA"), Round("ToolB"),
+            Round("ToolA"), Round("ToolB"),
+            Round("ToolA"), Round("ToolB"), Round("ToolA")
         );
 
         var tools = new ToolRegistry();
@@ -243,9 +247,47 @@ public class ConversationLoopTests
 
         await loop.RunTurnAsync("Do the thing", null, CancellationToken.None);
 
+        // The tiered nudges (Tiers 1 & 2) and the final escalation all surface "Doom loop".
         session.Messages
             .Where(m => m.Role == MessageRole.User)
-            .Should().Contain(m => m.Content != null && m.Content.Contains("Doom loop detected"));
+            .Should().Contain(m => m.Content != null && m.Content.Contains("Doom loop"));
+    }
+
+    [Fact]
+    public async Task DoomLoop_Tiers1To4_NudgeThenEscalatesOnFifth()
+    {
+        // Identical tool call every round. The detector first fires on the 3rd identical round, so
+        // the tiered state escalates Nudge (hits 1-2) → StrongNudge (hits 3-4) → Escalate (hit 5),
+        // which ends the turn at the 7th round.
+        static List<StreamChunk> Round(string id) =>
+        [
+            new() { ToolCallDelta = new ToolCall { Id = id, Name = "TestTool", Arguments = "{}" }, IsComplete = false },
+            new() { IsComplete = true },
+        ];
+
+        var llm = new FakeLlmClient(
+            Round("1"), Round("2"), Round("3"), Round("4"), Round("5"), Round("6"), Round("7"), Round("8")
+        );
+
+        var tools = new ToolRegistry();
+        tools.Register(new TestTool());
+        var session = new SessionState();
+        session.AddMessage(new Message { Role = MessageRole.System, Content = "System" });
+        var renderer = new TerminalRenderer();
+        var config = new AppConfig();
+        var loop = new ConversationLoop(llm, tools, new PermissionEngine(config, renderer, renderer),
+            renderer, renderer, renderer, config, session);
+
+        await loop.RunTurnAsync("Loop forever", null, CancellationToken.None);
+
+        var userMsgs = session.Messages.Where(m => m.Role == MessageRole.User).Select(m => m.Content).ToList();
+
+        // Tier 1 (hit 3) and Tier 2 (hit 4) are nudges that let the turn continue.
+        userMsgs.Should().Contain(m => m != null && m.Contains("Doom loop (1st)"));
+        userMsgs.Should().Contain(m => m != null && m.Contains("Doom loop (escalated)"));
+
+        // Tier 3 (hit 5) ends the turn with a distinct escalation message.
+        userMsgs.Should().Contain(m => m != null && m.Contains("Doom loop (max)"));
     }
 
     private sealed class FakeLlmClient : ILlmClient

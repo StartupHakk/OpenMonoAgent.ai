@@ -83,6 +83,22 @@ public sealed class SessionManager
             session.TotalTokensUsed = header.TotalTokens;
             session.Meta.PlanMode = header.PlanMode;
             if (header.Todos.Count > 0) session.Todos.AddRange(header.Todos);
+
+            // Restore the token tracker so compaction/checkpoint thresholds work
+            // correctly after an ACP session reload, and mirror restored totals back into the
+            // session-level counter exactly like ConversationLoop does on new turns.
+            if (header.ApiCalls > 0 || header.TotalPromptTokens > 0)
+            {
+                session.Meta.TokenTracker = new TokenTracker();
+                var tracker = session.Meta.TokenTracker;
+                tracker.Restore(
+                    header.TotalPromptTokens,
+                    header.TotalCompletionTokens,
+                    header.MaxPromptTokens,
+                    header.ApiCalls,
+                    header.LastPromptTokens);
+                tracker.OnTotalsChanged = totals => session.TotalTokensUsed = totals;
+            }
         }
 
         foreach (var line in lines.Where(l => !string.IsNullOrWhiteSpace(l)))
@@ -207,17 +223,26 @@ public sealed class SessionManager
             JsonSerializer.Serialize(sessions, JsonOptions.Indented), ct);
     }
 
-    private SessionHeader BuildHeader(SessionState session) => new()
+    private SessionHeader BuildHeader(SessionState session)
     {
-        SessionId = session.Id,
-        StartedAt = session.StartedAt,
-        WorkingDirectory = _workingDirectory,
-        Model = session.Model,
-        TurnCount = session.TurnCount,
-        TotalTokens = session.TotalTokensUsed,
-        PlanMode = session.Meta.PlanMode,
-        Todos = session.Todos,
-    };
+        var tracker = session.Meta.TokenTracker;
+        return new SessionHeader
+        {
+            SessionId = session.Id,
+            StartedAt = session.StartedAt,
+            WorkingDirectory = _workingDirectory,
+            Model = session.Model,
+            TurnCount = session.TurnCount,
+            TotalTokens = session.TotalTokensUsed,
+            PlanMode = session.Meta.PlanMode,
+            Todos = session.Todos,
+            LastPromptTokens = tracker?.LastPromptTokens ?? 0,
+            TotalPromptTokens = tracker?.TotalPromptTokens ?? 0,
+            TotalCompletionTokens = tracker?.TotalCompletionTokens ?? 0,
+            MaxPromptTokens = tracker?.MaxPromptTokens ?? 0,
+            ApiCalls = tracker?.ApiCalls ?? 0,
+        };
+    }
 
     private static async Task WriteAllTextAtomicAsync(string path, string content, CancellationToken ct)
     {
@@ -252,4 +277,12 @@ public sealed record SessionHeader
     public int TotalTokens { get; init; }
     public bool PlanMode { get; init; }
     public List<TodoItem> Todos { get; init; } = new();
+
+    // TokenTracker persistence — restored on load so compaction/checkpoint
+    // thresholds work correctly in ACP sessions that resume from disk.
+    public int LastPromptTokens { get; init; }
+    public int TotalPromptTokens { get; init; }
+    public int TotalCompletionTokens { get; init; }
+    public int MaxPromptTokens { get; init; }
+    public int ApiCalls { get; init; }
 }

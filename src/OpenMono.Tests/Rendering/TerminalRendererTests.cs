@@ -43,4 +43,19 @@ public class TerminalRendererTests
         output.Should().Contain("app.cs");
         output.Should().Contain("public class App");
     }
+
+    [Fact]
+    public void WriteToolStart_RendersFullCommand_NotTruncated()
+    {
+        var (renderer, sink) = MakeRenderer();
+        var command = "dotnet build src/OpenMono.Cli/OpenMono.Cli.csproj --configuration Release --no-restore -p:WarningLevel=4 -v d";
+
+        renderer.WriteToolStart("Bash", command);
+
+        var output = sink.ToString();
+        // Every word of the command must appear — no truncation.
+        foreach (var word in command.Split(' '))
+            output.Should().Contain(word);
+        output.Should().NotContain("…");
+    }
 }

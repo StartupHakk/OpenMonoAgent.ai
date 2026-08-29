@@ -534,9 +534,14 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
             sb.Append($"{BgInput} {PadR(text, Math.Max(0, w - 2))}{R}");
         }
 
-        Row(6, title);
-        Row(5, summary);
-        for (var i = 0; i < options.Count && i < 4; i++)
+        var optCount = Math.Min(options.Count, 4);
+        var summaryLines = Wrap(summary, Math.Max(1, w - 2));
+        var firstSummaryOffset = Math.Max(5, optCount + summaryLines.Count + 1);
+
+        Row(firstSummaryOffset + summaryLines.Count - 1, title);
+        for (var i = 0; i < summaryLines.Count; i++)
+            Row(firstSummaryOffset - 1 - i, summaryLines[i]);
+        for (var i = 0; i < optCount; i++)
         {
             var marker = i == selected ? $"{B}{Fbb}❯ {R}{BgInput}" : "  ";
             Row(4 - i, $"{marker}{options[i]}");
@@ -975,7 +980,7 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
 
     internal void WriteToolStart(string n, string a)
     {
-        AddMessage(new Msg("tool", $"  ⧫ {n} {(a.Length > 60 ? a[..57] + "..." : a)}"));
+        AddMessage(new Msg("tool", $"  ⧫ {n} {a}"));
         PaintConvThrottled(force: false);
     }
 
@@ -1929,13 +1934,18 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
                 if (text.StartsWith("⧫") || text.StartsWith("✓") || text.StartsWith("✗") || text.StartsWith("⊘"))
                     text = text.Length > 2 ? text[2..] : text;
 
-                var truncated = text.Length > w - 8
-                    ? text[..(w - 11)] + "..."
-                    : text;
-
-                lines.Add($"  {border}┌ {icon} {R}{DM}{truncated}{R}");
+                var wrapped = Wrap(text, Math.Max(1, w - 10));
+                for (var i = 0; i < wrapped.Count; i++)
+                {
+                    if (i == 0)
+                        lines.Add($"  {border}┌ {icon} {R}{DM}{wrapped[i]}{R}");
+                    else
+                        lines.Add($"  {border}│ {DM}{wrapped[i]}{R}");
+                }
                 if (m.Footer is not null)
                     lines.Add($"  {border}└ {Fk}{m.Footer}{R}");
+                else if (wrapped.Count > 1)
+                    lines.Add($"  {border}┘{R}");
                 break;
             }
             case "sys":

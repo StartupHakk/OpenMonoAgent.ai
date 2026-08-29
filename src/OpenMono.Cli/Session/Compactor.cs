@@ -27,7 +27,7 @@ public sealed class Compactor
 
     public bool NeedsCompaction(IReadOnlyList<Message> effectiveMessages, int lastPromptTokens = 0)
     {
-        var tokens = lastPromptTokens > 0 ? lastPromptTokens : EstimateTokens(effectiveMessages);
+        var tokens = lastPromptTokens > 0 ? lastPromptTokens : TokenEstimator.EstimateMessages(effectiveMessages);
         var threshold = (int)(_contextSize * 0.80);
         return tokens > threshold;
     }
@@ -39,7 +39,7 @@ public sealed class Compactor
     {
         var sw = Stopwatch.StartNew();
         var messagesBefore = session.Messages.Count;
-        var tokensBefore = EstimateTokens(session.Messages);
+        var tokensBefore = TokenEstimator.EstimateMessages(session.Messages);
 
         var systemMessages = session.Messages.Where(m => m.Role == MessageRole.System).ToList();
         var recentTurns = GetRecentTurns(session.Messages, keepTurns: 4);
@@ -106,7 +106,7 @@ public sealed class Compactor
         compacted.TurnCount = session.TurnCount;
 
         sw.Stop();
-        var tokensAfter = EstimateTokens(compacted.Messages);
+        var tokensAfter = TokenEstimator.EstimateMessages(compacted.Messages);
 
         var report = new CompactionReport
         {
@@ -195,14 +195,6 @@ public sealed class Compactor
         }
         catch (JsonException) { }
         return null;
-    }
-
-    private static int EstimateTokens(IReadOnlyList<Message> messages)
-    {
-        var totalChars = messages.Sum(m => (m.Content?.Length ?? 0)
-            + (m.ToolCalls?.Sum(c => c.Arguments?.Length ?? 0) ?? 0)
-            + 20);
-        return totalChars / 4;
     }
 
     private static List<Message> GetRecentTurns(List<Message> messages, int keepTurns)

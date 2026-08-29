@@ -168,6 +168,7 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
             var malformedChunks = 0;
             var fullText = new StringBuilder();
             var suppressText = false;
+            var outputTruncated = false;
 
             string? line;
             while ((line = await reader.ReadLineAsync(ct)) is not null)
@@ -182,8 +183,21 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                 {
                     foreach (var tc in toolCalls.Values.Where(t => t.IsComplete))
                     {
-                        OnDebug?.Invoke($"[SSE] tool_call: {tc.Name} {{ {tc.Arguments.ToString()[..Math.Min(100, tc.Arguments.Length)]} }}");
-                        Log.Info($"[OMA_TOOLCALL] LLM generated tool call: {tc.Name} args={tc.Arguments.ToString()[..Math.Min(200, tc.Arguments.Length)]}");
+                        var args = tc.Arguments.ToString();
+
+                        // If the model hit max_tokens mid-JSON, the accumulated arguments are
+                        // truncated. Storing broken JSON in history makes the next request 400,
+                        // so drop the call and flag truncation instead.
+                        if (outputTruncated || !MessageSanitizer.IsValidJsonObject(args))
+                        {
+                            outputTruncated = true;
+                            OnDebug?.Invoke($"[SSE] tool_call DROPPED (truncated/invalid JSON): {tc.Name}");
+                            Log.Warn($"[OMA_TOOLCALL] Dropping truncated tool call: {tc.Name} args_len={args.Length}");
+                            continue;
+                        }
+
+                        OnDebug?.Invoke($"[SSE] tool_call: {tc.Name} {{ {args[..Math.Min(100, args.Length)]} }}");
+                        Log.Info($"[OMA_TOOLCALL] LLM generated tool call: {tc.Name} args={args[..Math.Min(200, args.Length)]}");
 
                         yield return new StreamChunk
                         {
@@ -191,7 +205,7 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                             {
                                 Id = tc.Id,
                                 Name = tc.Name,
-                                Arguments = tc.Arguments.ToString(),
+                                Arguments = args,
                             }
                         };
                     }
@@ -223,7 +237,10 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                         }
                     }
 
-                    yield return new StreamChunk { IsComplete = true };
+                    if (outputTruncated)
+                        Log.Warn("[OMA_LLM] Output truncated at max_tokens — incomplete tool calls dropped");
+
+                    yield return new StreamChunk { IsComplete = true, OutputTruncated = outputTruncated };
                     yield break;
                 }
 
@@ -364,10 +381,16 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                         if (choice.TryGetProperty("finish_reason", out var fr) &&
                             fr.ValueKind == JsonValueKind.String)
                         {
-                            if (fr.GetString() == "tool_calls")
+                            var reason = fr.GetString();
+                            if (reason == "tool_calls")
                             {
                                 foreach (var tc in toolCalls.Values)
                                     tc.IsComplete = true;
+                            }
+                            else if (reason is "length" or "max_tokens")
+                            {
+                                outputTruncated = true;
+                                OnDebug?.Invoke($"[LLM] finish_reason={reason} — output hit the token limit");
                             }
                         }
                     }
@@ -410,6 +433,10 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
         string configModel)
     {
         var model = string.IsNullOrEmpty(options.Model) ? configModel : options.Model;
+
+        // Old sessions may hold tool-call arguments truncated mid-JSON (max_tokens cutoff),
+        // which providers reject with a 400. Sanitize before serializing.
+        messages = MessageSanitizer.SanitizeForRequest(messages);
 
         // Log message roles being sent to API
         var msgRoles = string.Join(",", messages.Select(m => m.Role.ToString()[0]));

@@ -26,6 +26,9 @@ public sealed class ToolDispatcher : IDisposable
 
     private readonly DoomLoopDetector _doomLoop = new();
 
+    /// <summary>Shared per-session tiered escalation state (nudge → strong nudge → escalate).</summary>
+    public DoomLoopState DoomLoop { get; } = new();
+
     public ToolDispatcher(
         ToolRegistry tools,
         PermissionEngine permissions,
@@ -74,10 +77,29 @@ public sealed class ToolDispatcher : IDisposable
 
         if (_doomLoop.Check(toolCalls))
         {
-            _renderer.WriteWarning("Doom loop detected — same tool calls repeated 3 times");
-            return [ToolResult.InvalidInput(
-                "[System: Doom loop detected — you called the same tools 3 times in a row with identical arguments. Stop repeating and try a different approach, or ask the user for help.]",
-                "Try a different approach or ask the user for clarification.")];
+            var tier = DoomLoop.RecordHit();
+            var names = string.Join(", ", toolCalls.Select(tc => tc.Name).Distinct());
+
+            switch (tier)
+            {
+                case DoomLoopTier.Nudge:
+                    _renderer.WriteWarning("Doom loop detected — same tool calls repeated; nudging the agent to vary its approach");
+                    return [ToolResult.InvalidInput(
+                        DoomLoopPrompts.Nudge(names, tier),
+                        "Vary the call: change an argument, try a different tool, or inspect prior output before proceeding.")];
+
+                case DoomLoopTier.StrongNudge:
+                    _renderer.WriteWarning("Doom loop detected — same tool calls repeated 3+ times; escalating the nudge");
+                    return [ToolResult.InvalidInput(
+                        DoomLoopPrompts.Nudge(names, tier),
+                        "Stop repeating. Change your approach structurally, or ask the user for help.")];
+
+                default: // DoomLoopTier.Escalate
+                    _renderer.WriteWarning("Doom loop detected — same tool calls repeated 5+ times; escalating to the user and ending the turn");
+                    return [ToolResult.InvalidInput(
+                        DoomLoopPrompts.Max(names),
+                        "Escalated to the user — the step will be re-run or the user will be asked for direction.").WithEscalation()];
+            }
         }
 
         var context = BuildToolContext();

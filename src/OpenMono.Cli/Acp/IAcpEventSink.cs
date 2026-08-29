@@ -1,9 +1,6 @@
 namespace OpenMono.Acp;
 
-
-
-
-
+using OpenMono.Session;
 
 public interface IAcpEventSink
 {
@@ -30,7 +27,10 @@ public interface IAcpEventSink
     // through a plan_decision turn.
     Task OnPlanReadyAsync(string planContent, string? planPath);
 
-    Task OnCompactionAsync(int messagesCompressed, double durationSeconds, int checkpointIndex);
+    // The report describes the compaction's effect (messages/tokens before & after and duration)
+    // so the frontend can render a "N msgs → M tokens (−X%)" line without a second usage round-trip.
+    // checkpointIndex identifies which checkpoint the compaction is tied to.
+    Task OnCompactionAsync(CompactionReport report, int checkpointIndex);
     // contextTokens = prompt tokens of the most recent API call (current context occupancy);
     // contextWindow = the model's n_ctx (denominator for a context-usage gauge).
     // genTps = most recent turn's live generation rate; avgTps = session rolling average (tok/s).
@@ -40,4 +40,14 @@ public interface IAcpEventSink
     // These are distinct from the main assistant text stream.
     // Fire-and-forget from synchronous ToolContext delegates; order is best-effort.
     Task OnSubAgentLogAsync(string line);
+
+    // Emitted when the LLM output hit the max_tokens limit and incomplete tool calls
+    // were dropped. The toolName identifies which call was truncated (or "unknown" if
+    // no call survived). Lets the frontend show a warning banner.
+    Task OnOutputTruncatedAsync(string toolName);
+
+    // Emitted the moment a compaction begins so the frontend can show a "compacting" state
+    // (ring spinner + status line) during the potentially long rewrite, before the OnCompactionAsync
+    // result arrives.
+    Task OnCompactingStartedAsync();
 }

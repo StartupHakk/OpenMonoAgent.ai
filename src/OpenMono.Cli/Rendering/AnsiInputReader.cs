@@ -515,14 +515,8 @@ internal sealed class AnsiInputReader(
             $"{AnsiPainter.Fy}▶ Permission: {tool}{AnsiPainter.R}\n{summary}"));
         painter.PaintConvThrottled(force: true);
 
-        painter.Sz();
-        var maxSummaryLen   = painter.ComputeLayout("").MainW - 4;
-        var truncatedSummary = summary.Length > maxSummaryLen
-            ? summary[..(maxSummaryLen - 3)] + "..."
-            : summary;
-
         var title       = $"{AnsiPainter.Fy}{AnsiPainter.B}▸ Permission required: {tool}{AnsiPainter.R}  {AnsiPainter.Fk}↑/↓ move · Enter confirm{AnsiPainter.R}";
-        var summaryLine = $"{AnsiPainter.Fw}{truncatedSummary}{AnsiPainter.R}";
+        var summaryLine = $"{AnsiPainter.Fw}{summary}{AnsiPainter.R}";
 
         PermissionResponse response;
         try { response = ReadPermissionMenu(title, summaryLine); }

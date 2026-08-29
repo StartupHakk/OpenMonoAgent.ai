@@ -104,6 +104,7 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
             var currentToolName = "";
             var toolArgsBuffer = new StringBuilder();
             var inToolUse = false;
+            var outputTruncated = false;
 
             string? line;
             while ((line = await reader.ReadLineAsync(ct)) is not null)
@@ -173,18 +174,31 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
                             if (inToolUse)
                             {
                                 var argsPreview = toolArgsBuffer.ToString();
-                                OnDebug?.Invoke($"[SSE] tool_call: {currentToolName} {{ {argsPreview[..Math.Min(100, argsPreview.Length)]} }}");
-                                Log.Debug($"SSE tool_call: {currentToolName} args={argsPreview[..Math.Min(200, argsPreview.Length)]}");
 
-                                yield return new StreamChunk
+                                // If the stream was cut by max_tokens, the buffer holds partial
+                                // JSON. Storing it in history makes the next request 400, so
+                                // drop the call and flag truncation instead.
+                                if (!MessageSanitizer.IsValidJsonObject(argsPreview))
                                 {
-                                    ToolCallDelta = new ToolCall
+                                    outputTruncated = true;
+                                    OnDebug?.Invoke($"[SSE] tool_call DROPPED (truncated/invalid JSON): {currentToolName}");
+                                    Log.Warn($"Anthropic dropping truncated tool call: {currentToolName} args_len={argsPreview.Length}");
+                                }
+                                else
+                                {
+                                    OnDebug?.Invoke($"[SSE] tool_call: {currentToolName} {{ {argsPreview[..Math.Min(100, argsPreview.Length)]} }}");
+                                    Log.Debug($"SSE tool_call: {currentToolName} args={argsPreview[..Math.Min(200, argsPreview.Length)]}");
+
+                                    yield return new StreamChunk
                                     {
-                                        Id = currentToolId,
-                                        Name = currentToolName,
-                                        Arguments = argsPreview,
-                                    }
-                                };
+                                        ToolCallDelta = new ToolCall
+                                        {
+                                            Id = currentToolId,
+                                            Name = currentToolName,
+                                            Arguments = argsPreview,
+                                        }
+                                    };
+                                }
                                 inToolUse = false;
                             }
                             break;
@@ -199,6 +213,8 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
                                 {
                                     OnDebug?.Invoke($"[LLM] stop_reason={stopReason}");
                                     Log.Warn($"Anthropic stop_reason={stopReason} — response may be truncated or refused");
+                                    if (stopReason == "max_tokens")
+                                        outputTruncated = true;
                                 }
                             }
 
@@ -222,7 +238,10 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
                             var elapsed = streamStarted.Elapsed;
                             OnDebug?.Invoke($"[LLM] Stream complete — {elapsed.TotalSeconds:F1}s");
                             Log.Debug($"Anthropic stream complete: elapsed={elapsed.TotalSeconds:F1}s");
-                            yield return new StreamChunk { IsComplete = true };
+                            if (outputTruncated)
+                                Log.Warn("[OMA_LLM] Output truncated at max_tokens — incomplete tool calls dropped");
+
+                            yield return new StreamChunk { IsComplete = true, OutputTruncated = outputTruncated };
                             yield break;
 
                         case "error":
@@ -239,6 +258,10 @@ public sealed class AnthropicClient : ILlmClient, IDisposable
     private static object BuildRequestBody(
         IReadOnlyList<Message> messages, JsonElement? tools, LlmOptions options)
     {
+
+        // Old sessions may hold tool-call arguments truncated mid-JSON, which would make the
+        // request body invalid. Sanitize before serializing.
+        messages = MessageSanitizer.SanitizeForRequest(messages);
 
         var system = messages.FirstOrDefault(m => m.Role == MessageRole.System)?.Content ?? "";
 

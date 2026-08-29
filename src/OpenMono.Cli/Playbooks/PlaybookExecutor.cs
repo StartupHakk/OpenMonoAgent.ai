@@ -347,6 +347,10 @@ public sealed class PlaybookExecutor : IDisposable
         var maxToolLoops = playbook.MaxToolLoops;
         var toolLoopCount = 0;
 
+        // A playbook step is a fresh task — clear any doom-loop streak carried over from a
+        // previous step so the escalation counter starts clean for this step's tool calls.
+        _dispatcher.DoomLoop.Reset();
+
         while (toolLoopCount < maxToolLoops)
         {
             var pendingToolCalls = new List<ToolCall>();
@@ -494,6 +498,16 @@ public sealed class PlaybookExecutor : IDisposable
                     });
 
                     result.AppendLine($"\n[Tool: {call.Name}]\n{toolResult.Content}");
+
+                    // Tier-3 doom-loop: the agent is stuck repeating identical calls. Bail out of
+                    // the tool loop so the step can be aborted and surfaced to the user instead of
+                    // burning the remaining tool-loop budget on the same failing call.
+                    if (toolResult.EscalatedToUser)
+                    {
+                        var msg = $"step '{step.Id}' hit a doom loop (same tool calls repeated 5+ times) — escalated to the user";
+                        _renderer.WriteWarning($"  {msg}");
+                        return (result.ToString(), msg);
+                    }
                 }
             }
         }

@@ -23,6 +23,21 @@ public sealed class TokenTracker
 
     public Action<int, int>? OnUsageUpdated { get; set; }
 
+    // Mirrors cumulative totals into SessionState.TotalTokensUsed so the single source of
+    // truth (this tracker) stays in sync with every reader of the session-level counter
+    // (session header persistence, /status, exporters, index.json). Set by ConversationLoop.
+    public Action<int>? OnTotalsChanged { get; set; }
+
+    /// <summary>Restore cumulative counters from a persisted session header (e.g. after ACP reload).</summary>
+    public void Restore(int totalPromptTokens, int totalCompletionTokens, int maxPromptTokens, int apiCalls, int lastPromptTokens)
+    {
+        TotalPromptTokens = totalPromptTokens;
+        TotalCompletionTokens = totalCompletionTokens;
+        MaxPromptTokens = maxPromptTokens;
+        ApiCalls = apiCalls;
+        LastPromptTokens = lastPromptTokens;
+    }
+
     public void RecordUsage(int promptTokens, int completionTokens)
     {
         TotalPromptTokens += promptTokens;
@@ -31,6 +46,7 @@ public sealed class TokenTracker
         if (promptTokens > MaxPromptTokens) MaxPromptTokens = promptTokens;
         ApiCalls++;
         OnUsageUpdated?.Invoke(TotalPromptTokens, TotalCompletionTokens);
+        OnTotalsChanged?.Invoke(TotalTokens);
     }
 
     // Display-only: right after a compaction/checkpoint, the context indicator should reflect

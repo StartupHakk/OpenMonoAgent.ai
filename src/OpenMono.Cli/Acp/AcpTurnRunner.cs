@@ -577,12 +577,19 @@ public sealed class AcpTurnRunner : IAcpEventSink
     public Task OnPlanReadyAsync(string planContent, string? planPath)
         => _writer.WriteEventAsync("plan_ready", new { plan = planContent, plan_path = planPath });
 
-    public Task OnCompactionAsync(int messagesCompressed, double durationSeconds, int checkpointIndex)
+    public Task OnCompactingStartedAsync()
+        => _writer.WriteEventAsync("compacting", new { });
+
+    public Task OnCompactionAsync(CompactionReport report, int checkpointIndex)
         => _writer.WriteEventAsync("compaction", new
         {
-            messages_compressed = messagesCompressed,
-            duration_seconds = durationSeconds,
+            messages_compressed = report.MessagesCompressed,
+            duration_seconds = report.Duration.TotalSeconds,
             checkpoint_index = checkpointIndex,
+            messages_before = report.MessagesBefore,
+            messages_after = report.MessagesAfter,
+            tokens_before = report.TokensBefore,
+            tokens_after = report.TokensAfter,
         });
 
     public Task OnUsageAsync(int inputTokens, int outputTokens, int totalTokens, int contextTokens, int contextWindow, double genTps, double avgTps)
@@ -599,4 +606,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
     public Task OnSubAgentLogAsync(string line)
         => _writer.WriteEventAsync("sub_agent_log", new { line });
+
+    public Task OnOutputTruncatedAsync(string toolName)
+        => _writer.WriteEventAsync("output_truncated", new { tool_name = toolName });
 }
