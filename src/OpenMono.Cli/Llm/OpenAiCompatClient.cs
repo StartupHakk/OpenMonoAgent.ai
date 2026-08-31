@@ -304,11 +304,13 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                         {
                             PromptTokens = usageEl.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : 0,
                             CompletionTokens = usageEl.TryGetProperty("completion_tokens", out var cpt) ? cpt.GetInt32() : 0,
+                            CachedTokens = usageEl.TryGetProperty("prompt_tokens_details", out var ptd) && ptd.ValueKind == JsonValueKind.Object
+                                && ptd.TryGetProperty("cached_tokens", out var ctdel) ? ctdel.GetInt32() : 0,
                             PredictedTokens = predictedN,
                             PredictedMs = predictedMs,
                             PredictedPerSecond = predictedPerSec,
                         };
-                        var usageMsg = $"[SSE] usage: prompt={usage.PromptTokens} completion={usage.CompletionTokens} total={usage.TotalTokens} gen_tps={usage.PredictedPerSecond:F1}";
+                        var usageMsg = $"[SSE] usage: prompt={usage.PromptTokens} completion={usage.CompletionTokens} cached={usage.CachedTokens} total={usage.TotalTokens} gen_tps={usage.PredictedPerSecond:F1}";
                         OnDebug?.Invoke(usageMsg);
                         Log.Info(usageMsg);
                     }
