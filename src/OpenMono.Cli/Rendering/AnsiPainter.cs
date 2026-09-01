@@ -1654,17 +1654,17 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         lines.Add($"{B}{Fw}{(!string.IsNullOrEmpty(lastUserText) ? Trunc(lastUserText, _sideW - 2) : "New session")}{R}");
         lines.Add("");
 
-        var tracker    = session.Meta.TokenTracker;
-        var tok        = tracker?.TotalTokens ?? 0;
-        var lastPrompt = tracker?.LastPromptTokens ?? 0;
-        var ctx        = config.Llm.ContextSize;
-        var sessionPct = ctx > 0 ? (int)((double)tok / ctx * 100) : 0;
-        var promptPct  = ctx > 0 ? (int)((double)lastPrompt / ctx * 100) : 0;
+        // The Context block reflects the CURRENT window occupancy (the last turn's prompt size),
+        // not the cumulative session total. A cumulative total divided by a per-turn window has no
+        // ceiling and reads as a meaningless %; the running total is still available via /status.
+        // This also matches OpenCode, whose sidebar shows last-message tokens / context, not a
+        // session-cumulative count. The values are computed by BuildContextUsage so they're testable.
+        var (lastPrompt, window, promptPct) = BuildContextUsage(session.Meta.TokenTracker, config.Llm.ContextSize);
         var promptColor = promptPct >= 95 ? Fr : promptPct >= 80 ? Fy : Fk;
         lines.Add($"{B}Context{R}");
-        lines.Add($"{Fk}{tok:N0} tokens · {sessionPct}% session{R}");
-        if (lastPrompt > 0)
-            lines.Add($"{promptColor}{lastPrompt:N0} · {promptPct}% last turn{R}");
+        lines.Add($"{promptColor}{lastPrompt:N0} tokens · {promptPct}% used{R}");
+        if (window > 0)
+            lines.Add($"{Fk}{window:N0} window{R}");
         lines.Add("");
 
         lines.Add($"{B}Tokens/sec{R}");
@@ -1896,6 +1896,18 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
     }
 
     private static string FmtTok(int t) => t >= 1000 ? $"{t / 1000.0:F1}K" : t.ToString();
+
+    // Values for the sidebar "Context" block. Deliberately based on LastPromptTokens (the
+    // CURRENT window occupancy = the last turn's prompt size) rather than the cumulative
+    // TotalTokens: a running total has no upper bound, so dividing it by a single-turn window
+    // produced a % with no ceiling (e.g. "250,000 tokens · 261%"). The cumulative total is still
+    // surfaced via /status. Internal so the display logic is unit-testable without a terminal.
+    internal static (int LastPromptTokens, int Window, int Percent) BuildContextUsage(TokenTracker? tracker, int contextSize)
+    {
+        var last = tracker?.LastPromptTokens ?? 0;
+        var pct = contextSize > 0 ? (int)((double)last / contextSize * 100) : 0;
+        return (last, contextSize, pct);
+    }
 
     private static string TruncPath(string p, int n)
     {

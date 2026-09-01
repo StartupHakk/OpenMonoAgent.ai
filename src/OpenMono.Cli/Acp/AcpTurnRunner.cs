@@ -598,6 +598,15 @@ public sealed class AcpTurnRunner : IAcpEventSink
             reason = reason,
         });
 
+    public Task OnCheckpointAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null)
+        => _writer.WriteEventAsync("checkpoint", new
+        {
+            messages_compressed = messagesCompressed,
+            duration_seconds = durationSeconds,
+            checkpoint_index = checkpointIndex,
+            summary_text = summaryText,
+        });
+
     public Task OnUsageAsync(int inputTokens, int outputTokens, int totalTokens, int contextTokens, int contextWindow, double genTps, double avgTps)
         => _writer.WriteEventAsync("usage", new
         {

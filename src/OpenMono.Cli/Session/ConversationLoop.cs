@@ -278,14 +278,11 @@ public sealed class ConversationLoop : IDisposable
 
         if (_checkpointer.NeedsCheckpoint(_session, preForwardEstimate))
         {
-            _output.WriteInfo("Context window approaching limit. Creating checkpoint...");
-            _output.WriteDebug($"[Checkpoint] Triggered — messages={_session.Messages.Count} forward={preForwardEstimate}");
+            _output.WriteDebug($"[Checkpoint] Triggered pre-turn — messages={_session.Messages.Count} forward={preForwardEstimate}");
             var cpSw = Stopwatch.StartNew();
             var entry = await _checkpointer.CreateCheckpointAsync(_session, ct);
             cpSw.Stop();
-            _output.WriteInfo(
-                $"Checkpoint #{_session.Checkpoints.Count} stored — " +
-                $"{entry.MessagesCompressed} messages compressed in {cpSw.Elapsed.TotalSeconds:F1}s.");
+            RenderCheckpoint(entry, cpSw.Elapsed, "pre-turn");
             _output.WriteDebug($"[Checkpoint] Done — effective window={_checkpointer.BuildContextWindow(_session).Count} messages");
         }
 
@@ -347,12 +344,11 @@ public sealed class ConversationLoop : IDisposable
                 _output.WriteDebug($"[OMA_TRIGGER] mid-turn forward={iterForwardEstimate} contextSize={_config.Llm.ContextSize}");
                 if (_checkpointer.NeedsCheckpoint(_session, iterForwardEstimate))
                 {
-                    _output.WriteInfo("Context window approaching limit. Creating checkpoint...");
                     _output.WriteDebug($"[Checkpoint] Triggered mid-turn — messages={_session.Messages.Count} forward={iterForwardEstimate}");
                     var cpSw = Stopwatch.StartNew();
                     var entry = await _checkpointer.CreateCheckpointAsync(_session, ct);
                     cpSw.Stop();
-                    _output.WriteInfo($"Checkpoint #{_session.Checkpoints.Count} stored — {entry.MessagesCompressed} messages compressed in {cpSw.Elapsed.TotalSeconds:F1}s.");
+                    RenderCheckpoint(entry, cpSw.Elapsed, "mid-turn");
                     _output.WriteDebug($"[Checkpoint] Done — effective window={_checkpointer.BuildContextWindow(_session).Count} messages");
                     _doomLoop.Reset();
                     i = -1; continue;
@@ -959,6 +955,25 @@ public sealed class ConversationLoop : IDisposable
                   "Trim the latest messages or raise context_size."));
         _output.WriteDebug($"[OMA_OVERFLOW] post-compaction still overflows — estimate={estimate} base={baseEstimate} contextSize={_config.Llm.ContextSize}");
         return true;
+    }
+
+    // Render a stored checkpoint as a strong, bordered block in the TUI (mirroring the
+    // compaction block) and forward it to the ACP client as a structured "checkpoint" event.
+    private void RenderCheckpoint(CheckpointEntry entry, TimeSpan elapsed, string trigger)
+    {
+        var report = new CheckpointReport
+        {
+            CheckpointIndex = _session.Checkpoints.Count,
+            MessagesCompressed = entry.MessagesCompressed,
+            MessagesKept = _checkpointer.BuildContextWindow(_session).Count,
+            Duration = elapsed,
+            Trigger = trigger,
+            SummaryText = entry.Summary,
+        };
+        report.RenderTo(_output.WriteInfo);
+
+        if (_sink is not null)
+            _ = _sink.OnCheckpointAsync(entry.MessagesCompressed, elapsed.TotalSeconds, report.CheckpointIndex, entry.Summary);
     }
 
     private async Task RunCompactionAsync(int promptTokens, string? customInstructions, CancellationToken ct, string reason)
