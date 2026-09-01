@@ -1,5 +1,6 @@
 using System.Text;
 using OpenMono.Llm;
+using OpenMono.Utils;
 
 namespace OpenMono.Session;
 
@@ -193,6 +194,9 @@ public sealed class Checkpointer
         }
         return null;
     }
+
+    internal static int EstimateTokens(IReadOnlyList<Message> messages)
+        => TokenEstimate.EstimatePayload(messages);
 
     private static string BuildConversationText(List<Message> messages)
     {

@@ -57,6 +57,13 @@ public sealed class TerminalRenderer : IRenderer
             }
         }
 
+        if (Console.IsInputRedirected)
+        {
+            var line = Console.ReadLine();
+            if (line is null) throw new OperationCanceledException();
+            return line;
+        }
+
         return _console.Prompt(
             new TextPrompt<string>("[bold green]>[/] ")
                 .AllowEmpty());

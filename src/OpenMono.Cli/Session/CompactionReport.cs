@@ -14,6 +14,11 @@ public sealed record CompactionReport
     public required int EvictedBytes { get; init; }
     public required TimeSpan Duration { get; init; }
     public required int ContextWindowSize { get; init; }
+    // The structured summary text the compaction produced (what the model will continue from).
+    // Surfaced to the user so they can see what was retained. Null when nothing was compacted.
+    public string? SummaryText { get; init; }
+    // What triggered the compaction: "auto" (loop self-heal / forward trigger) or "manual" (/compact).
+    public string? Reason { get; init; }
 
     public void RenderTo(Action<string> writeInfo, int promptTokensBefore = 0)
     {
@@ -22,10 +27,11 @@ public sealed record CompactionReport
             ? promptTokensBefore * 100 / ContextWindowSize
             : 0;
 
+        var reason = string.IsNullOrWhiteSpace(Reason) ? "" : Reason == "manual" ? " (manual)" : " (auto)";
         writeInfo(sep);
         writeInfo(ctxPct > 0
-            ? $"🗜  Running compaction — context at {ctxPct}% of window"
-            : "🗜  Running compaction");
+            ? $"🗜  Running compaction{reason} — context at {ctxPct}% of window"
+            : $"🗜  Running compaction{reason}");
         writeInfo(sep);
 
         if (MessagesCompressed == 0)
@@ -75,5 +81,13 @@ public sealed record CompactionReport
             $"✓ Compacted in {Duration.TotalMilliseconds:F0}ms — " +
             $"{MessagesAfter} messages, ~{TokensAfter} tokens (-{deltaPct}%)");
         writeInfo(sep);
+
+        if (!string.IsNullOrWhiteSpace(SummaryText))
+        {
+            writeInfo("📝 Summary of compacted history:");
+            foreach (var line in SummaryText!.Split('\n'))
+                writeInfo(line);
+            writeInfo(sep);
+        }
     }
 }

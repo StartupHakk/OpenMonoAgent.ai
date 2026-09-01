@@ -270,12 +270,16 @@ public sealed class ConversationLoop : IDisposable
 
         _output.WriteDebug($"[Turn] #{_session.TurnCount} — {_session.Messages.Count} messages, ~{_session.TotalTokensUsed} tokens used");
 
-        var lastPromptTokens = _session.Meta.TokenTracker?.LastPromptTokens ?? 0;
+        // Phase-1 forward trigger: estimate the size of the payload about to be sent (system +
+        // messages + tool defs, media stripped) and compare THAT against the context window,
+        // instead of relying on LastPromptTokens from the previous (possibly absent) response.
+        var preForwardEstimate = TokenEstimate.EstimatePayload(_checkpointer.BuildContextWindow(_session), _tools.BuildToolDefinitionsFor(_tools.All.Select(t => t.Name)), _config.Llm.Model);
+        _output.WriteDebug($"[OMA_TRIGGER] pre-turn forward={preForwardEstimate} contextSize={_config.Llm.ContextSize}");
 
-        if (_checkpointer.NeedsCheckpoint(_session, lastPromptTokens))
+        if (_checkpointer.NeedsCheckpoint(_session, preForwardEstimate))
         {
             _output.WriteInfo("Context window approaching limit. Creating checkpoint...");
-            _output.WriteDebug($"[Checkpoint] Triggered — messages={_session.Messages.Count} lastPromptTokens={lastPromptTokens}");
+            _output.WriteDebug($"[Checkpoint] Triggered — messages={_session.Messages.Count} forward={preForwardEstimate}");
             var cpSw = Stopwatch.StartNew();
             var entry = await _checkpointer.CreateCheckpointAsync(_session, ct);
             cpSw.Stop();
@@ -285,9 +289,16 @@ public sealed class ConversationLoop : IDisposable
             _output.WriteDebug($"[Checkpoint] Done — effective window={_checkpointer.BuildContextWindow(_session).Count} messages");
         }
 
-        else if (_compactor.NeedsCompaction(_checkpointer.BuildContextWindow(_session), lastPromptTokens))
+        else if (_compactor.NeedsCompaction(_checkpointer.BuildContextWindow(_session), preForwardEstimate))
         {
-            await RunCompactionAsync(lastPromptTokens, customInstructions: null, ct);
+            await RunCompactionAsync(preForwardEstimate, customInstructions: null, ct, reason: "auto");
+            // After compacting, re-measure the payload that would actually be sent. If it still
+            // exceeds the window, the LLM call is guaranteed to overflow — usually because the
+            // base overhead (system prompt + tool definitions) alone is larger than
+            // context_size. Surface a clear, actionable message instead of re-sending a request
+            // we already know will be rejected.
+            if (TryAbortIfStillOverflows())
+                return;
         }
 
         var thinking = _session.Meta.ThinkingEnabled;
@@ -306,6 +317,15 @@ public sealed class ConversationLoop : IDisposable
         };
 
         var maxIterations = _maxIterations;
+
+        // Phase-2 overflow self-heal: the provider can reject a request that overflows the
+        // context window. We recover by compacting once and re-issuing the SAME request once.
+        // This guard ensures we do that recovery at most one time per turn — if the retry
+        // overflows again, we surface the error instead of looping (compact → retry → compact…).
+        // Must live OUTSIDE the loop: declaring it inside would reset it to false on every
+        // iteration, defeating the "at most once" bound.
+        var overflowRecoveredThisTurn = false;
+
         for (var i = 0; i < maxIterations; i++)
         {
             ct.ThrowIfCancellationRequested();
@@ -321,11 +341,14 @@ public sealed class ConversationLoop : IDisposable
                     }
                 }
 
-                var iterPromptTokens = _session.Meta.TokenTracker?.LastPromptTokens ?? 0;
-                if (_checkpointer.NeedsCheckpoint(_session, iterPromptTokens))
+                // Phase-1 forward trigger (mid-turn): estimate the upcoming payload and compare
+                // against the context window instead of the prior response's token count.
+                var iterForwardEstimate = TokenEstimate.EstimatePayload(_checkpointer.BuildContextWindow(_session), _tools.BuildToolDefinitionsFor(_tools.All.Select(t => t.Name)), _config.Llm.Model);
+                _output.WriteDebug($"[OMA_TRIGGER] mid-turn forward={iterForwardEstimate} contextSize={_config.Llm.ContextSize}");
+                if (_checkpointer.NeedsCheckpoint(_session, iterForwardEstimate))
                 {
                     _output.WriteInfo("Context window approaching limit. Creating checkpoint...");
-                    _output.WriteDebug($"[Checkpoint] Triggered mid-turn — messages={_session.Messages.Count}");
+                    _output.WriteDebug($"[Checkpoint] Triggered mid-turn — messages={_session.Messages.Count} forward={iterForwardEstimate}");
                     var cpSw = Stopwatch.StartNew();
                     var entry = await _checkpointer.CreateCheckpointAsync(_session, ct);
                     cpSw.Stop();
@@ -334,9 +357,9 @@ public sealed class ConversationLoop : IDisposable
                     _doomLoop.Reset();
                     i = -1; continue;
                 }
-                else if (_compactor.NeedsCompaction(_checkpointer.BuildContextWindow(_session), iterPromptTokens))
+                else if (_compactor.NeedsCompaction(_checkpointer.BuildContextWindow(_session), iterForwardEstimate))
                 {
-                    await RunCompactionAsync(iterPromptTokens, customInstructions: null, ct);
+                    await RunCompactionAsync(iterForwardEstimate, customInstructions: null, ct, reason: "auto");
                     _doomLoop.Reset();
                     i = -1; continue;
                 }
@@ -382,6 +405,20 @@ public sealed class ConversationLoop : IDisposable
             var assistantMsgs = contextWindow.Count(m => m.Role == MessageRole.Assistant);
             var toolMsgs = contextWindow.Count(m => m.Role == MessageRole.Tool);
             Log.Info($"[OMA_CONTEXTWINDOW] Sending to LLM: system={systemMsgs} user={userMsgs} assistant={assistantMsgs} tool={toolMsgs} total={contextWindow.Count}");
+
+            // Forward token estimate of the exact payload about to be sent (system + messages +
+            // tool defs, media stripped). This is the number the Phase-1 trigger will compare
+            // against the context window; logged so it can be monitored in --classic -v / the log.
+            {
+                var estTools = _tools.BuildToolDefinitionsFor(allowedToolNames);
+                var estTokens = TokenEstimate.EstimatePayload(contextWindow, estTools, _config.Llm.Model);
+                var ctxSize = _config.Llm.ContextSize;
+                var pct = ctxSize > 0 ? (double)estTokens / ctxSize : 0;
+                Log.Info($"[OMA_TOKENEST] forward={estTokens} contextSize={ctxSize} pct={pct:P0} " +
+                         $"threshold80={(int)(ctxSize * 0.80)} threshold65={(int)(ctxSize * 0.65)}");
+                _output.WriteDebug($"[OMA_TOKENEST] forward={estTokens} tokens (~{pct:P0} of {ctxSize} window)");
+            }
+
             if (systemMsgs > 0)
             {
                 var sysMsg = contextWindow.First(m => m.Role == MessageRole.System);
@@ -512,6 +549,22 @@ public sealed class ConversationLoop : IDisposable
                 if (chunk.IsComplete)
                     break;
             }
+            }
+            catch (ContextOverflowException overflow) when (!overflowRecoveredThisTurn)
+            {
+                // The request did not fit the context window. Shrink history and re-issue the
+                // SAME request exactly once (the loop's forward trigger already re-checks on the
+                // next iteration, so we let it re-evaluate rather than compacting a second time
+                // inline). If compaction cannot make it fit, the retried request overflows again
+                // and this guard now blocks a second recovery — the error propagates.
+                overflowRecoveredThisTurn = true;
+                Log.Warn($"[OMA_OVERFLOW] context overflow detected — compacting and retrying once: {overflow.Message}");
+                _output.WriteWarning("Context overflow — compacting and retrying…");
+                var preRetryEstimate = TokenEstimate.EstimatePayload(contextWindow, toolDefs, _config.Llm.Model);
+                await RunCompactionAsync(preRetryEstimate, customInstructions: null, ct, reason: "auto");
+                _doomLoop.Reset();
+                i = -1;
+                continue;
             }
             finally
             {
@@ -860,23 +913,67 @@ public sealed class ConversationLoop : IDisposable
     public async Task RunManualCompactionAsync(string? customInstructions, CancellationToken ct)
     {
         var lastPromptTokens = _session.Meta.TokenTracker?.LastPromptTokens ?? 0;
-        await RunCompactionAsync(lastPromptTokens, customInstructions, ct);
+        await RunCompactionAsync(lastPromptTokens, customInstructions, ct, reason: "manual");
+        // Manual compaction doesn't drive a turn, so there is no follow-up request to abort — but
+        // if the payload still overflows (e.g. base prompt > context_size), surface the same
+        // actionable explanation so the user isn't met with an opaque 500 on the next message.
+        TryAbortIfStillOverflows();
     }
 
-    private async Task RunCompactionAsync(int promptTokens, string? customInstructions, CancellationToken ct)
+    /// <summary>
+    /// Called after a compaction. Re-estimates the payload that would be sent next; if it still
+    /// exceeds the context window, the follow-up LLM call cannot succeed. Prints an actionable
+    /// explanation and returns true so the caller aborts the turn instead of re-sending a request
+    /// that is guaranteed to overflow (which would otherwise surface as an opaque provider 500).
+    /// Returns false when the payload fits, so the turn proceeds normally.
+    /// </summary>
+    private bool TryAbortIfStillOverflows()
     {
-        _output.WriteDebug($"[Compact] Triggered — messages={_session.Messages.Count} lastPromptTokens={promptTokens}");
+        var estimate = TokenEstimate.EstimatePayload(
+            _checkpointer.BuildContextWindow(_session),
+            _tools.BuildToolDefinitionsFor(_tools.All.Select(t => t.Name)),
+            _config.Llm.Model);
+
+        if (estimate <= _config.Llm.ContextSize)
+            return false;
+
+        // The base overhead is the part that compaction can never shrink: system messages + tool
+        // definitions, independent of how much history was summarised away.
+        var systemMessages = _session.Messages
+            .Where(m => m.Role == MessageRole.System)
+            .DefaultIfEmpty(new Message { Role = MessageRole.System, Content = "" })
+            .ToList();
+        var baseEstimate = TokenEstimate.EstimatePayload(
+            systemMessages,
+            _tools.BuildToolDefinitionsFor(_tools.All.Select(t => t.Name)),
+            _config.Llm.Model);
+
+        _output.WriteError(
+            $"Context still exceeds the window after compaction: ~{estimate} of " +
+            $"{_config.Llm.ContextSize} tokens. " +
+            (baseEstimate > _config.Llm.ContextSize
+                ? $"The base prompt (system + {_tools.All.Count} tool definitions) alone is ~{baseEstimate} tokens — " +
+                  "larger than the configured context_size, so no conversation can fit. " +
+                  "Raise context_size, or remove tool definitions to shrink the base prompt."
+                : "The most recent turns are too large to summarise away. " +
+                  "Trim the latest messages or raise context_size."));
+        _output.WriteDebug($"[OMA_OVERFLOW] post-compaction still overflows — estimate={estimate} base={baseEstimate} contextSize={_config.Llm.ContextSize}");
+        return true;
+    }
+
+    private async Task RunCompactionAsync(int promptTokens, string? customInstructions, CancellationToken ct, string reason)
+    {
+        _output.WriteDebug($"[Compact] Triggered ({reason}) — messages={_session.Messages.Count} lastPromptTokens={promptTokens}");
         _session.Meta.IsCompacting = true;
         _output.ShowWaitingIndicator("Compacting");
-        // Let the frontend flip into its "compacting" state (ring spinner + status line)
-        // immediately, rather than waiting for the multi-second rewrite to finish.
         if (_sink is not null)
-            await _sink.OnCompactingStartedAsync();
+            await _sink.OnCompactionStartedAsync(reason, promptTokens);
         CompactionReport report;
         try
         {
             SessionState compacted;
             (compacted, report) = await _compactor.CompactAsync(_session, customInstructions, ct);
+            report = report with { Reason = reason };
 
             _session.Messages.Clear();
             foreach (var msg in compacted.Messages)
@@ -903,7 +1000,8 @@ public sealed class ConversationLoop : IDisposable
         _output.WriteDebug($"[Compact] Done — {_session.Messages.Count} messages remaining");
 
         if (_sink is not null)
-            await _sink.OnCompactionAsync(report, _session.Checkpoints.Count);
+            await _sink.OnCompactionAsync(report.MessagesCompressed, report.Duration.TotalSeconds, _session.Checkpoints.Count, report.SummaryText, reason,
+                report.MessagesBefore, report.MessagesAfter, report.TokensBefore, report.TokensAfter);
     }
 
     private Task EmitUsageAsync()

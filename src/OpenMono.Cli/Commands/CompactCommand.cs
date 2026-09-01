@@ -4,9 +4,9 @@ namespace OpenMono.Commands;
 
 public sealed class CompactCommand : ICommand
 {
-    private readonly Compactor _compactor;
+    private readonly ConversationLoop _loop;
 
-    public CompactCommand(Compactor compactor) => _compactor = compactor;
+    public CompactCommand(ConversationLoop loop) => _loop = loop;
 
     public string Name => "compact";
     public string Description => "Summarize conversation history to free context space. Optional focus: /compact focus on auth code";
@@ -22,14 +22,11 @@ public sealed class CompactCommand : ICommand
             return;
         }
 
+        // Route through the loop so manual compaction emits the exact same signals as auto
+        // (compacting indicator, checkpoint reset, token-gauge update, and — when a sink is
+        // attached — the ACP compaction events). Hand-rolling Messages.Clear() here left the
+        // checkpoint state stale and bypassed the sink entirely.
         var focus = args.Length > 0 ? string.Join(" ", args).Trim() : null;
-        var (compacted, report) = await _compactor.CompactAsync(session, focus, ct);
-
-        session.Messages.Clear();
-        foreach (var msg in compacted.Messages)
-            session.AddMessage(msg);
-
-        var lastPromptTokens = session.Meta.TokenTracker?.LastPromptTokens ?? 0;
-        report.RenderTo(context.Renderer.WriteInfo, lastPromptTokens);
+        await _loop.RunManualCompactionAsync(focus, ct);
     }
 }

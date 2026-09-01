@@ -383,7 +383,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
         onPendingUserInputInjected: text => ansiTui?.AddUserMessage(text));
 
     commands.Register(new RetryCommand(loop));
-    commands.Register(new CompactCommand(compactor));
+    commands.Register(new CompactCommand(loop));
     commands.Register(new PlanCommand(loop));
 
     renderer.EnableCommandSuggestions(commands);
@@ -937,10 +937,18 @@ static async Task TryDetectActualModelAsync(AppConfig config)
             serverCtx = ctx;
         }
 
-        if (serverCtx is > 0)
+        // A ContextSize the user explicitly set (config file or OPENMONO_CONTEXT_SIZE) wins
+        // over the server-reported n_ctx. Only fall back to the server value when the user left
+        // it at the built-in default — that's the "I don't know, ask the server" case.
+        var userConfiguredCtx = config.Llm.ContextSize;
+        if (serverCtx is > 0 && userConfiguredCtx == 196608)
         {
             config.Llm.ContextSize = serverCtx.Value;
             Log.Debug($"Detected context size from /props: {serverCtx}");
+        }
+        else if (serverCtx is > 0)
+        {
+            Log.Debug($"Keeping configured context size {userConfiguredCtx} (server reported {serverCtx})");
         }
 
         if (!string.IsNullOrWhiteSpace(name)) return;
