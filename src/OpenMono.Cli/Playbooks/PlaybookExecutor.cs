@@ -22,6 +22,8 @@ public sealed class PlaybookExecutor : IDisposable
     private readonly bool _ownsDispatcher;
     private readonly SessionState _session;
 
+    private ContextUsageRecorder? _recorder;
+
     public PlaybookExecutor(
         ILlmClient llm,
         ToolRegistry tools,
@@ -117,6 +119,8 @@ public sealed class PlaybookExecutor : IDisposable
         var runId = state.SessionId;
         _permissions.PushPlaybookScope(runId, plan.Tools.Select(t => t.Name));
 
+        _recorder = new ContextUsageRecorder(playbook.Name, runId, _config.DataDirectory, active: playbook.ReportCtx);
+
         string? logPath = playbook.LogOutput ? BuildLogPath(_config.DataDirectory, playbook.Name, runId) : null;
         using var log = logPath is not null ? new StreamWriter(logPath, append: true) { AutoFlush = true } : null;
 
@@ -179,11 +183,13 @@ public sealed class PlaybookExecutor : IDisposable
                     }
                 }
 
+                _recorder?.BeginStep(step.Id);
                 var (output, stepError) = await RunStepAsync(step, stepContent, playbook, state, progressLabel, ct);
                 if (stepError is not null)
                 {
                     log?.WriteLine($"--- Step '{step.Id}' — ERROR ---\n{stepError}");
                     _renderer.WriteWarning($"  Step '{step.Id}' aborted — {stepError}");
+                    _recorder?.CompleteStep(step.Id);
                     return $"Playbook '{playbook.Name}' aborted at step '{step.Id}'.\n{stepError}";
                 }
                 log?.WriteLine($"--- Step '{step.Id}' — output ---\n{output}");
@@ -205,6 +211,7 @@ public sealed class PlaybookExecutor : IDisposable
 
                 state.CompleteStep(step.Id, output, step.Output);
                 _renderer.WriteInfo($"  Step '{step.Id}' — done");
+                _recorder?.CompleteStep(step.Id);
 
                 await state.SaveAsync(_config.DataDirectory, ct);
 
@@ -214,11 +221,17 @@ public sealed class PlaybookExecutor : IDisposable
 
             _renderer.WriteInfo($"Playbook '{playbook.Name}' completed ({state.CompletedSteps.Count} steps)");
             log?.WriteLine($"=== Playbook '{playbook.Name}' completed {DateTime.UtcNow:O} ({state.CompletedSteps.Count} steps) ===");
+            if (_recorder is not null) _recorder.Aborted = false;
             return finalOutput.Length > 0 ? finalOutput.ToString() : "Playbook completed.";
         }
         finally
         {
             _renderer.ClearToolProgress();
+
+            // Flush ctx-usage on EVERY exit path — normal completion, a step abort (doom loop,
+            // gate, script failure), or an exception. An aborted run still consumed context and
+            // must be reported so slot sizing reflects real usage.
+            _recorder?.Flush(_config.DataDirectory);
 
             try
             {
@@ -281,7 +294,6 @@ public sealed class PlaybookExecutor : IDisposable
     private async Task<(string Output, string? Error)> RunStepAsync(
         StepDefinition step, string content, PlaybookDefinition playbook, PlaybookState state, string progressLabel, CancellationToken ct)
     {
-
         var messages = new List<Message>
         {
             new()
@@ -360,6 +372,8 @@ public sealed class PlaybookExecutor : IDisposable
             var thinkingCollapsed = false;
             var thinkingChars = 0;
 
+            int usagePrompt = 0, usageCompletion = 0, usageCached = 0;
+
             var indicatorShown = false;
             using var indicatorCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var indicatorTask = Task.Delay(500, indicatorCts.Token).ContinueWith(t =>
@@ -409,6 +423,15 @@ public sealed class PlaybookExecutor : IDisposable
                             pendingToolCalls.Add(tc);
                     }
 
+                    if (chunk.Usage is not null)
+                    {
+                        // Same providers split usage across two stream events (prompt at start, completion at
+                        // end). Accumulate across the whole request stream and record once below.
+                        usagePrompt += chunk.Usage.PromptTokens;
+                        usageCompletion += chunk.Usage.CompletionTokens;
+                        usageCached += chunk.Usage.CachedTokens;
+                    }
+
                     if (chunk.IsComplete) break;
                 }
             }
@@ -427,6 +450,9 @@ public sealed class PlaybookExecutor : IDisposable
             _renderer.ShowToolProgress(progressLabel);
             result.Append(textContent);
             lastTurnText = textContent.ToString();
+
+            _recorder?.Record(step.Id, ContextCallSource.Step, usagePrompt, usageCompletion, usageCached,
+                pendingToolCalls.Select(ToContextToolCall));
 
             if (pendingToolCalls.Count == 0)
                 break;
@@ -562,6 +588,7 @@ public sealed class PlaybookExecutor : IDisposable
             });
 
             var retryText = new StringBuilder();
+            int usagePrompt = 0, usageCompletion = 0, usageCached = 0;
             await foreach (var chunk in _llm.StreamChatAsync(messages, tools: null, correctionOptions, ct))
             {
                 if (chunk.TextDelta is not null)
@@ -569,11 +596,48 @@ public sealed class PlaybookExecutor : IDisposable
                     retryText.Append(chunk.TextDelta);
                     _renderer.StreamText(chunk.TextDelta);
                 }
+                if (chunk.Usage is not null)
+                {
+                    usagePrompt += chunk.Usage.PromptTokens;
+                    usageCompletion += chunk.Usage.CompletionTokens;
+                    usageCached += chunk.Usage.CachedTokens;
+                }
                 if (chunk.IsComplete) break;
             }
+            _recorder?.Record(stepId, ContextCallSource.JsonCorrection, usagePrompt, usageCompletion, usageCached);
             _renderer.EndAssistantResponse();
             candidate = retryText.ToString();
         }
+    }
+
+    /// <summary>Summarise a tool invocation into a short name + command label for context-usage
+    /// reporting. For Bash the <c>command</c> argument is surfaced directly; other tools fall back
+    /// to the arg that names the thing they acted on, else the raw arguments. Fail-open: bad
+    /// arguments never break the recorder.</summary>
+    private static ContextToolCall ToContextToolCall(ToolCall call)
+    {
+        var command = call.Arguments;
+        try
+        {
+            using var doc = JsonDocument.Parse(call.Arguments);
+            var root = doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var key in new[] { "command", "file_path", "script", "url", "path" })
+                {
+                    if (root.TryGetProperty(key, out var el) && el.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(el.GetString()))
+                    {
+                        command = el.GetString()!;
+                        break;
+                    }
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // fall through and keep raw arguments
+        }
+        return new ContextToolCall { Name = call.Name, Command = command };
     }
 
     /// <summary>Strips a markdown code fence if present, then narrows to the outermost {..}/[..] span.

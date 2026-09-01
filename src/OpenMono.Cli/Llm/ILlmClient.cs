@@ -41,6 +41,11 @@ public sealed record UsageInfo
     public int CompletionTokens { get; init; }
     public int TotalTokens => PromptTokens + CompletionTokens;
 
+    /// <summary>Tokens served from llama.cpp's KV cache (prompt_tokens_details.cached_tokens).
+    /// These were NOT freshly reprocessed — they were reused from a prior request's cached prefix.
+    /// Informational for context accounting: freshly-processed tokens ≈ PromptTokens - CachedTokens.</summary>
+    public int CachedTokens { get; init; }
+
     // Generation throughput from llama.cpp's `timings` block (when present on the response).
     // PredictedTokens/PredictedMs are accumulated for a rolling average; PredictedPerSecond is
     // the server's own live decode rate for this turn. All default to 0 on providers that omit timings.

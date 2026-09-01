@@ -115,6 +115,7 @@ public sealed class PlaybookLoader
                 Tags = GetStringList(frontmatter, "tags"),
                 SkipPermissions = GetBool(frontmatter, "skip-permissions", false),
                 LogOutput = GetBool(frontmatter, "log-output", false),
+                ReportCtx = GetBool(frontmatter, "report-ctx", false),
                 MaxToolLoops = GetInt(frontmatter, "max-tool-loops", 10),
                 Temperature = GetDoubleOrNull(frontmatter, "temperature"),
                 Parameters = ParseParameters(frontmatter),
