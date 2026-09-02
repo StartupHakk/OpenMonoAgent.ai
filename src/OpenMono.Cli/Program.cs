@@ -891,6 +891,9 @@ static async Task TryDetectActualModelAsync(AppConfig config)
     try
     {
         using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        if (!string.IsNullOrWhiteSpace(config.Llm.ApiKey))
+            http.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.Llm.ApiKey);
         var url = $"{config.Llm.Endpoint.TrimEnd('/')}/props";
         var json = await http.GetStringAsync(url);
         using var doc = System.Text.Json.JsonDocument.Parse(json);
@@ -961,6 +964,9 @@ static async Task TryDetectActualModelAsync(AppConfig config)
     try
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        if (!string.IsNullOrWhiteSpace(config.Llm.ApiKey))
+            http.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.Llm.ApiKey);
         var json = await http.GetStringAsync($"{config.Llm.Endpoint.TrimEnd('/')}/v1/models");
         using var doc = System.Text.Json.JsonDocument.Parse(json);
         if (doc.RootElement.TryGetProperty("data", out var data)
