@@ -82,7 +82,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
         "- `/plan [task]` — enter Plan mode (read-only); with a task, propose a plan for it\n" +
         "- `/build` — switch to Build mode (make changes)\n" +
         "- `/mode` — toggle Plan / Build\n" +
-        "- `/think` — toggle step-by-step reasoning\n" +
+        "- `/think` — toggle / set thinking (no arg cycles; `/think [level]` sets a level)\n" +
         "- `/help` — show this list\n\n" +
         "Also available: `/clear`, `/sessions`, `/undo`, `/redo`, `/stop`.";
 
@@ -116,12 +116,41 @@ public sealed class AcpTurnRunner : IAcpEventSink
                 return true;
 
             case "/think":
-                _acpSession.State.Meta.ThinkingEnabled = !_acpSession.State.Meta.ThinkingEnabled;
-                await OnTextDeltaAsync(_acpSession.State.Meta.ThinkingEnabled
-                    ? "**Thinking mode ON** — I'll reason step-by-step before responding (uses extra context)."
-                    : "**Thinking mode OFF** — I'll respond directly.");
+            {
+                var profile = ModelReasoningProfile.Resolve(_loopFactory.Config.Llm.Model);
+                if (profile.Kind == ReasoningKind.EffortLevels)
+                {
+                    var levels = profile.Levels;
+                    var current = _acpSession.State.Meta.ThinkingLevel ?? "off";
+                    var idx = Array.IndexOf(levels, current);
+                    if (idx < 0) idx = 0;
+                    var nextIdx = !string.IsNullOrEmpty(args)
+                        ? ThinkingLevels.Resolve(args, levels)
+                        : (idx + 1) % levels.Length;
+                    if (nextIdx < 0)
+                    {
+                        await OnTextDeltaAsync($"Unknown level '{args}'. Use: {string.Join(", ", levels)}");
+                    }
+                    else
+                    {
+                        var level = levels[nextIdx];
+                        _acpSession.State.Meta.ThinkingLevel = level;
+                        _acpSession.State.Meta.ThinkingEnabled = level != "off";
+                        await OnTextDeltaAsync(level == "off"
+                            ? "**Thinking: OFF** — fast direct responses"
+                            : $"**Thinking: {level.ToUpperInvariant()}** — {ThinkingLevels.Describe(level)}");
+                    }
+                }
+                else
+                {
+                    _acpSession.State.Meta.ThinkingEnabled = !_acpSession.State.Meta.ThinkingEnabled;
+                    await OnTextDeltaAsync(_acpSession.State.Meta.ThinkingEnabled
+                        ? "**Thinking mode ON** — I'll reason step-by-step before responding (uses extra context)."
+                        : "**Thinking mode OFF** — I'll respond directly.");
+                }
                 await _writer.WriteEventAsync("done", new { });
                 return true;
+            }
 
             case "/plan":
                 _acpSession.PlanMode = true;

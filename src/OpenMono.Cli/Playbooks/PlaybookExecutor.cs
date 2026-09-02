@@ -8,6 +8,7 @@ using OpenMono.Permissions;
 using OpenMono.Rendering;
 using OpenMono.Session;
 using OpenMono.Tools;
+using OpenMono.Utils;
 
 namespace OpenMono.Playbooks;
 
@@ -122,7 +123,8 @@ public sealed class PlaybookExecutor : IDisposable
 
         try
         {
-            _renderer.WriteInfo($"Playbook: {playbook.Name} v{playbook.Version}");
+            var thinkLabel = playbook.Thinking is { Length: > 0 } t ? $" · thinking={t}" : "";
+            _renderer.WriteInfo($"Playbook: {playbook.Name} v{playbook.Version}{thinkLabel}");
             if (logPath is not null)
             {
                 log!.WriteLine($"=== Playbook '{playbook.Name}' v{playbook.Version} — run {runId} — started {DateTime.UtcNow:O} ===");
@@ -335,11 +337,37 @@ public sealed class PlaybookExecutor : IDisposable
             }
         }
 
+        // Thinking resolution: playbook `thinking:` frontmatter, default off (matches the
+        // interactive session default). The flag is always resolved to an explicit level for
+        // reasoning models so llama.cpp never falls back to the chat template's own default,
+        // and the thinking sampler overrides (ThinkingTemperature/TopP) apply exactly when
+        // thinking is on — thinking models degenerate at low temperature.
+        var profile = ModelReasoningProfile.Resolve(_config.Llm.Model);
+        var thinkLevel = playbook.Thinking;
+        if (thinkLevel is not null && thinkLevel != "off")
+        {
+            if (profile.Kind == ReasoningKind.None)
+            {
+                _renderer.WriteWarning($"Playbook '{playbook.Name}' declares 'thinking: {thinkLevel}' but model '{_config.Llm.Model}' has no reasoning support — ignored.");
+                thinkLevel = null;
+            }
+            else if (profile.Kind == ReasoningKind.EffortLevels
+                     && !profile.Levels.Contains(thinkLevel, StringComparer.OrdinalIgnoreCase))
+            {
+                _renderer.WriteWarning($"Playbook '{playbook.Name}' declares unknown 'thinking: {thinkLevel}' for model '{_config.Llm.Model}' (expected: {string.Join(", ", profile.Levels)}) — falling back to '{profile.DefaultLevel}'.");
+                thinkLevel = profile.DefaultLevel;
+            }
+        }
+        var thinkingEnabled = profile.Kind != ReasoningKind.None && thinkLevel is not null && thinkLevel != "off";
         var options = new LlmOptions
         {
             Model = _config.Llm.Model,
-            Temperature = playbook.Temperature ?? _config.Llm.Temperature,
+            Temperature = thinkingEnabled && profile.ThinkingTemperature is { } tt ? tt : (playbook.Temperature ?? _config.Llm.Temperature),
+            TopP = thinkingEnabled && profile.ThinkingTopP is { } ttp ? ttp : _config.Llm.TopP,
             MaxTokens = _config.Llm.MaxOutputTokens,
+            EnableThinking = profile.Kind == ReasoningKind.None ? null : thinkingEnabled,
+            ReasoningEffort = profile.Kind == ReasoningKind.EffortLevels && thinkingEnabled ? thinkLevel : null,
+            PreserveThinking = profile.PreserveThinking && thinkingEnabled,
         };
 
         var result = new StringBuilder();

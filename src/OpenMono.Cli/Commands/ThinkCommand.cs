@@ -5,7 +5,7 @@ namespace OpenMono.Commands;
 public sealed class ThinkCommand : ICommand
 {
     public string Name => "think";
-    public string Description => "Toggle thinking mode (step-by-step reasoning). Default: off.";
+    public string Description => "Toggle / set thinking mode. No arg cycles levels (or toggles on binary models); /think [level] sets a level.";
     public CommandType Type => CommandType.Local;
 
     public Task ExecuteAsync(string[] args, CommandContext context, CancellationToken ct)
@@ -28,7 +28,7 @@ public sealed class ThinkCommand : ICommand
         if (idx < 0) idx = 0;
 
         var nextIdx = args.Length > 0
-            ? ResolveLevelArg(args[0], levels)
+            ? ThinkingLevels.Resolve(args[0], levels)
             : (idx + 1) % levels.Length;
 
         if (nextIdx < 0)
@@ -42,16 +42,7 @@ public sealed class ThinkCommand : ICommand
         context.Session.Meta.ThinkingLevel = level;
         context.Session.Meta.ThinkingEnabled = level != "off";
 
-        var desc = level switch
-        {
-            "off" => "OFF — fast direct responses",
-            "low" => "LOW — brief reasoning, optimized for speed",
-            "medium" => "MEDIUM — balanced accuracy and speed (recommended)",
-            "xhigh" => "XHIGH — thorough analysis for complex tasks (over-thinks simple tasks)",
-            _ => level.ToUpperInvariant(),
-        };
-
-        context.Renderer.WriteInfo($"Thinking: {desc}");
+        context.Renderer.WriteInfo($"Thinking: {ThinkingLevels.Describe(level)}");
         if (level != "off")
             context.Renderer.WriteInfo("Note: thinking tokens use extra context. Use /think [level] to change.");
         if (level == "xhigh")
@@ -71,18 +62,5 @@ public sealed class ThinkCommand : ICommand
         {
             context.Renderer.WriteInfo("Thinking mode OFF — model responds directly (default).");
         }
-    }
-
-    private static int ResolveLevelArg(string arg, string[] levels)
-    {
-        var lower = arg.Trim().ToLowerInvariant();
-        return lower switch
-        {
-            "off" or "0" => Array.IndexOf(levels, "off"),
-            "low" or "l" => Array.IndexOf(levels, "low"),
-            "medium" or "med" or "m" => Array.IndexOf(levels, "medium"),
-            "xhigh" or "high" or "xh" or "h" => Array.IndexOf(levels, "xhigh"),
-            _ => -1,
-        };
     }
 }

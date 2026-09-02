@@ -117,6 +117,7 @@ public sealed class PlaybookLoader
                 LogOutput = GetBool(frontmatter, "log-output", false),
                 MaxToolLoops = GetInt(frontmatter, "max-tool-loops", 10),
                 Temperature = GetDoubleOrNull(frontmatter, "temperature"),
+                Thinking = GetString(frontmatter, "thinking"),
                 Parameters = ParseParameters(frontmatter),
                 Steps = ParseSteps(frontmatter),
                 Constraints = ParseConstraints(frontmatter),

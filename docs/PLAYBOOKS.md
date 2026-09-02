@@ -662,6 +662,11 @@ Full list of frontmatter fields.
 | `max-context-tokens` | number | No | `3000` | Token cap for injected context per turn |
 | `depends-on` | string[] | No | `[]` | Names of other playbooks this one can invoke |
 | `tags` | string[] | No | `[]` | Free-form labels for discovery and filtering |
+| `thinking` | enum | No | `off` | Reasoning level: `off`, `low`, `medium`, `xhigh` (valid set is model-dependent). Sends `chat_template_kwargs` (`enable_thinking` / `reasoning_effort` / `preserve_thinking`) to llama.cpp. Ignored on models without reasoning support |
+| `temperature` | number | No | config value | Sampling temperature override |
+| `max-tool-loops` | number | No | `10` | Max tool-call iterations per step |
+| `skip-permissions` | boolean | No | `false` | Skip tool permission prompts |
+| `log-output` | boolean | No | `false` | Log step output to file |
 
 **Parameter fields:**
 
