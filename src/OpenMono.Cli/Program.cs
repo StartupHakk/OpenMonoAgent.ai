@@ -436,7 +436,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     renderer.WriteWelcome(config.Llm.Model, config.Llm.Endpoint);
 
     Task? warmupTask = null;
-    if (!await IsServerWarmAsync(config.Llm.Endpoint))
+    if (!await IsServerWarmAsync(config.Llm.Endpoint, config.Llm.ApiKey))
     {
         renderer.WriteInfo("Warming KV cache in background — first response will be slower.");
         warmupTask = SendWarmupAsync(config.Llm.Endpoint, systemPrompt, tools.BuildToolDefinitions(), config.Llm.Model);
@@ -652,7 +652,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
             if (ex.StatusCode is null)
             {
                 renderer.WriteError($"LLM error: {ex.Message}");
-                await TryRecoverLlamaServerAsync(renderer, config.WorkingDirectory, config.Llm.Endpoint);
+                await TryRecoverLlamaServerAsync(renderer, config.WorkingDirectory, config.Llm.Endpoint, config.Llm.ApiKey);
             }
             else
             {
@@ -710,11 +710,14 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     renderer.WriteInfo($"Session saved: {session.Id}");
 }
 
-static async Task<bool> IsServerWarmAsync(string endpoint)
+static async Task<bool> IsServerWarmAsync(string endpoint, string? apiKey)
 {
     try
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        if (!string.IsNullOrWhiteSpace(apiKey))
+            http.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
         var metrics = await http.GetStringAsync($"{endpoint.TrimEnd('/')}/metrics");
         var line = metrics.Split('\n')
             .FirstOrDefault(l => l.StartsWith("llamacpp:prompt_tokens_total"));
@@ -775,7 +778,7 @@ static async Task SendWarmupAsync(string endpoint, string systemPrompt, System.T
     }
 }
 
-static async Task TryRecoverLlamaServerAsync(IRenderer renderer, string workingDirectory, string endpoint)
+static async Task TryRecoverLlamaServerAsync(IRenderer renderer, string workingDirectory, string endpoint, string? apiKey)
 {
     renderer.WriteWarning($"llama-server isn't reachable at {endpoint}");
 
@@ -797,7 +800,7 @@ static async Task TryRecoverLlamaServerAsync(IRenderer renderer, string workingD
         var hostHealthUrl = healthUrl.Replace("llama-server", "localhost");
         renderer.WriteInfo($"Check: curl {hostHealthUrl}  (HTTP 200 = ready)");
         renderer.WriteInfo($"Watching {healthUrl} — I'll notify you when it's up (Ctrl+C to skip)...");
-        await PollHealthAsync(renderer, healthUrl, timeoutSeconds: 300);
+        await PollHealthAsync(renderer, healthUrl, apiKey, timeoutSeconds: 300);
         return;
     }
 
@@ -830,7 +833,7 @@ static async Task TryRecoverLlamaServerAsync(IRenderer renderer, string workingD
         }
 
         renderer.WriteInfo($"Container started. Polling {healthUrl}...");
-        await PollHealthAsync(renderer, healthUrl, timeoutSeconds: 120);
+        await PollHealthAsync(renderer, healthUrl, apiKey, timeoutSeconds: 120);
     }
     catch (Exception startEx)
     {
@@ -838,9 +841,12 @@ static async Task TryRecoverLlamaServerAsync(IRenderer renderer, string workingD
     }
 }
 
-static async Task PollHealthAsync(IRenderer renderer, string healthUrl, int timeoutSeconds)
+static async Task PollHealthAsync(IRenderer renderer, string healthUrl, string? apiKey, int timeoutSeconds)
 {
     using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+    if (!string.IsNullOrWhiteSpace(apiKey))
+        http.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
     var started = DateTime.UtcNow;
     var deadline = started.AddSeconds(timeoutSeconds);
     var lastStatus = "";
@@ -893,6 +899,9 @@ static async Task TryDetectActualModelAsync(AppConfig config)
     try
     {
         using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        if (!string.IsNullOrWhiteSpace(config.Llm.ApiKey))
+            http.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.Llm.ApiKey);
         var url = $"{config.Llm.Endpoint.TrimEnd('/')}/props";
         var json = await http.GetStringAsync(url);
         using var doc = System.Text.Json.JsonDocument.Parse(json);
@@ -955,6 +964,9 @@ static async Task TryDetectActualModelAsync(AppConfig config)
     try
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        if (!string.IsNullOrWhiteSpace(config.Llm.ApiKey))
+            http.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.Llm.ApiKey);
         var json = await http.GetStringAsync($"{config.Llm.Endpoint.TrimEnd('/')}/v1/models");
         using var doc = System.Text.Json.JsonDocument.Parse(json);
         if (doc.RootElement.TryGetProperty("data", out var data)
