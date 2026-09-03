@@ -493,7 +493,17 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
         };
 
         if (options.EnableThinking.HasValue)
-            body["chat_template_kwargs"] = new { enable_thinking = options.EnableThinking.Value };
+        {
+            var kwargs = new Dictionary<string, object?>
+            {
+                ["enable_thinking"] = options.EnableThinking.Value,
+            };
+            if (options.ReasoningEffort is { Length: > 0 })
+                kwargs["reasoning_effort"] = options.ReasoningEffort;
+            if (options.PreserveThinking.HasValue)
+                kwargs["preserve_thinking"] = options.PreserveThinking.Value;
+            body["chat_template_kwargs"] = kwargs;
+        }
 
         if (tools.HasValue && tools.Value.ValueKind == JsonValueKind.Array &&
             tools.Value.GetArrayLength() > 0)

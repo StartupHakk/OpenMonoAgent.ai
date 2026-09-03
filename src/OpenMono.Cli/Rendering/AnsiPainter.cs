@@ -852,12 +852,29 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
     {
         var key = agentLabel ?? MainAgentKey;
         if (!_thinkingStreams.TryGetValue(key, out var stream)) return;
-        stream.Collapsed = true;
-        stream.CollapseChars = charCount;
-        stream.Mode = "";
-        lock (stream.BufferLock) { stream.Buffer.Clear(); }
+        string thinkingText;
+        lock (stream.BufferLock) { thinkingText = stream.Buffer.ToString(); }
+        if (thinkingText.Length > 0)
+        {
+            var who = key == MainAgentKey ? null : key;
+            var approxTok = charCount / 4;
+            var footer = approxTok > 0 ? $"~{approxTok} tokens" : null;
+            AddMessage(new Msg("thinking", CapThinkingText(thinkingText)) { Footer = footer, Label = who, Ok = false });
+        }
+        _thinkingStreams.TryRemove(key, out _);
         StopThinkingTimerIfIdle();
         PaintConvThrottled(force: true);
+    }
+
+    private static string CapThinkingText(string text)
+    {
+        const int head = 400;
+        const int tail = 200;
+        if (text.Length <= head + tail + 16) return text;
+        var headText = text[..head].TrimEnd();
+        var tailText = text[^tail..].TrimStart();
+        var skipped = text.Length - head - tail;
+        return $"{headText}\n… {skipped} chars omitted …\n{tailText}";
     }
 
     internal void ShowWaitingIndicator(string? label = null) => ShowWaitingIndicator(label, null);
@@ -1784,7 +1801,12 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
             var modeIndicator = session.Meta.PlanMode
                 ? $"{Fk}[{R}{Fy}PLAN{R}{Fk}]{R}{BgStatus} "
                 : $"{Fk}[{R}{Fg}BUILD{R}{Fk}]{R}{BgStatus} ";
-            mid = $"{modeIndicator}{scrollIndicator}{cancelHint}";
+            var thinkIndicator = !session.Meta.ThinkingEnabled
+                ? ""
+                : session.Meta.ThinkingLevel is { Length: > 0 } lvl && lvl != "off"
+                    ? $"{Fk}[{R}{Fc}THINK:{R}{Fw}{lvl.ToUpperInvariant()}{R}{Fk}]{R}{BgStatus} "
+                    : $"{Fk}[{R}{Fc}THINK{R}{Fk}]{R}{BgStatus} ";
+            mid = $"{modeIndicator}{thinkIndicator}{scrollIndicator}{cancelHint}";
         }
         var right = $"{Fk}ctrl+c{R}{BgStatus} {Fw}quit{R}{BgStatus}   {Fk}ctrl+p{R}{BgStatus} {Fw}commands{R}{BgStatus} ";
         var visM  = VisLen(mid);
@@ -1967,6 +1989,28 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
                 }
                 break;
             }
+            case "thinking":
+            {
+                var wrapped = Wrap(m.Text, w - 6);
+                const int maxThinkLines = 5;
+                var label = m.Label is { Length: > 0 } lb ? $" · {lb}" : "";
+                lines.Add("");
+                lines.Add($"  {Fk}◈ Thinking{label}{R}");
+                if (wrapped.Count > maxThinkLines)
+                {
+                    for (var i = 0; i < maxThinkLines; i++)
+                        lines.Add($"  {IT}{Fk}{wrapped[i]}{R}");
+                    lines.Add($"  {DM}… {wrapped.Count - maxThinkLines} more lines{(m.Footer is { } f ? $" · {f}" : "")}{R}");
+                }
+                else
+                {
+                    foreach (var l in wrapped)
+                        lines.Add($"  {IT}{Fk}{l}{R}");
+                    if (m.Footer is { } f2)
+                        lines.Add($"  {DM}{f2}{R}");
+                }
+                break;
+            }
             case "content":
             {
                 var contentLines = m.Text.Split('\n');
@@ -2047,6 +2091,7 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         public string Role    { get; } = role;
         public string Text    { get; } = text;
         public string? Footer { get; init; }
+        public string? Label  { get; init; }
         public bool Ok  { get; init; }
         public bool Err { get; init; }
     }

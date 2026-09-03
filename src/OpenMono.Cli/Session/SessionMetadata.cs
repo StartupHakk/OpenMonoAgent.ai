@@ -8,6 +8,7 @@ public sealed class SessionMetadata
     public TokenTracker? TokenTracker { get; set; }
     public bool PlanMode { get; set; }
     public bool ThinkingEnabled { get; set; }
+    public string? ThinkingLevel { get; set; }
     /// <summary>True while a compaction is actively rewriting session history — drives the "Compacting…" status and ring animation.</summary>
     public bool IsCompacting { get; set; }
     /// <summary>

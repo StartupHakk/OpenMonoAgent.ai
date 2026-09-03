@@ -43,6 +43,12 @@ public sealed record PlaybookDefinition
 
     /// <summary>When set, overrides the global config temperature for this playbook's LLM calls.</summary>
     public double? Temperature { get; init; }
+
+    /// <summary>Reasoning level for this playbook's LLM calls. Values: "off", "low", "medium",
+    /// "xhigh" (valid set is model-dependent; an unknown value warns and falls back to the model's
+    /// default level). Default "off", matching the interactive session default. Ignored, with a
+    /// warning, on models without reasoning support.</summary>
+    public string? Thinking { get; init; }
 }
 
 public sealed record ParameterDefinition
