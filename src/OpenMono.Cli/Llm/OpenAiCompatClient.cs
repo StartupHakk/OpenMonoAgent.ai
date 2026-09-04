@@ -323,11 +323,13 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                         {
                             PromptTokens = usageEl.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : 0,
                             CompletionTokens = usageEl.TryGetProperty("completion_tokens", out var cpt) ? cpt.GetInt32() : 0,
+                            CachedTokens = usageEl.TryGetProperty("prompt_tokens_details", out var ptd) && ptd.ValueKind == JsonValueKind.Object
+                                && ptd.TryGetProperty("cached_tokens", out var ctdel) ? ctdel.GetInt32() : 0,
                             PredictedTokens = predictedN,
                             PredictedMs = predictedMs,
                             PredictedPerSecond = predictedPerSec,
                         };
-                        var usageMsg = $"[SSE] usage: prompt={usage.PromptTokens} completion={usage.CompletionTokens} total={usage.TotalTokens} gen_tps={usage.PredictedPerSecond:F1}";
+                        var usageMsg = $"[SSE] usage: prompt={usage.PromptTokens} completion={usage.CompletionTokens} cached={usage.CachedTokens} total={usage.TotalTokens} gen_tps={usage.PredictedPerSecond:F1}";
                         OnDebug?.Invoke(usageMsg);
                         Log.Info(usageMsg);
                     }
@@ -512,7 +514,17 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
         };
 
         if (options.EnableThinking.HasValue)
-            body["chat_template_kwargs"] = new { enable_thinking = options.EnableThinking.Value };
+        {
+            var kwargs = new Dictionary<string, object?>
+            {
+                ["enable_thinking"] = options.EnableThinking.Value,
+            };
+            if (options.ReasoningEffort is { Length: > 0 })
+                kwargs["reasoning_effort"] = options.ReasoningEffort;
+            if (options.PreserveThinking.HasValue)
+                kwargs["preserve_thinking"] = options.PreserveThinking.Value;
+            body["chat_template_kwargs"] = kwargs;
+        }
 
         if (tools.HasValue && tools.Value.ValueKind == JsonValueKind.Array &&
             tools.Value.GetArrayLength() > 0)

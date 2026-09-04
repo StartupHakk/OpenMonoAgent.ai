@@ -56,6 +56,9 @@ public sealed class FileWriteTool : ToolBase
 
             context.FileHistory?.RecordAfter(resolvedPath);
 
+            context.Session.GetDiffStager(context.Config.DataDirectory)
+                .Record(context.Session.CurrentToolCallId ?? "", resolvedPath, oldContent, content);
+
             var lineCount = content.Split('\n').Length;
             var verb = existed ? "Overwrote" : "Created";
             var diff = oldContent is null

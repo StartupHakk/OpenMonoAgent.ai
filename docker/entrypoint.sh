@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# OpenMono agent container entrypoint wrapper.
+# OpenMono agent container entrypoint.
 #
-# When the agent runs with --user (host UID:GID), the bind-mounted
-# ~/.openmono directory may be owned by root or another user, making it
-# unwritable. This entrypoint detects that situation and redirects
-# OPENMONO_DATA_DIR to a writable temp directory so the agent can still
-# function (artifacts/sessions just won't persist across container runs).
-#
-# The agent (ConfigLoader) performs the same check and self-heals, so this is
-# belt-and-suspenders — but it must probe the same path the agent writes to.
+# Data dir: $OPENMONO_DATA_DIR (default ~/.openmono, /home/agent/.openmono in
+# this image). Launchers bind-mount the host's ~/.openmono there and run the
+# container as --user <host uid:gid>.
+# Behavior: probe DATA_DIR/sessions for writability. When unwritable, export
+# OPENMONO_DATA_DIR=/tmp/openmono so the agent still starts; sessions and
+# artifacts from that run do not persist. ConfigLoader repeats the same probe
+# inside the agent before any writes.
 set -euo pipefail
 
 if ! id -un >/dev/null 2>&1; then
@@ -17,11 +16,9 @@ fi
 
 DATA_DIR="${OPENMONO_DATA_DIR:-${HOME}/.openmono}"
 
-# Probe writability with a real file write inside the sessions/ subdir — the
-# directory the agent actually persists into. The top-level dir can be
-# writable while a host-pre-created sessions/ subdir is owned by another UID,
-# so testing only the top level (as a plain `touch` would) misses the very
-# case that crashes the agent with UnauthorizedAccessException.
+# Writability probe: write a temp file under <dir>/sessions, the subdirectory
+# the agent persists to. A writable top-level dir does not imply a writable
+# sessions/ subdir.
 probe_writable() {
     local dir="$1"
     mkdir -p "${dir}/sessions" 2>/dev/null || return 1
@@ -38,5 +35,5 @@ if ! probe_writable "${DATA_DIR}"; then
     export OPENMONO_DATA_DIR="${DATA_DIR}"
 fi
 
-# Execute the real openmono binary with whatever args were passed
+# Exec the agent binary with the container args.
 exec /usr/local/bin/openmono/openmono "$@"

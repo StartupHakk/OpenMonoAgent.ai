@@ -34,11 +34,21 @@ public sealed record PlaybookDefinition
 
     public bool LogOutput { get; init; } = false;
 
+    /// <summary>When true, the executor records per-call/per-step context usage and appends a per-run
+    /// object to <c>.openmono/data/ctx-usage.jsonl</c> (JSONL). Default off: no capture, no file.</summary>
+    public bool ReportCtx { get; init; } = false;
+
     /// <summary>Maximum tool-call rounds per step before aborting. Default: 10.</summary>
     public int MaxToolLoops { get; init; } = 10;
 
     /// <summary>When set, overrides the global config temperature for this playbook's LLM calls.</summary>
     public double? Temperature { get; init; }
+
+    /// <summary>Reasoning level for this playbook's LLM calls. Values: "off", "low", "medium",
+    /// "xhigh" (valid set is model-dependent; an unknown value warns and falls back to the model's
+    /// default level). Default "off", matching the interactive session default. Ignored, with a
+    /// warning, on models without reasoning support.</summary>
+    public string? Thinking { get; init; }
 }
 
 public sealed record ParameterDefinition

@@ -267,6 +267,7 @@ public sealed class ConversationLoop : IDisposable
             ? _session.Messages[^2].ToolCallId ?? $"msg_{_session.Messages.Count - 2}"
             : null;
         _journal.StartTurn(_session.TurnCount, parentMsgId, _config.Llm.Model);
+        _turnUsageReported = false;
 
         _output.WriteDebug($"[Turn] #{_session.TurnCount} — {_session.Messages.Count} messages, ~{_session.TotalTokensUsed} tokens used");
 
@@ -291,18 +292,23 @@ public sealed class ConversationLoop : IDisposable
         }
 
         var thinking = _session.Meta.ThinkingEnabled;
+        var thinkingLevel = _session.Meta.ThinkingLevel ?? "off";
+        var profile = Utils.ModelReasoningProfile.Resolve(_config.Llm.Model);
+
         var options = new LlmOptions
         {
             Model = _config.Llm.Model,
             MaxTokens = _config.Llm.MaxOutputTokens,
-            TopP = _config.Llm.TopP,
+            TopP = thinking && profile.ThinkingTopP is { } ttp ? ttp : _config.Llm.TopP,
             TopK = _config.Llm.TopK,
             MinP = _config.Llm.MinP,
             RepetitionPenalty = _config.Llm.RepetitionPenalty,
 
-            Temperature = thinking ? 0.6 : _config.Llm.Temperature,
+            Temperature = thinking && profile.ThinkingTemperature is { } tt ? tt : _config.Llm.Temperature,
             PresencePenalty = thinking ? 0.0 : _config.Llm.PresencePenalty,
             EnableThinking = thinking,
+            ReasoningEffort = profile.Kind == ReasoningKind.EffortLevels && thinking && !string.IsNullOrEmpty(thinkingLevel) && thinkingLevel != "off" ? thinkingLevel : null,
+            PreserveThinking = profile.PreserveThinking && thinking,
         };
 
         var maxIterations = _maxIterations;
@@ -611,7 +617,7 @@ public sealed class ConversationLoop : IDisposable
             if (toolCalls.Count == 0)
             {
                 _journal.FinishTurn("text_only");
-                await EmitUsageAsync();
+                await EmitTurnUsageAsync();
                 return;
             }
 
@@ -635,7 +641,7 @@ public sealed class ConversationLoop : IDisposable
                         Content = DoomLoopPrompts.Max(names),
                     });
                     _journal.FinishTurn("doom_loop_escalated");
-                    await EmitUsageAsync();
+                    await EmitTurnUsageAsync();
                     return;
                 }
 
@@ -746,17 +752,22 @@ public sealed class ConversationLoop : IDisposable
                     Content = ModeInstructions.PlanPresented,
                 });
                 _journal.FinishTurn("turn_break");
-                await EmitUsageAsync();
+                await EmitTurnUsageAsync();
                 return;
             }
         }
 
         await ReportIterationCapAsync(maxIterations, new List<ToolCall>(), ct);
         _journal.FinishTurn("max_iterations");
-        await EmitUsageAsync();
+        await EmitTurnUsageAsync();
         }
         finally
         {
+            // Guarantee terminal numbers for every turn — including aborts and
+            // errors, which exit above without passing a turn-exit site. Uses
+            // last-known tracker values; harmless no-op without a sink.
+            if (!_turnUsageReported)
+                await EmitUsageAsync();
             _liveFeedback?.EndTurn();
         }
     }
@@ -986,7 +997,7 @@ public sealed class ConversationLoop : IDisposable
         var tracker = _session.Meta.TokenTracker;
         if (tracker is null) return Task.CompletedTask;
         // context_tokens = LastPromptTokens (the full conversation sent on the most recent call =
-        // current context occupancy); context_window = n_ctx (fetched from /props at startup).
+        // current context occupancy); context_window = n_ctx (server-detected at startup).
         return _sink.OnUsageAsync(
             tracker.TotalPromptTokens,
             tracker.TotalCompletionTokens,
@@ -995,6 +1006,19 @@ public sealed class ConversationLoop : IDisposable
             _config.Llm.ContextSize,
             tracker.LastGenTokensPerSecond,
             tracker.AvgGenTokensPerSecond);
+    }
+
+    /// <summary>
+    /// Turn-exit usage emission. Marks the turn as reported so the
+    /// RunTurnInternalAsync finally-block can top-up exactly the turns that
+    /// exit another way (abort, error) — every turn ends with terminal numbers.
+    /// </summary>
+    private bool _turnUsageReported;
+
+    private Task EmitTurnUsageAsync()
+    {
+        _turnUsageReported = true;
+        return EmitUsageAsync();
     }
 
 

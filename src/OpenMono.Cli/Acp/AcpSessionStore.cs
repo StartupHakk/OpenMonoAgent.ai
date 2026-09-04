@@ -9,6 +9,7 @@ public sealed class AcpSessionStore : IDisposable
 {
     private readonly SessionManager _sessions;
     private readonly string _dir;
+    private readonly AppConfig _config;
     private readonly ConcurrentDictionary<string, AcpSession> _live = new();
     private readonly TimeSpan _ttl;
     private readonly Timer? _reaper;
@@ -17,6 +18,7 @@ public sealed class AcpSessionStore : IDisposable
 
     public AcpSessionStore(AppConfig cfg, AcpServerSettings settings, bool startReaper = true)
     {
+        _config = cfg;
         _sessions = new SessionManager(cfg);
         _dir = Path.Combine(cfg.DataDirectory, "sessions");
         System.IO.Directory.CreateDirectory(_dir);
@@ -100,6 +102,13 @@ public sealed class AcpSessionStore : IDisposable
         lock (_ioLock)
             _sessions.DeleteAsync(id, CancellationToken.None).GetAwaiter().GetResult();
     }
+
+    /// <summary>
+    /// Get (or create) the per-session diff stager for the given session id, backed by
+    /// the shared data directory. Used by the diffs/undo/redo endpoints.
+    /// </summary>
+    public OpenMono.Session.SessionDiffStager GetDiffStager(string id)
+        => new OpenMono.Session.SessionDiffStager(_config.DataDirectory, id);
 
     public void PurgeExpired(TimeSpan ttl)
     {

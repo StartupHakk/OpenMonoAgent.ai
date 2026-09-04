@@ -69,19 +69,20 @@ public class SanityCheckTests
     }
 
     [Theory]
-    [InlineData("cat /workspace/notes.txt")]
-    [InlineData("head -n 20 /workspace/app.log")]
-    [InlineData("tail -f /workspace/app.log")]
     [InlineData("echo \\\"hello\\\" >> /workspace/notes.txt")]
     [InlineData("printf '%s' done > /workspace/status.txt")]
     [InlineData("echo data | tee /workspace/out.txt")]
-    public void Bash_FileOpsViaShell_RefusedAndSteeredToFileTools(string command)
+    public void Bash_FileWriteViaShell_RefusedAndSteeredToFileTools(string command)
     {
         var input = Input($$"""{"command": "{{command}}"}""");
         SanityCheck.Check("Bash", input, _workDir).Should().NotBeNull();
     }
 
     [Theory]
+    [InlineData("cat /workspace/notes.txt")]             // reading via shell is allowed
+    [InlineData("head -n 20 /workspace/app.log")]
+    [InlineData("tail -f /workspace/app.log")]
+    [InlineData("tail -n 50 /tmp/openmono/bg/run.log")]  // bg-log peek the agent is told to run
     [InlineData("cat")]                                  // stdin, no file operand
     [InlineData("echo hello")]                           // stdout, no redirect
     [InlineData("echo hi > /dev/stderr")]                // device target, not a regular file

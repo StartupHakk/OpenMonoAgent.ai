@@ -14,6 +14,7 @@ public sealed class TerminalRenderer : IRenderer
     private Task? _thinkingTask;
     private bool _thinkingActive;
     private int _thinkingChars;
+    private readonly System.Text.StringBuilder _thinkingBuf = new();
     private string _waitingLabel = "Thinking";
     private readonly Stopwatch _streamStopwatch = new();
     private int _streamTokenCount;
@@ -180,9 +181,11 @@ public sealed class TerminalRenderer : IRenderer
             var header = string.IsNullOrEmpty(agentLabel) ? "Thinking" : $"Thinking · {agentLabel}";
             Console.Write($"\n  \u001b[2;36m◈ {header}\u001b[0m\n  \u001b[2;3;90m");
             _thinkingActive = true;
+            _thinkingBuf.Clear();
         }
         Console.Write(text);
         Console.Out.Flush();
+        _thinkingBuf.Append(text);
         _thinkingChars += text.Length;
     }
 
@@ -196,10 +199,30 @@ public sealed class TerminalRenderer : IRenderer
         var approxTok = charCount / 4;
         var tok = approxTok > 0 ? $" [{approxTok} tok]" : "";
         var header = string.IsNullOrEmpty(agentLabel) ? "Thinking" : $"Thinking · {agentLabel}";
-        Console.Write($"\n  \u001b[2;36m◈ {header}{tok}\u001b[0m\n");
+
+        var thinkText = _thinkingBuf.ToString();
+        var lines = thinkText.Length > 0
+            ? thinkText.Replace("\r\n", "\n").Split('\n')
+            : [];
+        const int maxLines = 5;
+        Console.Write($"\n  \u001b[2;36m◈ {header}{tok}\u001b[0m");
+        if (lines.Length > 0)
+        {
+            Console.Write("\n");
+            var show = Math.Min(lines.Length, maxLines);
+            for (var i = 0; i < show; i++)
+            {
+                var line = lines[i].Length > 72 ? lines[i][..72] + "…" : lines[i];
+                Console.Write($"\n  \u001b[2;3;90m{line}\u001b[0m");
+            }
+            if (lines.Length > maxLines)
+                Console.Write($"\n  \u001b[2;3;90m… {lines.Length - maxLines} more line(s)\u001b[0m");
+        }
+        Console.Write("\n");
         Console.Out.Flush();
         _thinkingActive = false;
         _thinkingChars = 0;
+        _thinkingBuf.Clear();
     }
 
     private void ClearThinkingAnimation()

@@ -17,6 +17,7 @@ public sealed class AppConfig
     public Dictionary<string, ModelPresetSettings> ModelPresets { get; set; } = [];
     public Dictionary<string, McpServerSettings> McpServers { get; set; } = [];
     public AcpServerSettings? AcpServer { get; set; }
+    public InferenceConfig Inference { get; set; } = new();
     public bool AutoDetectCodeGraph { get; set; } = true;
     public bool Verbose { get; set; } = false;
     public bool ShowDetail { get; set; } = false;
@@ -72,6 +73,15 @@ public class LlmConfig
     public double PresencePenalty { get; set; } = 1.5;
     public double MinP { get; set; } = 0.0;
     public double RepetitionPenalty { get; set; } = 1.0;
+
+    /// <summary>
+    /// True once ContextSize came from explicit user configuration (settings
+    /// file inference section or OPENMONO_CONTEXT_SIZE), as opposed to the
+    /// compiled default. Server auto-detection must not overwrite an explicit
+    /// value. Not serialized.
+    /// </summary>
+    [JsonIgnore]
+    public bool ContextSizeExplicit { get; set; }
 
     public void MergeFrom(LlmConfig source)
     {
@@ -161,5 +171,20 @@ public sealed class AgentConfig
         if (source.MaxNestingDepth > 0) MaxNestingDepth = source.MaxNestingDepth;
         if (source.MaxQueuedAgents > 0) MaxQueuedAgents = source.MaxQueuedAgents;
         if (source.MaxConcurrentPerParent > 0) MaxConcurrentPerParent = source.MaxConcurrentPerParent;
+    }
+}
+
+/// <summary>
+/// Local inference-server settings (the "inference" section of settings.json,
+/// written by the installer). Currently only CtxSize feeds the agent: it
+/// becomes Llm.ContextSize unless OPENMONO_CONTEXT_SIZE overrides it.
+/// </summary>
+public sealed class InferenceConfig
+{
+    public int CtxSize { get; set; }
+
+    public void MergeFrom(InferenceConfig source)
+    {
+        if (source.CtxSize > 0) CtxSize = source.CtxSize;
     }
 }

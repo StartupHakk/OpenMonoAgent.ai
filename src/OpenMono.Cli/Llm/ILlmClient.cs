@@ -14,6 +14,8 @@ public sealed record LlmOptions
     public double MinP { get; init; } = 0.0;
     public double RepetitionPenalty { get; init; } = 1.0;
     public bool? EnableThinking { get; init; }
+    public string? ReasoningEffort { get; init; }
+    public bool? PreserveThinking { get; init; }
 
     /// <summary>When set, constrains decoding to this JSON Schema (grammar-based on llama.cpp) so the
     /// response is guaranteed-valid JSON — no parsing/retry needed on providers that support it.</summary>
@@ -40,6 +42,11 @@ public sealed record UsageInfo
     public int PromptTokens { get; init; }
     public int CompletionTokens { get; init; }
     public int TotalTokens => PromptTokens + CompletionTokens;
+
+    /// <summary>Tokens served from llama.cpp's KV cache (prompt_tokens_details.cached_tokens).
+    /// These were NOT freshly reprocessed — they were reused from a prior request's cached prefix.
+    /// Informational for context accounting: freshly-processed tokens ≈ PromptTokens - CachedTokens.</summary>
+    public int CachedTokens { get; init; }
 
     // Generation throughput from llama.cpp's `timings` block (when present on the response).
     // PredictedTokens/PredictedMs are accumulated for a rolling average; PredictedPerSecond is
