@@ -142,12 +142,6 @@ public sealed class Compactor
             new() { Role = MessageRole.User, Content = conversationText },
         };
 
-        // Summary-overflow guard: if the summary prompt itself would not fit the context
-        // window, the summary call would overflow just like the request we're trying to
-        // recover from — and retrying it would recurse into the same overflow. Refuse
-        // instead: throw so the caller's single-retry guard stops the loop rather than
-        // spinning. (EvictLargeToolOutputs above already shrank the biggest tool outputs;
-        // if it STILL does not fit, the conversation is genuinely too large to summarize.)
         var summaryPromptTokens = TokenEstimate.EstimatePayload(summaryMessages);
         var summaryThreshold = (int)(_contextSize * 0.80);
         if (summaryPromptTokens > summaryThreshold)

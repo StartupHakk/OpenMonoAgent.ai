@@ -55,8 +55,6 @@ public static class TokenEstimate
         for (var i = 0; i < parts.Count; i++)
         {
             var part = parts[i];
-            // Media is stripped: an image contributes a fixed placeholder, not its (possibly
-            // megabyte-scale) base64 URL, mirroring OpenCode's stripMedia.
             sb.Append(part switch
             {
                 TextPart t => $"{{\"type\":\"text\",\"text\":{JsonStr(t.Text)}}}",

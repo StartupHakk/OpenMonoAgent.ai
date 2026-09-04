@@ -940,9 +940,6 @@ static async Task TryDetectActualModelAsync(AppConfig config)
             serverCtx = ctx;
         }
 
-        // A ContextSize the user explicitly set (config file or OPENMONO_CONTEXT_SIZE) wins
-        // over the server-reported n_ctx. Only fall back to the server value when the user left
-        // it at the built-in default — that's the "I don't know, ask the server" case.
         var userConfiguredCtx = config.Llm.ContextSize;
         if (serverCtx is > 0 && userConfiguredCtx == 196608)
         {

@@ -14,10 +14,7 @@ public sealed record CompactionReport
     public required int EvictedBytes { get; init; }
     public required TimeSpan Duration { get; init; }
     public required int ContextWindowSize { get; init; }
-    // The structured summary text the compaction produced (what the model will continue from).
-    // Surfaced to the user so they can see what was retained. Null when nothing was compacted.
     public string? SummaryText { get; init; }
-    // What triggered the compaction: "auto" (loop self-heal / forward trigger) or "manual" (/compact).
     public string? Reason { get; init; }
 
     public void RenderTo(Action<string> writeInfo, int promptTokensBefore = 0)

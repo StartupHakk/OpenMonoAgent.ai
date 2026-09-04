@@ -22,10 +22,6 @@ public sealed class CompactCommand : ICommand
             return;
         }
 
-        // Route through the loop so manual compaction emits the exact same signals as auto
-        // (compacting indicator, checkpoint reset, token-gauge update, and — when a sink is
-        // attached — the ACP compaction events). Hand-rolling Messages.Clear() here left the
-        // checkpoint state stale and bypassed the sink entirely.
         var focus = args.Length > 0 ? string.Join(" ", args).Trim() : null;
         await _loop.RunManualCompactionAsync(focus, ct);
     }

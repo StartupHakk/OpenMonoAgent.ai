@@ -1654,11 +1654,6 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         lines.Add($"{B}{Fw}{(!string.IsNullOrEmpty(lastUserText) ? Trunc(lastUserText, _sideW - 2) : "New session")}{R}");
         lines.Add("");
 
-        // The Context block reflects the CURRENT window occupancy (the last turn's prompt size),
-        // not the cumulative session total. A cumulative total divided by a per-turn window has no
-        // ceiling and reads as a meaningless %; the running total is still available via /status.
-        // This also matches OpenCode, whose sidebar shows last-message tokens / context, not a
-        // session-cumulative count. The values are computed by BuildContextUsage so they're testable.
         var (lastPrompt, window, promptPct) = BuildContextUsage(session.Meta.TokenTracker, config.Llm.ContextSize);
         var promptColor = promptPct >= 95 ? Fr : promptPct >= 80 ? Fy : Fk;
         lines.Add($"{B}Context{R}");
@@ -1897,11 +1892,6 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
 
     private static string FmtTok(int t) => t >= 1000 ? $"{t / 1000.0:F1}K" : t.ToString();
 
-    // Values for the sidebar "Context" block. Deliberately based on LastPromptTokens (the
-    // CURRENT window occupancy = the last turn's prompt size) rather than the cumulative
-    // TotalTokens: a running total has no upper bound, so dividing it by a single-turn window
-    // produced a % with no ceiling (e.g. "250,000 tokens · 261%"). The cumulative total is still
-    // surfaced via /status. Internal so the display logic is unit-testable without a terminal.
     internal static (int LastPromptTokens, int Window, int Percent) BuildContextUsage(TokenTracker? tracker, int contextSize)
     {
         var last = tracker?.LastPromptTokens ?? 0;

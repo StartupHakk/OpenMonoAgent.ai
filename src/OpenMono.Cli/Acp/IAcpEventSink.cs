@@ -27,20 +27,10 @@ public interface IAcpEventSink
     // through a plan_decision turn.
     Task OnPlanReadyAsync(string planContent, string? planPath);
 
-    // Fired when compaction begins (before the summary call), so the client can show a
-    // "compacting…" state. reason is "auto" (loop self-heal / forward trigger) or "manual" (/compact).
     Task OnCompactionStartedAsync(string reason, int promptTokens);
 
-    // messagesCompressed/durationSeconds/checkpointIndex identify the compaction; summaryText +
-    // reason are surfaced to the user; messagesBefore/After + tokensBefore/After let the frontend
-    // render a "N msgs → M tokens (−X%)" line without a second usage round-trip.
     Task OnCompactionAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null, string? reason = null, int messagesBefore = 0, int messagesAfter = 0, int tokensBefore = 0, int tokensAfter = 0);
 
-    // Fired when a checkpoint is stored (the soft, non-destructive context reduction that fires
-    // before compaction). Distinct from OnCompactionAsync: a checkpoint keeps the recent turns
-    // verbatim and only summarises the older history, so it carries messagesCompressed (how much
-    // older history was folded into a summary), the checkpoint ordinal, the elapsed time, and the
-    // generated summaryText so the frontend can render a "🗜 Checkpoint" card.
     Task OnCheckpointAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null);
     // contextTokens = prompt tokens of the most recent API call (current context occupancy);
     // contextWindow = the model's n_ctx (denominator for a context-usage gauge).
