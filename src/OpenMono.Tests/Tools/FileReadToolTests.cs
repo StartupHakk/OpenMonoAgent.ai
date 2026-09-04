@@ -64,6 +64,53 @@ public class FileReadToolTests : IDisposable
     }
 
     [Fact]
+    public async Task ReadWithHeadLines_ReturnsFirstNLines()
+    {
+        var filePath = Path.Combine(_tempDir, "head.txt");
+        await File.WriteAllTextAsync(filePath, "a\nb\nc\nd\ne");
+
+        var input = JsonDocument.Parse($$"""{"file_path": "{{filePath}}", "head_lines": 2}""").RootElement;
+        var result = await _tool.ExecuteAsync(input, _context, CancellationToken.None);
+
+        result.IsError.Should().BeFalse();
+        result.Content.Should().Contain("1\ta");
+        result.Content.Should().Contain("2\tb");
+        result.Content.Should().NotContain("3\tc");
+        result.Content.Should().Contain("showing lines 1-2");
+    }
+
+    [Fact]
+    public async Task ReadWithTailLines_ReturnsLastNLines()
+    {
+        var filePath = Path.Combine(_tempDir, "tail.txt");
+        await File.WriteAllTextAsync(filePath, "a\nb\nc\nd\ne");
+
+        var input = JsonDocument.Parse($$"""{"file_path": "{{filePath}}", "tail_lines": 2}""").RootElement;
+        var result = await _tool.ExecuteAsync(input, _context, CancellationToken.None);
+
+        result.IsError.Should().BeFalse();
+        result.Content.Should().Contain("4\td");
+        result.Content.Should().Contain("5\te");
+        result.Content.Should().NotContain("1\ta");
+        result.Content.Should().NotContain("2\tb");
+        result.Content.Should().Contain("showing lines 4-5");
+    }
+
+    [Fact]
+    public async Task ReadWithTailLines_LargerThanFile_ReturnsWholeFile()
+    {
+        var filePath = Path.Combine(_tempDir, "small.txt");
+        await File.WriteAllTextAsync(filePath, "a\nb\nc");
+
+        var input = JsonDocument.Parse($$"""{"file_path": "{{filePath}}", "tail_lines": 10}""").RootElement;
+        var result = await _tool.ExecuteAsync(input, _context, CancellationToken.None);
+
+        result.IsError.Should().BeFalse();
+        result.Content.Should().Contain("1\ta");
+        result.Content.Should().Contain("3\tc");
+    }
+
+    [Fact]
     public void Permission_IsAutoAllow()
     {
         var input = JsonDocument.Parse("""{"file_path": "test.txt"}""").RootElement;

@@ -18,6 +18,7 @@ public sealed class ToolContext
     public required Func<string, CancellationToken, Task<string>> AskUser { get; init; }
     public Func<string, IReadOnlyList<string>, CancellationToken, Task<string>>? AskUserWithOptions { get; init; }
     public FileHistory? FileHistory { get; init; }
+    public SessionDiffStager? DiffStager { get; init; }
     public CursorStore? Cursors { get; init; }
 
     public Action? BeginResponse { get; init; }
@@ -42,6 +43,7 @@ public sealed class ToolContext
         AskUser          = this.AskUser,
         AskUserWithOptions = this.AskUserWithOptions,
         FileHistory      = this.FileHistory,
+        DiffStager       = this.DiffStager,
         Cursors          = this.Cursors,
         BeginResponse    = this.BeginResponse,
         EndResponse      = this.EndResponse,

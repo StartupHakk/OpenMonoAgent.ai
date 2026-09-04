@@ -22,8 +22,10 @@ public sealed class FileReadTool : ToolBase
 
     protected override SchemaBuilder DefineSchema() => new SchemaBuilder()
         .AddString("file_path", "Absolute path to the file to read")
-        .AddInteger("offset", "Line number to start reading from (0-based)", minimum: 0)
-        .AddInteger("limit", "Maximum number of lines to read", minimum: 1)
+        .AddInteger("offset", "Line number to start reading from (0-based). Ignored when head_lines or tail_lines is set.", minimum: 0)
+        .AddInteger("limit", "Maximum number of lines to read. Ignored when head_lines or tail_lines is set.", minimum: 1)
+        .AddInteger("head_lines", "Read only the FIRST N lines (like `head -n N`). Use instead of offset/limit for the top of a file.", minimum: 1)
+        .AddInteger("tail_lines", "Read only the LAST N lines (like `tail -n N`). Use for the bottom of a file / recent log output.", minimum: 1)
         .AddString("from_cursor", "P2.6: Cursor ID from a previous tool (e.g., Grep). Reads all files in the cursor.")
         .AddInteger("max_files", "When using from_cursor, maximum number of files to read (default: 5)", minimum: 1, maximum: 20);
 
@@ -53,6 +55,8 @@ public sealed class FileReadTool : ToolBase
 
         var offset = input.TryGetProperty("offset", out var o) ? o.GetInt32() : 0;
         var limit = input.TryGetProperty("limit", out var l) ? l.GetInt32() : 2000;
+        var headLines = input.TryGetProperty("head_lines", out var h) ? h.GetInt32() : 0;
+        var tailLines = input.TryGetProperty("tail_lines", out var t) ? t.GetInt32() : 0;
 
         var resolvedPath = Path.GetFullPath(filePath, context.WorkingDirectory);
 
@@ -89,7 +93,7 @@ public sealed class FileReadTool : ToolBase
         {
             var fileInfo = new FileInfo(resolvedPath);
             var mtimeTicks = fileInfo.LastWriteTimeUtc.Ticks;
-            var cacheKey = $"{resolvedPath}|{offset}|{limit}";
+            var cacheKey = $"{resolvedPath}|{offset}|{limit}|{headLines}|{tailLines}";
 
             var lines = await File.ReadAllLinesAsync(resolvedPath, ct);
             var totalLines = lines.Length;
@@ -97,13 +101,35 @@ public sealed class FileReadTool : ToolBase
             if (totalLines == 0)
                 return ToolResult.Success($"File is empty: {resolvedPath}");
 
+            // Resolve the [start, count) window. head_lines / tail_lines take
+            // precedence over offset/limit and let the model express `head -n N`
+            // and `tail -n N` without reaching for Bash.
+            int start, count;
+            if (tailLines > 0)
+            {
+                start = Math.Max(0, totalLines - tailLines);
+                count = totalLines - start;
+            }
+            else if (headLines > 0)
+            {
+                start = 0;
+                count = Math.Min(headLines, totalLines);
+            }
+            else
+            {
+                start = offset;
+                count = limit;
+            }
+
             var selectedLines = lines
-                .Skip(offset)
-                .Take(limit)
-                .Select((line, idx) => $"{offset + idx + 1}\t{InputSanitizer.SanitizeToolOutput(line)}");
+                .Skip(start)
+                .Take(count)
+                .Select((line, idx) => $"{start + idx + 1}\t{InputSanitizer.SanitizeToolOutput(line)}");
 
             var content = string.Join('\n', selectedLines);
             var contentHash = ComputeHash(content);
+
+            var endLine = Math.Min(start + count, totalLines);
 
             if (_readCache.TryGetValue(cacheKey, out var cached) &&
                 cached.MtimeTicks == mtimeTicks &&
@@ -111,15 +137,15 @@ public sealed class FileReadTool : ToolBase
             {
                 return ToolResult.Success(
                     $"[file_unchanged: {resolvedPath}] — same content as previous read " +
-                    $"(lines {offset + 1}-{Math.Min(offset + limit, totalLines)}, {totalLines} total)");
+                    $"(lines {start + 1}-{endLine}, {totalLines} total)");
             }
 
             _readCache[cacheKey] = (mtimeTicks, contentHash);
 
             var header = $"[{resolvedPath}] ({totalLines} lines total)";
 
-            if (offset > 0 || totalLines > offset + limit)
-                header += $" showing lines {offset + 1}-{Math.Min(offset + limit, totalLines)}";
+            if (start > 0 || endLine < totalLines)
+                header += $" showing lines {start + 1}-{endLine}";
 
             return ToolResult.Success($"{header}\n{content}");
         }

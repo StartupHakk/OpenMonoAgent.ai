@@ -86,9 +86,12 @@ public sealed partial class ApplyPatchTool : ToolBase
 
                     context.FileHistory?.RecordBefore(filePath, Name, context.Session.Messages.Count);
 
+                    var afterText = string.Join("\n", modifiedLines);
                     await File.WriteAllLinesAsync(filePath, modifiedLines, ct);
 
                     context.FileHistory?.RecordAfter(filePath);
+                    context.Session.GetDiffStager(context.Config.DataDirectory)
+                        .Record(context.Session.CurrentToolCallId ?? "", filePath, string.Join("\n", originalLines), afterText);
                 }
 
                 var verb = dryRun ? "Would modify" : "Modified";

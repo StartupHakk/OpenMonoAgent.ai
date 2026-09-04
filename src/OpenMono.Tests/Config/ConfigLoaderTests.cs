@@ -166,4 +166,58 @@ public class ConfigLoaderTests : IDisposable
         if (Directory.Exists(_tempDir))
             Directory.Delete(_tempDir, recursive: true);
     }
+
+    private void WriteProjectSettings(string json)
+    {
+        var projectDir = Path.Combine(_tempDir, ".openmono");
+        Directory.CreateDirectory(projectDir);
+        File.WriteAllText(Path.Combine(projectDir, "settings.json"), json);
+    }
+
+    [Fact]
+    public void Load_AppliesInferenceCtxSize_WithoutMarkingExplicit()
+    {
+        WriteProjectSettings("""{ "inference": { "ctx_size": 12345 } }""");
+
+        var config = ConfigLoader.Load(_tempDir);
+
+        config.Llm.ContextSize.Should().Be(12345);
+        // Installer values stay non-explicit so live server detection
+        // outranks them; only env / explicit llm.context_size stick.
+        config.Llm.ContextSizeExplicit.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Load_ExplicitLlmContextSizeBeatsInference_AndIsExplicit()
+    {
+        WriteProjectSettings("""
+        {
+            "llm": { "context_size": 100000 },
+            "inference": { "ctx_size": 12345 }
+        }
+        """);
+
+        var config = ConfigLoader.Load(_tempDir);
+
+        config.Llm.ContextSize.Should().Be(100000);
+        config.Llm.ContextSizeExplicit.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Load_ContextSizeEnvBeatsInference()
+    {
+        WriteProjectSettings("""{ "inference": { "ctx_size": 12345 } }""");
+        Environment.SetEnvironmentVariable("OPENMONO_CONTEXT_SIZE", "22222");
+        try
+        {
+            var config = ConfigLoader.Load(_tempDir);
+
+            config.Llm.ContextSize.Should().Be(22222);
+            config.Llm.ContextSizeExplicit.Should().BeTrue();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OPENMONO_CONTEXT_SIZE", null);
+        }
+    }
 }

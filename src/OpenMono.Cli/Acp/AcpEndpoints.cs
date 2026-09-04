@@ -25,6 +25,11 @@ public static class AcpEndpoints
         app.MapGet("/api/v1/sessions/{id}/messages", GetMessages);
         app.MapPost("/api/v1/sessions/{id}/turn", PostTurn);
         app.MapDelete("/api/v1/sessions/{id}", DeleteSession);
+
+        app.MapGet("/api/v1/sessions/{id}/diffs", GetDiffs);
+        app.MapGet("/api/v1/sessions/{id}/diffs/{toolCallId}", GetDiff);
+        app.MapPost("/api/v1/sessions/{id}/diffs/undo", UndoDiff);
+        app.MapPost("/api/v1/sessions/{id}/diffs/redo", RedoDiff);
     }
 
 
@@ -263,6 +268,58 @@ public static class AcpEndpoints
         return Results.NoContent();
     }
 
+    // ---- Per-session file diffs (staged under <DataDirectory>/sessions/<id>/diffs/) ----
+    // The extension renders these in an in-memory diff provider; it never opens file://
+    // paths into the user's repo. before = original project file, after = agent's change.
+
+    private static IResult GetDiffs(string id, AcpSessionStore store)
+    {
+        if (store.TryGet(id) is null) return Results.NotFound();
+        var stager = store.GetDiffStager(id);
+        return Results.Ok(new DiffsEnvelope { Diffs = stager.List().Select(ToDiffDto).ToList() });
+    }
+
+    private static IResult GetDiff(string id, string toolCallId, AcpSessionStore store)
+    {
+        if (store.TryGet(id) is null) return Results.NotFound();
+        var stager = store.GetDiffStager(id);
+        var rec = stager.Get(toolCallId);
+        if (rec is null) return Results.NotFound();
+        var content = stager.GetContent(toolCallId);
+        return Results.Ok(new
+        {
+            tool_call_id = toolCallId,
+            file_path = rec.FilePath,
+            is_creation = rec.IsCreation,
+            status = rec.Status,
+            before = content?.Before,
+            after = content?.After,
+        });
+    }
+
+    private static IResult UndoDiff(string id, AcpSessionStore store)
+    {
+        if (store.TryGet(id) is null) return Results.NotFound();
+        var path = store.GetDiffStager(id).Undo();
+        return Results.Ok(new { ok = path is not null, file_path = path ?? "" });
+    }
+
+    private static IResult RedoDiff(string id, AcpSessionStore store)
+    {
+        if (store.TryGet(id) is null) return Results.NotFound();
+        var path = store.GetDiffStager(id).Redo();
+        return Results.Ok(new { ok = path is not null, file_path = path ?? "" });
+    }
+
+    private static DiffDto ToDiffDto(OpenMono.Session.DiffRecord r) => new()
+    {
+        ToolCallId = r.ToolCallId,
+        FilePath = r.FilePath,
+        IsCreation = r.IsCreation,
+        Status = r.Status,
+        Timestamp = r.Timestamp.ToString("o"),
+    };
+
 
 
     private static void StartSseResponse(HttpContext ctx)
@@ -376,6 +433,21 @@ public static class AcpEndpoints
     {
         [JsonPropertyName("sessions")]
         public List<SessionDigestDto> Sessions { get; set; } = new();
+    }
+
+    internal sealed record DiffDto
+    {
+        [JsonPropertyName("tool_call_id")] public required string ToolCallId { get; init; }
+        [JsonPropertyName("file_path")] public required string FilePath { get; init; }
+        [JsonPropertyName("is_creation")] public bool IsCreation { get; init; }
+        [JsonPropertyName("status")] public required string Status { get; init; }
+        [JsonPropertyName("timestamp")] public required string Timestamp { get; init; }
+    }
+
+    private sealed class DiffsEnvelope
+    {
+        [JsonPropertyName("diffs")]
+        public List<DiffDto> Diffs { get; set; } = new();
     }
 
     internal sealed record SessionDigestDto

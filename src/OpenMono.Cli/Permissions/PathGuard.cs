@@ -39,9 +39,12 @@ public static class PathGuard
         if (IsProtectedFile(resolvedPath))
             return $"Access denied: '{resolvedPath}' is a protected credential or configuration file.";
 
+        if (IsWithinScratch(resolvedPath))
+            return null; // ephemeral scratch — see IsWithinScratch
+
         if (!IsWithinWorkspace(resolvedPath, workingDirectory))
             return $"Access denied: '{resolvedPath}' is outside the workspace ('{workingDirectory}'). " +
-                   "The agent can only access files within its working directory.";
+                   "The agent can only access files within its working directory or the temp scratch dir.";
 
         return null;
     }
@@ -54,10 +57,28 @@ public static class PathGuard
         if (IsDeviceFile(resolvedPath))
             return $"Access denied: device files cannot be accessed ('{resolvedPath}').";
 
+        if (IsWithinScratch(resolvedPath))
+            return null; // ephemeral scratch — see IsWithinScratch
+
         if (!IsWithinWorkspace(resolvedPath, workingDirectory))
             return $"Access denied: '{resolvedPath}' is outside the workspace ('{workingDirectory}').";
 
         return null;
+    }
+
+    /// <summary>
+    /// Whether a path is inside the system temp scratch dir (e.g. /tmp on
+    /// Linux/macOS, %TEMP% on Windows). The agent is allowed to use this as
+    /// ephemeral scratch space — the system prompt explicitly directs test
+    /// scripts and throwaway artifacts here, and background-process logs are
+    /// written there. Only the temp root itself is allowed (not arbitrary
+    /// paths), and the credential/device/UNC checks above still apply.
+    /// </summary>
+    private static bool IsWithinScratch(string resolvedPath)
+    {
+        var tempRoot = NormalizeDirPath(ResolveRealPath(Path.GetTempPath()));
+        var normalizedPath = NormalizeDirPath(ResolveRealPath(resolvedPath));
+        return normalizedPath.StartsWith(tempRoot, PathComparison);
     }
 
     private static bool IsWithinWorkspace(string resolvedPath, string workingDirectory)

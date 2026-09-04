@@ -11,14 +11,19 @@ CONFIG_DIR="${HOME}/.openmono"
 # root inside the container (which causes UnauthorizedAccessException).
 mkdir -p "${CONFIG_DIR}" "${CONFIG_DIR}/sessions" "${CONFIG_DIR}/memory" "${CONFIG_DIR}/artifacts"
 
-# Base flags always needed
+# Base flags always needed.
+# Run as the invoking host user so files the agent creates in the
+# bind-mounted workspace and ~/.openmono are owned by the user, not root
+# (matches the VS Code extension's --user uid:gid behaviour).
 DOCKER_ARGS=(
   --rm
   --interactive
   --tty
+  --user "$(id -u):$(id -g)"
   -v "${WORKSPACE}:/workspace"
   -v "${CONFIG_DIR}:/home/agent/.openmono"
   -e "HOME=/home/agent"
+  -e "OPENMONO_DATA_DIR=/home/agent/.openmono"
   -e "OPENMONO_IN_CONTAINER=1"
 )
 

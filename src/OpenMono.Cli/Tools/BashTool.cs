@@ -15,13 +15,14 @@ public sealed class BashTool : ToolBase
         "non-interactive flags such as `--yes`/`-y` and set CI=1 for scaffolders. " +
         "For long-running processes that do not exit on their own (servers, watchers, " +
         "`dotnet run`, `npm start`, etc.) set background=true — that spawns the process " +
-        "detached, writes stdout+stderr to a log file under ~/.openmono/bg/, and returns " +
-        "the PID immediately so the conversation can continue.";
+        "detached, writes stdout+stderr to a log file under the temp scratch dir " +
+        "(e.g. /tmp/openmono/bg/), and returns the PID + log path immediately so the " +
+        "conversation can continue.";
 
     protected override SchemaBuilder DefineSchema() => new SchemaBuilder()
         .AddProperty("command", new { type = "string", minLength = 1, description = "The bash command to execute" })
         .AddInteger("timeout_ms", "Timeout in milliseconds (default: 300000, max: 600000). Ignored when background=true.", minimum: 1, maximum: 600000)
-        .AddBoolean("background", "If true, launch the process detached, write stdout+stderr to a log file under ~/.openmono/bg/, and return the PID + log path immediately. Use for servers, watchers, or anything that never exits on its own.")
+        .AddBoolean("background", "If true, launch the process detached, write stdout+stderr to a log file under the temp scratch dir (e.g. /tmp/openmono/bg/), and return the PID + log path immediately. Use for servers, watchers, or anything that never exits on its own.")
         .Require("command");
 
     public override PermissionLevel RequiredPermission(JsonElement input)
@@ -183,8 +184,13 @@ public sealed class BashTool : ToolBase
 
     private static ToolResult RunBackground(string command, ToolContext context)
     {
-        var home = Environment.GetEnvironmentVariable("HOME") ?? "/root";
-        var bgDir = Path.Combine(home, ".openmono", "bg");
+        // Logs live in the temp scratch dir (e.g. /tmp) — NOT under $HOME. Two
+        // reasons: (1) $HOME in the container is /home/agent, which is ephemeral
+        // and not bind-mounted, so logs vanished on container stop; (2) the
+        // sandbox (PathGuard) confines the agent's file tools to the workspace
+        // plus the temp scratch dir, so a $HOME path the agent was told to `tail`
+        // was denied. /tmp is allowed by the guard, so the follow-up tail works.
+        var bgDir = Path.Combine(Path.GetTempPath(), "openmono", "bg");
         try { Directory.CreateDirectory(bgDir); }
         catch (Exception ex)
         {
@@ -207,7 +213,7 @@ public sealed class BashTool : ToolBase
             CreateNoWindow = true,
             WorkingDirectory = context.WorkingDirectory,
         };
-        psi.Environment["HOME"] = home;
+        psi.Environment["HOME"] = Environment.GetEnvironmentVariable("HOME") ?? "/root";
         psi.Environment["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? "/usr/local/bin:/usr/bin:/bin";
 
         Process? process;

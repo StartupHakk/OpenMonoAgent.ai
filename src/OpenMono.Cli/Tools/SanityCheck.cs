@@ -62,10 +62,6 @@ public static class SanityCheck
     private static readonly HashSet<string> AlwaysBlockedBuiltins =
         new(StringComparer.OrdinalIgnoreCase) { "eval", "exec" };
 
-    // Shell commands that read file contents — steer to FileRead.
-    private static readonly HashSet<string> FileReadCommands =
-        new(StringComparer.OrdinalIgnoreCase) { "cat", "head", "tail", "nl", "less", "more" };
-
     private static string? CheckBash(JsonElement input)
     {
         if (!input.TryGetProperty("command", out var cmdEl) || cmdEl.GetString() is not { } command)
@@ -113,15 +109,10 @@ public static class SanityCheck
             if (interpreterReason is not null)
                 return interpreterReason;
 
-            // Reading a file through the shell — use FileRead (line-numbered output, caching,
-            // editor integration). Only fires when there's a real file operand (not a flag, a
-            // numeric flag-value like `-n 20`, or a redirect token), so bare `cat` (stdin) is fine.
-            if (FileReadCommands.Contains(seg.Binary) &&
-                seg.Args.Any(a => !a.StartsWith('-') && !a.All(char.IsDigit) &&
-                                  a is not (">" or ">>" or "<" or "|" or "&")))
-            {
-                return $"SanityCheck refused Bash: '{seg.Binary}' reads a file through the shell — use FileRead instead.";
-            }
+            // Reading file contents through the shell (cat/head/tail/nl/less/more) is allowed:
+            // it's the same operation as the FileRead tool, BashTool already truncates output,
+            // and the agent is explicitly instructed to read background logs with `tail`.
+            // (Only the write-side is still steered to FileWrite/FileEdit below.)
 
             // tee writes its stdin to the named file(s).
             if (string.Equals(seg.Binary, "tee", StringComparison.OrdinalIgnoreCase) &&
