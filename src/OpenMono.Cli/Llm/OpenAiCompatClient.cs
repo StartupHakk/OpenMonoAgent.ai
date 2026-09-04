@@ -124,6 +124,19 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                 response = await _http.SendAsync(
                     request, HttpCompletionOption.ResponseHeadersRead, ct);
 
+                if (response.StatusCode is System.Net.HttpStatusCode.InternalServerError
+                    or System.Net.HttpStatusCode.RequestEntityTooLarge)
+                {
+                    var body = await response.Content.ReadAsStringAsync(ct);
+                    if (ContextOverflowException.IsOverflow(body, (int)response.StatusCode))
+                    {
+                        Log.Warn($"[Overflow] Provider rejected request as context overflow (HTTP {(int)response.StatusCode}): {Truncate(body, 200)}");
+                        response.Dispose();
+                        throw new ContextOverflowException(body.Length > 300 ? body[..300] : body);
+                    }
+                    response.Content = new StringContent(body, Encoding.UTF8, "application/json");
+                }
+
                 if (IsRetryableStatus(response.StatusCode))
                 {
                     lastException = new HttpRequestException(
@@ -266,6 +279,12 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                     {
                         var errorMsg = errorEl.TryGetProperty("message", out var msgEl)
                             ? msgEl.GetString() : "Unknown API error";
+
+                        if (ContextOverflowException.IsOverflow(errorMsg))
+                        {
+                            Log.Warn($"[Overflow] Provider reported context overflow mid-stream: {Truncate(errorMsg, 200)}");
+                            throw new ContextOverflowException(errorMsg ?? "context overflow");
+                        }
 
                         if (!yieldedToCaller && attempt < MaxRetries)
                         {
@@ -427,6 +446,8 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
             or System.Net.HttpStatusCode.BadGateway
             or System.Net.HttpStatusCode.ServiceUnavailable
             or System.Net.HttpStatusCode.GatewayTimeout;
+
+    private static string Truncate(string? s, int max) => string.IsNullOrEmpty(s) ? "" : (s.Length <= max ? s : s[..max] + "…");
 
     private static object BuildRequestBody(
         IReadOnlyList<Message> messages,

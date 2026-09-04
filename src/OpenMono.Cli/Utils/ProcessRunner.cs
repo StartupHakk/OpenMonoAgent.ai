@@ -11,15 +11,25 @@ public static class ProcessRunner
         int timeoutMs = 30_000,
         CancellationToken ct = default)
     {
-        var psi = new ProcessStartInfo
-        {
-            FileName = "/bin/bash",
-            ArgumentList = { "-c", command },
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
+        var psi = OperatingSystem.IsWindows()
+            ? new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                ArgumentList = { "/c", command },
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            }
+            : new ProcessStartInfo
+            {
+                FileName = "/bin/bash",
+                ArgumentList = { "-c", command },
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
 
         if (workingDirectory is not null)
             psi.WorkingDirectory = workingDirectory;

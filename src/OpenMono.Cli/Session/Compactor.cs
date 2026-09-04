@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using OpenMono.Llm;
+using OpenMono.Utils;
 
 namespace OpenMono.Session;
 
@@ -122,6 +123,7 @@ public sealed class Compactor
             EvictedBytes = evictedBytes,
             Duration = sw.Elapsed,
             ContextWindowSize = _contextSize,
+            SummaryText = formatted,
         };
 
         return (compacted, report);
@@ -139,6 +141,15 @@ public sealed class Compactor
             new() { Role = MessageRole.System, Content = SummaryPrompt.BuildPrompt(customInstructions) },
             new() { Role = MessageRole.User, Content = conversationText },
         };
+
+        var summaryPromptTokens = TokenEstimate.EstimatePayload(summaryMessages);
+        var summaryThreshold = (int)(_contextSize * 0.80);
+        if (summaryPromptTokens > summaryThreshold)
+        {
+            throw new ContextOverflowException(
+                $"Summary prompt ({summaryPromptTokens} est. tokens) exceeds the context window " +
+                $"({_contextSize}); cannot compact. {summaryPromptTokens - summaryThreshold} tokens over threshold.");
+        }
 
         var sb = new StringBuilder();
         var options = new LlmOptions { MaxTokens = 4096, Temperature = 0.1 };
@@ -196,6 +207,9 @@ public sealed class Compactor
         catch (JsonException) { }
         return null;
     }
+
+    internal static int EstimateTokens(IReadOnlyList<Message> messages)
+        => TokenEstimate.EstimatePayload(messages);
 
     private static List<Message> GetRecentTurns(List<Message> messages, int keepTurns)
     {

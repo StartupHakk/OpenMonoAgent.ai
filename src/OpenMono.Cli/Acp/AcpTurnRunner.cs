@@ -606,19 +606,34 @@ public sealed class AcpTurnRunner : IAcpEventSink
     public Task OnPlanReadyAsync(string planContent, string? planPath)
         => _writer.WriteEventAsync("plan_ready", new { plan = planContent, plan_path = planPath });
 
-    public Task OnCompactingStartedAsync()
-        => _writer.WriteEventAsync("compacting", new { });
+    public Task OnCompactionStartedAsync(string reason, int promptTokens)
+        => _writer.WriteEventAsync("compaction_started", new
+        {
+            reason = reason,
+            prompt_tokens = promptTokens,
+        });
 
-    public Task OnCompactionAsync(CompactionReport report, int checkpointIndex)
+    public Task OnCompactionAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null, string? reason = null, int messagesBefore = 0, int messagesAfter = 0, int tokensBefore = 0, int tokensAfter = 0)
         => _writer.WriteEventAsync("compaction", new
         {
-            messages_compressed = report.MessagesCompressed,
-            duration_seconds = report.Duration.TotalSeconds,
+            messages_compressed = messagesCompressed,
+            duration_seconds = durationSeconds,
             checkpoint_index = checkpointIndex,
-            messages_before = report.MessagesBefore,
-            messages_after = report.MessagesAfter,
-            tokens_before = report.TokensBefore,
-            tokens_after = report.TokensAfter,
+            messages_before = messagesBefore,
+            messages_after = messagesAfter,
+            tokens_before = tokensBefore,
+            tokens_after = tokensAfter,
+            summary_text = summaryText,
+            reason = reason,
+        });
+
+    public Task OnCheckpointAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null)
+        => _writer.WriteEventAsync("checkpoint", new
+        {
+            messages_compressed = messagesCompressed,
+            duration_seconds = durationSeconds,
+            checkpoint_index = checkpointIndex,
+            summary_text = summaryText,
         });
 
     public Task OnUsageAsync(int inputTokens, int outputTokens, int totalTokens, int contextTokens, int contextWindow, double genTps, double avgTps)

@@ -87,6 +87,7 @@ public class LlmConfig
     {
         if (!string.IsNullOrEmpty(source.Endpoint)) Endpoint = source.Endpoint;
         if (!string.IsNullOrEmpty(source.Model)) Model = source.Model;
+        if (!string.IsNullOrEmpty(source.ApiKey)) ApiKey = source.ApiKey;
         if (source.ContextSize > 0) ContextSize = source.ContextSize;
         if (source.MaxOutputTokens > 0) MaxOutputTokens = source.MaxOutputTokens;
         if (source.Temperature > 0) Temperature = source.Temperature;

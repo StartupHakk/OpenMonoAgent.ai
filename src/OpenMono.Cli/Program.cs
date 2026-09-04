@@ -385,7 +385,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
         onPendingUserInputInjected: text => ansiTui?.AddUserMessage(text));
 
     commands.Register(new RetryCommand(loop));
-    commands.Register(new CompactCommand(compactor));
+    commands.Register(new CompactCommand(loop));
     commands.Register(new PlanCommand(loop));
 
     renderer.EnableCommandSuggestions(commands);
@@ -929,6 +929,11 @@ static async Task TryDetectActualModelAsync(AppConfig config)
     var baseUrl = config.Llm.Endpoint.TrimEnd('/');
     try
     {
+        using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        if (!string.IsNullOrWhiteSpace(config.Llm.ApiKey))
+            http.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.Llm.ApiKey);
+        var url = $"{config.Llm.Endpoint.TrimEnd('/')}/props";
         var json = await http.GetStringAsync($"{baseUrl}/props");
         using var doc = System.Text.Json.JsonDocument.Parse(json);
         var root = doc.RootElement;
@@ -974,15 +979,8 @@ static async Task TryDetectActualModelAsync(AppConfig config)
             serverCtx = ctx;
         }
 
-        if (serverCtx is not > 0)
-        {
-            // /props had no usable n_ctx — fall back to /slots (llama.cpp
-            // reports per-slot n_ctx there). Best-effort: failures just leave
-            // serverCtx null and the configured value stands.
-            serverCtx = await TryDetectCtxFromSlotsAsync(http, baseUrl);
-        }
-
-        if (serverCtx is > 0 && !config.Llm.ContextSizeExplicit)
+        var userConfiguredCtx = config.Llm.ContextSize;
+        if (serverCtx is > 0 && userConfiguredCtx == 196608)
         {
             config.Llm.ContextSize = serverCtx.Value;
             Log.Debug($"Detected context size from server: {serverCtx}");
@@ -990,6 +988,10 @@ static async Task TryDetectActualModelAsync(AppConfig config)
         else if (serverCtx is > 0)
         {
             Log.Debug($"Server reports n_ctx={serverCtx} but keeping explicitly configured ContextSize={config.Llm.ContextSize}");
+        }
+        else if (serverCtx is > 0)
+        {
+            Log.Debug($"Keeping configured context size {userConfiguredCtx} (server reported {serverCtx})");
         }
 
         if (!string.IsNullOrWhiteSpace(name)) return;
@@ -1001,8 +1003,11 @@ static async Task TryDetectActualModelAsync(AppConfig config)
 
     try
     {
-        // Reuses the shared client (timeout + bearer auth already set).
-        var json = await http.GetStringAsync($"{baseUrl}/v1/models");
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        if (!string.IsNullOrWhiteSpace(config.Llm.ApiKey))
+            http.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.Llm.ApiKey);
+        var json = await http.GetStringAsync($"{config.Llm.Endpoint.TrimEnd('/')}/v1/models");
         using var doc = System.Text.Json.JsonDocument.Parse(json);
         if (doc.RootElement.TryGetProperty("data", out var data)
             && data.ValueKind == System.Text.Json.JsonValueKind.Array)
