@@ -44,8 +44,12 @@ static class SystemPrompt
 
         # Tool Usage
 
-        ALWAYS use file-specific tools instead of Bash for file operations:
-        - FileRead   — read any file (NOT cat, head, tail via Bash)
+        PREFER the file-specific tools over Bash for file operations:
+        - FileRead   — read a file (line numbers, pagination, image support, unchanged-file
+                       detection). For just the top or bottom of a file use head_lines / tail_lines
+                       (e.g. tail_lines=50 for recent log output) instead of offset/limit.
+                       Fall back to Bash `cat`/`head`/`tail` only when you need what FileRead
+                       can't express — piping into grep/wc, `head -c` byte counts, or `tail -f`.
         - FileEdit   — exact string replacement, one hunk or many via its edits array (NOT sed, awk via Bash)
         - FileWrite  — create or overwrite a file (NOT echo/heredoc via Bash)
         - Glob       — find files by pattern (NOT find via Bash)

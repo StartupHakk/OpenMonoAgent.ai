@@ -894,16 +894,42 @@ static async Task PollHealthAsync(IRenderer renderer, string healthUrl, string? 
     renderer.WriteInfo("Check logs: docker logs llama-server --tail 20");
 }
 
-static async Task TryDetectActualModelAsync(AppConfig config)
+static async Task<int?> TryDetectCtxFromSlotsAsync(System.Net.Http.HttpClient http, string baseUrl)
 {
     try
     {
-        using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-        if (!string.IsNullOrWhiteSpace(config.Llm.ApiKey))
-            http.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.Llm.ApiKey);
-        var url = $"{config.Llm.Endpoint.TrimEnd('/')}/props";
-        var json = await http.GetStringAsync(url);
+        var json = await http.GetStringAsync($"{baseUrl}/slots");
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array)
+            return null;
+        foreach (var slot in doc.RootElement.EnumerateArray())
+        {
+            if (slot.TryGetProperty("n_ctx", out var nCtx)
+                && nCtx.TryGetInt32(out var ctx)
+                && ctx > 0)
+            {
+                Log.Debug($"Detected context size from /slots: {ctx}");
+                return ctx;
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        Log.Debug($"/slots unavailable ({ex.GetType().Name})");
+    }
+    return null;
+}
+
+static async Task TryDetectActualModelAsync(AppConfig config)
+{
+    using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+    if (!string.IsNullOrWhiteSpace(config.Llm.ApiKey))
+        http.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.Llm.ApiKey);
+    var baseUrl = config.Llm.Endpoint.TrimEnd('/');
+    try
+    {
+        var json = await http.GetStringAsync($"{baseUrl}/props");
         using var doc = System.Text.Json.JsonDocument.Parse(json);
         var root = doc.RootElement;
 
@@ -948,10 +974,22 @@ static async Task TryDetectActualModelAsync(AppConfig config)
             serverCtx = ctx;
         }
 
-        if (serverCtx is > 0)
+        if (serverCtx is not > 0)
+        {
+            // /props had no usable n_ctx — fall back to /slots (llama.cpp
+            // reports per-slot n_ctx there). Best-effort: failures just leave
+            // serverCtx null and the configured value stands.
+            serverCtx = await TryDetectCtxFromSlotsAsync(http, baseUrl);
+        }
+
+        if (serverCtx is > 0 && !config.Llm.ContextSizeExplicit)
         {
             config.Llm.ContextSize = serverCtx.Value;
-            Log.Debug($"Detected context size from /props: {serverCtx}");
+            Log.Debug($"Detected context size from server: {serverCtx}");
+        }
+        else if (serverCtx is > 0)
+        {
+            Log.Debug($"Server reports n_ctx={serverCtx} but keeping explicitly configured ContextSize={config.Llm.ContextSize}");
         }
 
         if (!string.IsNullOrWhiteSpace(name)) return;
@@ -963,11 +1001,8 @@ static async Task TryDetectActualModelAsync(AppConfig config)
 
     try
     {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-        if (!string.IsNullOrWhiteSpace(config.Llm.ApiKey))
-            http.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.Llm.ApiKey);
-        var json = await http.GetStringAsync($"{config.Llm.Endpoint.TrimEnd('/')}/v1/models");
+        // Reuses the shared client (timeout + bearer auth already set).
+        var json = await http.GetStringAsync($"{baseUrl}/v1/models");
         using var doc = System.Text.Json.JsonDocument.Parse(json);
         if (doc.RootElement.TryGetProperty("data", out var data)
             && data.ValueKind == System.Text.Json.JsonValueKind.Array)

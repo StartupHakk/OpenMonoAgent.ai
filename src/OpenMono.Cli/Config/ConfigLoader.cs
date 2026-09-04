@@ -10,6 +10,7 @@ public static class ConfigLoader
         Action<string>? warn = null)
     {
         var config = new AppConfig();
+        var defaultContextSize = config.Llm.ContextSize;
         var cwd = Path.GetFullPath(workingDirectory ?? Directory.GetCurrentDirectory());
         config.WorkingDirectory = cwd;
 
@@ -44,6 +45,20 @@ public static class ConfigLoader
 
         ApplyEnvironmentOverrides(config);
 
+        // Context-size precedence: env > explicit llm.context_size > live server
+        // detection > inference.ctx_size > default. inference.ctx_size is a
+        // non-explicit fallback; it never marks the value explicit.
+        if (!config.Llm.ContextSizeExplicit &&
+            config.Llm.ContextSize != defaultContextSize)
+        {
+            config.Llm.ContextSizeExplicit = true;
+        }
+        if (config.Inference.CtxSize > 0 && !config.Llm.ContextSizeExplicit &&
+            config.Llm.ContextSize == defaultContextSize)
+        {
+            config.Llm.ContextSize = config.Inference.CtxSize;
+        }
+
         ApplyActiveModelPreset(config);
 
         EnsureWritableDataDirectory(config, warn);
@@ -62,18 +77,25 @@ public static class ConfigLoader
         var fallbackIsConfigured = string.Equals(
             Path.GetFullPath(fallback), Path.GetFullPath(config.DataDirectory), StringComparison.Ordinal);
 
+        // Warnings go to stderr and the warn callback. stderr is always captured
+        // (docker logs, extension Output channel); the callback surfaces in the
+        // TUI. This runs before Log initialization.
         if (fallbackIsConfigured || !TryInitDataDirectory(fallback))
         {
-            warn?.Invoke(
-                $"Data directory '{config.DataDirectory}' is not writable and no fallback could be created. " +
-                "Sessions, memory, and artifacts will not be saved this run.");
+            var msg =
+                "Data directory '" + config.DataDirectory + "' is not writable and no fallback could be created. " +
+                "Sessions, memory, and artifacts will NOT be saved this run.";
+            Console.Error.WriteLine("[openmono][WARN] " + msg);
+            warn?.Invoke(msg);
             return;
         }
 
-        warn?.Invoke(
-            $"Data directory '{config.DataDirectory}' is not writable — falling back to '{fallback}'. " +
-            "Sessions, memory, and artifacts will not persist across runs " +
-            "(in Docker, mount a writable volume at the data dir or fix ~/.openmono ownership).");
+        var fbMsg =
+            "Data directory '" + config.DataDirectory + "' is not writable — falling back to '" + fallback + "'. " +
+            "Sessions, memory, and artifacts will NOT persist across runs " +
+            "(in Docker, check the ~/.openmono bind-mount ownership).";
+        Console.Error.WriteLine("[openmono][WARN] " + fbMsg);
+        warn?.Invoke(fbMsg);
         config.DataDirectory = fallback;
     }
 
@@ -119,6 +141,7 @@ public static class ConfigLoader
             config.Llm.MergeFrom(overrides.Llm);
             config.Agents.MergeFrom(overrides.Agents);
             config.Web.MergeFrom(overrides.Web);
+            config.Inference.MergeFrom(overrides.Inference);
 
             foreach (var (tool, rules) in overrides.Permissions.Tools)
             {
@@ -207,7 +230,10 @@ public static class ConfigLoader
 
         var contextSize = Environment.GetEnvironmentVariable("OPENMONO_CONTEXT_SIZE");
         if (!string.IsNullOrEmpty(contextSize) && int.TryParse(contextSize, out var ctxVal) && ctxVal > 0)
+        {
             config.Llm.ContextSize = ctxVal;
+            config.Llm.ContextSizeExplicit = true;
+        }
 
         var maxOutput = Environment.GetEnvironmentVariable("OPENMONO_MAX_OUTPUT_TOKENS");
         if (!string.IsNullOrEmpty(maxOutput) && int.TryParse(maxOutput, out var maxOutVal) && maxOutVal > 0)

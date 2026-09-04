@@ -58,6 +58,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
+
 RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
@@ -77,11 +78,6 @@ ENV PATH="/usr/local/bin/openmono:${PATH}"
 COPY docker/entrypoint.sh /usr/local/bin/openmono-entrypoint.sh
 RUN chmod +x /usr/local/bin/openmono-entrypoint.sh
 
-# Sessions live in /data. ACP callers MUST mount a named volume here
-# (e.g. `-v openmono-sessions-<agent_id>:/data`) for session JSON files to
-# survive container removal. With `--rm` and an anonymous volume, session
-# state is wiped on every container stop.
-VOLUME ["/data"]
 
 # Default workspace mount-point. ACP callers pass -v <host>:/workspace;
 # the docker-compose service mounts ${WORKSPACE:-.} here.

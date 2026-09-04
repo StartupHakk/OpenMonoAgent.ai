@@ -257,7 +257,18 @@ public sealed class LocalToolExecutor : IToolExecutor
                 else
                 {
                     Log.Debug($"Tool executing: {call.Name} args={call.Arguments}");
-                    result = await tool.ExecuteAsync(input, ctx, execCt);
+                    // Stamp the active tool call id so write tools can stamp per-call
+                    // state (diff staging) on the shared session. Writes are sequential in
+                    // the ACP path, so this is safe; read-only parallel tools don't read it.
+                    _session.CurrentToolCallId = call.Id;
+                    try
+                    {
+                        result = await tool.ExecuteAsync(input, ctx, execCt);
+                    }
+                    finally
+                    {
+                        _session.CurrentToolCallId = null;
+                    }
 
                     await _hookRunner.RunPostToolUseHooksAsync(call.Name, result.Content, ct);
                 }

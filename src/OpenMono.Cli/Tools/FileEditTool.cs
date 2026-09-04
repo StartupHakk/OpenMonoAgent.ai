@@ -117,6 +117,9 @@ public sealed class FileEditTool : ToolBase
 
             context.FileHistory?.RecordAfter(resolvedPath);
 
+            context.Session.GetDiffStager(context.Config.DataDirectory)
+                .Record(context.Session.CurrentToolCallId ?? "", resolvedPath, originalContent, content);
+
             var secretMessage = string.Concat(secretMessages);
             var diff = hunks.Count == 1
                 ? InlineDiff.FromEdit(hunks[0].OldString, appliedNewStrings[0], resolvedPath)
