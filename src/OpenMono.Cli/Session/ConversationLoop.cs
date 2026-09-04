@@ -277,10 +277,12 @@ public sealed class ConversationLoop : IDisposable
         if (_checkpointer.NeedsCheckpoint(_session, preForwardEstimate))
         {
             _output.WriteDebug($"[Checkpoint] Triggered pre-turn — messages={_session.Messages.Count} forward={preForwardEstimate}");
+            if (_sink is not null)
+                await _sink.OnCheckpointStartedAsync("pre-turn", preForwardEstimate);
             var cpSw = Stopwatch.StartNew();
             var entry = await _checkpointer.CreateCheckpointAsync(_session, ct);
             cpSw.Stop();
-            RenderCheckpoint(entry, cpSw.Elapsed, "pre-turn");
+            await RenderCheckpoint(entry, cpSw.Elapsed, "pre-turn");
             _output.WriteDebug($"[Checkpoint] Done — effective window={_checkpointer.BuildContextWindow(_session).Count} messages");
         }
 
@@ -334,10 +336,12 @@ public sealed class ConversationLoop : IDisposable
                 if (_checkpointer.NeedsCheckpoint(_session, iterForwardEstimate))
                 {
                     _output.WriteDebug($"[Checkpoint] Triggered mid-turn — messages={_session.Messages.Count} forward={iterForwardEstimate}");
+                    if (_sink is not null)
+                        await _sink.OnCheckpointStartedAsync("mid-turn", iterForwardEstimate);
                     var cpSw = Stopwatch.StartNew();
                     var entry = await _checkpointer.CreateCheckpointAsync(_session, ct);
                     cpSw.Stop();
-                    RenderCheckpoint(entry, cpSw.Elapsed, "mid-turn");
+                    await RenderCheckpoint(entry, cpSw.Elapsed, "mid-turn");
                     _output.WriteDebug($"[Checkpoint] Done — effective window={_checkpointer.BuildContextWindow(_session).Count} messages");
                     _doomLoop.Reset();
                     i = -1; continue;
@@ -931,7 +935,7 @@ public sealed class ConversationLoop : IDisposable
         return true;
     }
 
-    private void RenderCheckpoint(CheckpointEntry entry, TimeSpan elapsed, string trigger)
+    private async Task RenderCheckpoint(CheckpointEntry entry, TimeSpan elapsed, string trigger)
     {
         var report = new CheckpointReport
         {
@@ -945,7 +949,10 @@ public sealed class ConversationLoop : IDisposable
         report.RenderTo(_output.WriteInfo);
 
         if (_sink is not null)
-            _ = _sink.OnCheckpointAsync(entry.MessagesCompressed, elapsed.TotalSeconds, report.CheckpointIndex, entry.Summary);
+        {
+            await _sink.OnCheckpointAsync(entry.MessagesCompressed, elapsed.TotalSeconds, report.CheckpointIndex, entry.Summary, trigger, report.MessagesKept);
+            await _sink.OnSubAgentLogAsync($"Checkpoint #{report.CheckpointIndex} stored — {entry.MessagesCompressed} messages compressed in {elapsed.TotalSeconds:F1}s.");
+        }
     }
 
     private async Task RunCompactionAsync(int promptTokens, string? customInstructions, CancellationToken ct, string reason)
@@ -954,7 +961,10 @@ public sealed class ConversationLoop : IDisposable
         _session.Meta.IsCompacting = true;
         _output.ShowWaitingIndicator("Compacting");
         if (_sink is not null)
+        {
             await _sink.OnCompactionStartedAsync(reason, promptTokens);
+            await _sink.OnSubAgentLogAsync($"Compacting context ({reason}) — {promptTokens} prompt tokens.");
+        }
         CompactionReport report;
         try
         {
@@ -981,14 +991,18 @@ public sealed class ConversationLoop : IDisposable
         // Reflect the new (smaller) occupancy immediately, rather than leaving the pre-compaction
         // number on screen until the next real LLM response reports usage.
         _session.Meta.TokenTracker?.SetEstimatedPromptTokens(report.TokensAfter);
-        await EmitUsageAsync();
 
         report.RenderTo(_output.WriteInfo, promptTokens);
         _output.WriteDebug($"[Compact] Done — {_session.Messages.Count} messages remaining");
 
         if (_sink is not null)
+        {
             await _sink.OnCompactionAsync(report.MessagesCompressed, report.Duration.TotalSeconds, _session.Checkpoints.Count, report.SummaryText, reason,
                 report.MessagesBefore, report.MessagesAfter, report.TokensBefore, report.TokensAfter);
+            await _sink.OnSubAgentLogAsync($"Compacted {report.MessagesBefore} → {report.MessagesAfter} messages (~{report.TokensBefore} → ~{report.TokensAfter} tokens).");
+        }
+
+        await EmitUsageAsync();
     }
 
     private Task EmitUsageAsync()

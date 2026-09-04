@@ -606,16 +606,29 @@ public sealed class AcpTurnRunner : IAcpEventSink
     public Task OnPlanReadyAsync(string planContent, string? planPath)
         => _writer.WriteEventAsync("plan_ready", new { plan = planContent, plan_path = planPath });
 
-    public Task OnCompactionStartedAsync(string reason, int promptTokens)
-        => _writer.WriteEventAsync("compaction_started", new
+    public async Task OnCompactionStartedAsync(string reason, int promptTokens)
+    {
+        await _writer.WriteEventAsync("compaction_started", new
         {
+            kind = "compaction",
+            status = "started",
+            title = "Compacting context…",
             reason = reason,
             prompt_tokens = promptTokens,
         });
+        await _writer.WriteEventAsync("compacting", new { });
+    }
 
     public Task OnCompactionAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null, string? reason = null, int messagesBefore = 0, int messagesAfter = 0, int tokensBefore = 0, int tokensAfter = 0)
-        => _writer.WriteEventAsync("compaction", new
+    {
+        var reductionPct = tokensBefore > 0 ? 100 - (tokensAfter * 100 / tokensBefore) : 0;
+        var reasonTag = string.IsNullOrWhiteSpace(reason) ? "" : reason == "manual" ? " (manual)" : " (auto)";
+        return _writer.WriteEventAsync("compaction", new
         {
+            kind = "compaction",
+            status = "done",
+            title = $"Compacted {messagesBefore} → {messagesAfter} messages (−{reductionPct}%){reasonTag}",
+            reduction_pct = reductionPct,
             messages_compressed = messagesCompressed,
             duration_seconds = durationSeconds,
             checkpoint_index = checkpointIndex,
@@ -626,11 +639,27 @@ public sealed class AcpTurnRunner : IAcpEventSink
             summary_text = summaryText,
             reason = reason,
         });
+    }
 
-    public Task OnCheckpointAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null)
+    public Task OnCheckpointStartedAsync(string trigger, int promptTokens)
+        => _writer.WriteEventAsync("checkpoint_started", new
+        {
+            kind = "checkpoint",
+            status = "started",
+            title = "Checkpointing context…",
+            trigger = trigger,
+            prompt_tokens = promptTokens,
+        });
+
+    public Task OnCheckpointAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null, string? trigger = null, int messagesKept = 0)
         => _writer.WriteEventAsync("checkpoint", new
         {
+            kind = "checkpoint",
+            status = "done",
+            title = $"Checkpoint #{checkpointIndex} — {messagesCompressed} messages → summary",
+            trigger = trigger,
             messages_compressed = messagesCompressed,
+            messages_kept = messagesKept,
             duration_seconds = durationSeconds,
             checkpoint_index = checkpointIndex,
             summary_text = summaryText,
