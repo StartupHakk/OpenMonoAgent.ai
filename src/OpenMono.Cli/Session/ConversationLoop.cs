@@ -280,9 +280,20 @@ public sealed class ConversationLoop : IDisposable
             if (_sink is not null)
                 await _sink.OnCheckpointStartedAsync("pre-turn", preForwardEstimate);
             var cpSw = Stopwatch.StartNew();
-            var entry = await _checkpointer.CreateCheckpointAsync(_session, ct);
-            cpSw.Stop();
-            await RenderCheckpoint(entry, cpSw.Elapsed, "pre-turn");
+            try
+            {
+                var entry = await _checkpointer.CreateCheckpointAsync(_session, ct);
+                cpSw.Stop();
+                await RenderCheckpoint(entry, cpSw.Elapsed, "pre-turn");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                cpSw.Stop();
+                _output.WriteDebug($"[Checkpoint] Failed pre-turn — {ex.GetType().Name}");
+                if (_sink is not null)
+                    await _sink.OnSubAgentLogAsync($"Checkpoint failed: {ex.Message}");
+                throw;
+            }
             _output.WriteDebug($"[Checkpoint] Done — effective window={_checkpointer.BuildContextWindow(_session).Count} messages");
         }
 
@@ -339,9 +350,20 @@ public sealed class ConversationLoop : IDisposable
                     if (_sink is not null)
                         await _sink.OnCheckpointStartedAsync("mid-turn", iterForwardEstimate);
                     var cpSw = Stopwatch.StartNew();
-                    var entry = await _checkpointer.CreateCheckpointAsync(_session, ct);
-                    cpSw.Stop();
-                    await RenderCheckpoint(entry, cpSw.Elapsed, "mid-turn");
+                    try
+                    {
+                        var entry = await _checkpointer.CreateCheckpointAsync(_session, ct);
+                        cpSw.Stop();
+                        await RenderCheckpoint(entry, cpSw.Elapsed, "mid-turn");
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        cpSw.Stop();
+                        _output.WriteDebug($"[Checkpoint] Failed mid-turn — {ex.GetType().Name}");
+                        if (_sink is not null)
+                            await _sink.OnSubAgentLogAsync($"Checkpoint failed: {ex.Message}");
+                        throw;
+                    }
                     _output.WriteDebug($"[Checkpoint] Done — effective window={_checkpointer.BuildContextWindow(_session).Count} messages");
                     _doomLoop.Reset();
                     i = -1; continue;
@@ -949,22 +971,24 @@ public sealed class ConversationLoop : IDisposable
         report.RenderTo(_output.WriteInfo);
 
         if (_sink is not null)
-        {
             await _sink.OnCheckpointAsync(entry.MessagesCompressed, elapsed.TotalSeconds, report.CheckpointIndex, entry.Summary, trigger, report.MessagesKept);
-            await _sink.OnSubAgentLogAsync($"Checkpoint #{report.CheckpointIndex} stored — {entry.MessagesCompressed} messages compressed in {elapsed.TotalSeconds:F1}s.");
-        }
     }
 
     private async Task RunCompactionAsync(int promptTokens, string? customInstructions, CancellationToken ct, string reason)
     {
+        if (!Compactor.HasCompactableContent(_session.Messages))
+        {
+            _output.WriteDebug($"[Compact] Skipped ({reason}) — messages={_session.Messages.Count} lastPromptTokens={promptTokens}");
+            if (reason == "manual")
+                _output.WriteInfo("Nothing to compact — conversation too short or already compact.");
+            return;
+        }
+
         _output.WriteDebug($"[Compact] Triggered ({reason}) — messages={_session.Messages.Count} lastPromptTokens={promptTokens}");
         _session.Meta.IsCompacting = true;
         _output.ShowWaitingIndicator("Compacting");
         if (_sink is not null)
-        {
             await _sink.OnCompactionStartedAsync(reason, promptTokens);
-            await _sink.OnSubAgentLogAsync($"Compacting context ({reason}) — {promptTokens} prompt tokens.");
-        }
         CompactionReport report;
         try
         {
@@ -982,6 +1006,13 @@ public sealed class ConversationLoop : IDisposable
             _session.Checkpoints.Clear();
             _session.CheckpointCutoffIndex = 0;
         }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _output.WriteDebug($"[Compact] Failed ({reason}) — {ex.GetType().Name}");
+            if (_sink is not null)
+                await _sink.OnSubAgentLogAsync($"Compaction failed ({reason}): {ex.Message}");
+            throw;
+        }
         finally
         {
             _session.Meta.IsCompacting = false;
@@ -996,11 +1027,8 @@ public sealed class ConversationLoop : IDisposable
         _output.WriteDebug($"[Compact] Done — {_session.Messages.Count} messages remaining");
 
         if (_sink is not null)
-        {
             await _sink.OnCompactionAsync(report.MessagesCompressed, report.Duration.TotalSeconds, _session.Checkpoints.Count, report.SummaryText, reason,
                 report.MessagesBefore, report.MessagesAfter, report.TokensBefore, report.TokensAfter);
-            await _sink.OnSubAgentLogAsync($"Compacted {report.MessagesBefore} → {report.MessagesAfter} messages (~{report.TokensBefore} → ~{report.TokensAfter} tokens).");
-        }
 
         await EmitUsageAsync();
     }

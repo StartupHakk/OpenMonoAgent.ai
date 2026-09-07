@@ -929,10 +929,6 @@ static async Task TryDetectActualModelAsync(AppConfig config)
     var baseUrl = config.Llm.Endpoint.TrimEnd('/');
     try
     {
-        using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-        if (!string.IsNullOrWhiteSpace(config.Llm.ApiKey))
-            http.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.Llm.ApiKey);
         var url = $"{config.Llm.Endpoint.TrimEnd('/')}/props";
         var json = await http.GetStringAsync($"{baseUrl}/props");
         using var doc = System.Text.Json.JsonDocument.Parse(json);
@@ -980,6 +976,13 @@ static async Task TryDetectActualModelAsync(AppConfig config)
         }
 
         var userConfiguredCtx = config.Llm.ContextSize;
+        if (serverCtx is null or <= 0)
+        {
+            var slotsCtx = await TryDetectCtxFromSlotsAsync(http, baseUrl);
+            if (slotsCtx is > 0)
+                serverCtx = slotsCtx;
+        }
+
         if (serverCtx is > 0 && userConfiguredCtx == 196608)
         {
             config.Llm.ContextSize = serverCtx.Value;
@@ -988,10 +991,6 @@ static async Task TryDetectActualModelAsync(AppConfig config)
         else if (serverCtx is > 0)
         {
             Log.Debug($"Server reports n_ctx={serverCtx} but keeping explicitly configured ContextSize={config.Llm.ContextSize}");
-        }
-        else if (serverCtx is > 0)
-        {
-            Log.Debug($"Keeping configured context size {userConfiguredCtx} (server reported {serverCtx})");
         }
 
         if (!string.IsNullOrWhiteSpace(name)) return;
@@ -1003,10 +1002,6 @@ static async Task TryDetectActualModelAsync(AppConfig config)
 
     try
     {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-        if (!string.IsNullOrWhiteSpace(config.Llm.ApiKey))
-            http.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.Llm.ApiKey);
         var json = await http.GetStringAsync($"{config.Llm.Endpoint.TrimEnd('/')}/v1/models");
         using var doc = System.Text.Json.JsonDocument.Parse(json);
         if (doc.RootElement.TryGetProperty("data", out var data)

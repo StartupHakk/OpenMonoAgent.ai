@@ -87,7 +87,8 @@ public sealed class Checkpointer
             .Where(m => m.Role != MessageRole.System)
             .ToList();
 
-        var summary = await GenerateSummaryAsync(toSummarise, ct);
+        var (evictedMessages, _, _) = SummarySafety.EvictLargeToolOutputs(toSummarise);
+        var summary = await GenerateSummaryAsync(evictedMessages, ct);
 
         var entry = new CheckpointEntry
         {
@@ -141,6 +142,8 @@ public sealed class Checkpointer
             new() { Role = MessageRole.System, Content = SummaryPrompt.BuildPrompt() },
             new() { Role = MessageRole.User,   Content = conversationText },
         };
+
+        SummarySafety.EnsureSummaryFits(summaryMessages, _contextSize);
 
         var sb = new StringBuilder();
         var opts = new LlmOptions { MaxTokens = 4096, Temperature = 0.1 };

@@ -10,7 +10,6 @@ public sealed class Compactor
 {
     private readonly ILlmClient _llm;
     private readonly int _contextSize;
-    private const int LargeToolOutputThreshold = 2000;
 
     private static readonly HashSet<string> FileToolNames = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -28,9 +27,19 @@ public sealed class Compactor
 
     public bool NeedsCompaction(IReadOnlyList<Message> effectiveMessages, int lastPromptTokens = 0)
     {
+        if (!HasCompactableContent(effectiveMessages))
+            return false;
+
         var tokens = lastPromptTokens > 0 ? lastPromptTokens : TokenEstimator.EstimateMessages(effectiveMessages);
         var threshold = (int)(_contextSize * 0.80);
         return tokens > threshold;
+    }
+
+    public static bool HasCompactableContent(IReadOnlyList<Message> messages)
+    {
+        var systemMessages = messages.Where(m => m.Role == MessageRole.System).ToList();
+        var recentTurns = GetRecentTurns(messages, keepTurns: 4);
+        return messages.Except(systemMessages).Except(recentTurns).Count() >= 4;
     }
 
     public async Task<(SessionState Session, CompactionReport Report)> CompactAsync(
@@ -79,7 +88,7 @@ public sealed class Compactor
             }
         }
 
-        var (evictedMessages, evictedCount, evictedBytes) = EvictLargeToolOutputs(toSummarize);
+        var (evictedMessages, evictedCount, evictedBytes) = SummarySafety.EvictLargeToolOutputs(toSummarize);
 
         var summary = await GenerateSummaryAsync(evictedMessages, customInstructions, ct);
         var formatted = SummaryPrompt.FormatSummary(summary);
@@ -142,14 +151,7 @@ public sealed class Compactor
             new() { Role = MessageRole.User, Content = conversationText },
         };
 
-        var summaryPromptTokens = TokenEstimate.EstimatePayload(summaryMessages);
-        var summaryThreshold = (int)(_contextSize * 0.80);
-        if (summaryPromptTokens > summaryThreshold)
-        {
-            throw new ContextOverflowException(
-                $"Summary prompt ({summaryPromptTokens} est. tokens) exceeds the context window " +
-                $"({_contextSize}); cannot compact. {summaryPromptTokens - summaryThreshold} tokens over threshold.");
-        }
+        SummarySafety.EnsureSummaryFits(summaryMessages, _contextSize);
 
         var sb = new StringBuilder();
         var options = new LlmOptions { MaxTokens = 4096, Temperature = 0.1 };
@@ -161,33 +163,6 @@ public sealed class Compactor
         }
 
         return sb.ToString();
-    }
-
-    private static (List<Message> Messages, int Count, int Bytes) EvictLargeToolOutputs(List<Message> messages)
-    {
-        var evictedCount = 0;
-        var evictedBytes = 0;
-        var result = new List<Message>(messages.Count);
-
-        foreach (var msg in messages)
-        {
-            if (msg.Role == MessageRole.Tool && (msg.Content?.Length ?? 0) > LargeToolOutputThreshold)
-            {
-                var originalLen = msg.Content!.Length;
-                evictedBytes += originalLen;
-                evictedCount++;
-                result.Add(msg with
-                {
-                    Content = $"[Tool result evicted — was {originalLen} chars from {msg.ToolName ?? "unknown"}]",
-                });
-            }
-            else
-            {
-                result.Add(msg);
-            }
-        }
-
-        return (result, evictedCount, evictedBytes);
     }
 
     private static string? TryExtractFilePath(string argumentsJson)
@@ -211,7 +186,7 @@ public sealed class Compactor
     internal static int EstimateTokens(IReadOnlyList<Message> messages)
         => TokenEstimate.EstimatePayload(messages);
 
-    private static List<Message> GetRecentTurns(List<Message> messages, int keepTurns)
+    private static List<Message> GetRecentTurns(IReadOnlyList<Message> messages, int keepTurns)
     {
         var nonSystem = messages.Where(m => m.Role != MessageRole.System).ToList();
         var turns = 0;
