@@ -1,4 +1,14 @@
 # Pin before production rollout once a known-good Scrapling release is chosen.
 scrapling[fetchers]
-fastapi
+fastapi>=0.109.1
 uvicorn[standard]
+h11>=0.16.0
+starlette>=0.40.0
+urllib3>=2.6.0
+lxml>=6.1.0
+anyio>=4.4.0
+orjson>=3.9.15
+requests>=2.32.2
+filelock>=3.20.1
+zipp>=3.19.1
+idna>=3.15
