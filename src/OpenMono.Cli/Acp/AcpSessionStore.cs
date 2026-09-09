@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using OpenMono.Config;
 using OpenMono.Session;
+using OpenMono.Utils;
 
 namespace OpenMono.Acp;
 
@@ -37,6 +38,9 @@ public sealed class AcpSessionStore : IDisposable
 
     public string Directory => _dir;
 
+    internal ModelReasoningProfile ResolveReasoning(string? modelName)
+        => ModelReasoningProfile.Resolve(modelName, _config.Llm.ServerReasoning);
+
     public AcpSession Create(string? model, AppConfig cfg)
     {
         var now = DateTime.UtcNow;
@@ -50,6 +54,10 @@ public sealed class AcpSessionStore : IDisposable
         // only transmits the mode on an explicit toggle — so without this default a fresh
         // session would silently run in build mode (writes allowed) while the UI showed "plan".
         state.Meta.PlanMode = true;
+
+        var reasoningProfile = ResolveReasoning(state.Model);
+        state.Meta.ThinkingLevel = reasoningProfile.DefaultLevel;
+        state.Meta.ThinkingEnabled = reasoningProfile.DefaultEnabled && reasoningProfile.DefaultLevel != "off";
 
         var session = new AcpSession { State = state, LastActivityAt = now };
         _live[session.Id] = session;
@@ -70,6 +78,13 @@ public sealed class AcpSessionStore : IDisposable
         if (state is null) return null;
 
         SessionConsistency.Repair(state);
+
+        if (state.Meta.ThinkingLevel is null)
+        {
+            var legacyProfile = ResolveReasoning(state.Model);
+            state.Meta.ThinkingLevel = legacyProfile.DefaultLevel;
+            state.Meta.ThinkingEnabled = legacyProfile.DefaultEnabled && legacyProfile.DefaultLevel != "off";
+        }
 
         var session = new AcpSession
         {

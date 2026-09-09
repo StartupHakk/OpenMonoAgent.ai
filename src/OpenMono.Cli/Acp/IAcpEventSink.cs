@@ -34,6 +34,8 @@ public interface IAcpEventSink
     Task OnCheckpointAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null, string? trigger = null, int messagesKept = 0);
 
     Task OnCheckpointStartedAsync(string trigger, int promptTokens);
+
+    Task OnThinkingChangedAsync(string level, bool enabled, string[] levels, string description);
     // contextTokens = prompt tokens of the most recent API call (current context occupancy);
     // contextWindow = the model's n_ctx (denominator for a context-usage gauge).
     // genTps = most recent turn's live generation rate; avgTps = session rolling average (tok/s).

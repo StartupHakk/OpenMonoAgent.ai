@@ -137,7 +137,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     var sessionManager = new SessionManager(config);
     var session = SessionManager.CreateSession();
 
-    var reasoningProfile = OpenMono.Utils.ModelReasoningProfile.Resolve(config.Llm.Model);
+    var reasoningProfile = OpenMono.Utils.ModelReasoningProfile.Resolve(config.Llm.Model, config.Llm.ServerReasoning);
     session.Meta.ThinkingLevel = reasoningProfile.DefaultLevel;
     session.Meta.ThinkingEnabled = reasoningProfile.DefaultEnabled && reasoningProfile.DefaultLevel != "off";
 
@@ -974,6 +974,34 @@ static async Task TryDetectActualModelAsync(AppConfig config)
         {
             serverCtx = ctx;
         }
+
+        string? reasoningFormat = null;
+        var reasoningInContent = false;
+        string? chatTemplate = null;
+        if (root.TryGetProperty("default_generation_settings", out var rdgs)
+            && rdgs.TryGetProperty("params", out var rparams)
+            && rparams.ValueKind == System.Text.Json.JsonValueKind.Object)
+        {
+            if (rparams.TryGetProperty("reasoning_format", out var rf)
+                && rf.ValueKind == System.Text.Json.JsonValueKind.String)
+                reasoningFormat = rf.GetString();
+            if (rparams.TryGetProperty("reasoning_in_content", out var ric)
+                && (ric.ValueKind == System.Text.Json.JsonValueKind.True || ric.ValueKind == System.Text.Json.JsonValueKind.False))
+                reasoningInContent = ric.GetBoolean();
+        }
+        if (root.TryGetProperty("chat_template", out var ctEl)
+            && ctEl.ValueKind == System.Text.Json.JsonValueKind.String)
+            chatTemplate = ctEl.GetString();
+        var (effortLevels, effortDefault) = OpenMono.Utils.ServerReasoningInfo.ParseEffortLevels(chatTemplate);
+        config.Llm.ServerReasoning = new OpenMono.Utils.ServerReasoningInfo
+        {
+            ReasoningFormat = reasoningFormat,
+            ReasoningInContent = reasoningInContent,
+            HasThinkingTemplate = OpenMono.Utils.ServerReasoningInfo.TemplateShowsThinking(chatTemplate),
+            EffortLevels = effortLevels,
+            EffortDefaultLevel = effortDefault,
+        };
+        Log.Debug($"Detected reasoning from /props: format={reasoningFormat ?? "n/a"} in_content={reasoningInContent} template_thinking={config.Llm.ServerReasoning.HasThinkingTemplate}");
 
         var userConfiguredCtx = config.Llm.ContextSize;
         if (serverCtx is null or <= 0)

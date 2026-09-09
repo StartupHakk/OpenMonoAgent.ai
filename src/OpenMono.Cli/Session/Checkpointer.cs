@@ -38,6 +38,11 @@ public sealed class Checkpointer
     }
 
     public bool HasCompressibleContent(SessionState session)
+        => FindCutoff(session) >= 0;
+
+    private int MinFoldTokens => (int)(_contextSize * 0.02);
+
+    private int FindCutoff(SessionState session)
     {
         var prevCutoff = session.CheckpointCutoffIndex;
         for (var keep = KeepRecentTurns; keep >= 1; keep--)
@@ -45,37 +50,25 @@ public sealed class Checkpointer
             var candidate = FindRecentStartIndex(session.Messages, keep);
             if (candidate <= prevCutoff) continue;
 
-            var hasContent = session.Messages
+            var foldable = session.Messages
                 .Skip(prevCutoff)
                 .Take(candidate - prevCutoff)
-                .Any(m => m.Role != MessageRole.System);
+                .Where(m => m.Role != MessageRole.System)
+                .ToList();
 
-            if (hasContent) return true;
+            if (foldable.Count == 0) continue;
+            if (TokenEstimate.EstimatePayload(foldable) < MinFoldTokens) continue;
+
+            return candidate;
         }
-        return false;
+        return -1;
     }
 
     public async Task<CheckpointEntry> CreateCheckpointAsync(SessionState session, CancellationToken ct)
     {
         var prevCutoff = session.CheckpointCutoffIndex;
 
-        var cutoff = 0;
-        for (var keep = KeepRecentTurns; keep >= 1; keep--)
-        {
-            var candidate = FindRecentStartIndex(session.Messages, keep);
-            if (candidate <= prevCutoff) continue;
-
-            var hasContent = session.Messages
-                .Skip(prevCutoff)
-                .Take(candidate - prevCutoff)
-                .Any(m => m.Role != MessageRole.System);
-
-            if (hasContent)
-            {
-                cutoff = candidate;
-                break;
-            }
-        }
+        var cutoff = FindCutoff(session);
 
         if (cutoff <= prevCutoff)
             throw new InvalidOperationException(
@@ -146,7 +139,7 @@ public sealed class Checkpointer
         SummarySafety.EnsureSummaryFits(summaryMessages, _contextSize);
 
         var sb = new StringBuilder();
-        var opts = new LlmOptions { MaxTokens = 4096, Temperature = 0.1 };
+        var opts = new LlmOptions { MaxTokens = 4096, Temperature = 0.1, EnableThinking = false };
 
         await foreach (var chunk in _llm.StreamChatAsync(summaryMessages, tools: null, opts, ct))
         {

@@ -83,6 +83,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
         "- `/build` — switch to Build mode (make changes)\n" +
         "- `/mode` — toggle Plan / Build\n" +
         "- `/think` — toggle / set thinking (no arg cycles; `/think [level]` sets a level)\n" +
+        "- `/compact [focus]` — summarize history to free context space\n" +
         "- `/help` — show this list\n\n" +
         "Also available: `/clear`, `/sessions`, `/undo`, `/redo`, `/stop`.";
 
@@ -117,7 +118,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
             case "/think":
             {
-                var profile = ModelReasoningProfile.Resolve(_loopFactory.Config.Llm.Model);
+                var profile = ModelReasoningProfile.Resolve(_loopFactory.Config.Llm.Model, _loopFactory.Config.Llm.ServerReasoning);
                 if (profile.Kind == ReasoningKind.EffortLevels)
                 {
                     var levels = profile.Levels;
@@ -139,6 +140,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
                         await OnTextDeltaAsync(level == "off"
                             ? "**Thinking: OFF** — fast direct responses"
                             : $"**Thinking: {level.ToUpperInvariant()}** — {ThinkingLevels.Describe(level)}");
+                        await EmitThinkingChangedAsync();
                     }
                 }
                 else
@@ -147,7 +149,21 @@ public sealed class AcpTurnRunner : IAcpEventSink
                     await OnTextDeltaAsync(_acpSession.State.Meta.ThinkingEnabled
                         ? "**Thinking mode ON** — I'll reason step-by-step before responding (uses extra context)."
                         : "**Thinking mode OFF** — I'll respond directly.");
+                    await EmitThinkingChangedAsync();
                 }
+                await _writer.WriteEventAsync("done", new { });
+                return true;
+            }
+
+            case "/compact":
+            {
+                var loop = _loopFactory.Create(_acpSession.State, this, _interaction);
+                var before = _acpSession.State.Messages.Count;
+                await loop.RunManualCompactionAsync(string.IsNullOrWhiteSpace(args) ? null : args, ct);
+                var after = _acpSession.State.Messages.Count;
+                await OnTextDeltaAsync(after < before
+                    ? $"Compacted {before} → {after} messages."
+                    : "Nothing to compact — conversation too short or already compact.");
                 await _writer.WriteEventAsync("done", new { });
                 return true;
             }
@@ -605,6 +621,29 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
     public Task OnPlanReadyAsync(string planContent, string? planPath)
         => _writer.WriteEventAsync("plan_ready", new { plan = planContent, plan_path = planPath });
+
+    public Task OnThinkingChangedAsync(string level, bool enabled, string[] levels, string description)
+        => _writer.WriteEventAsync("thinking_changed", new
+        {
+            kind = "thinking",
+            status = "changed",
+            level = level,
+            enabled = enabled,
+            levels = levels,
+            description = description,
+        });
+
+    private Task EmitThinkingChangedAsync()
+    {
+        var profile = ModelReasoningProfile.Resolve(_loopFactory.Config.Llm.Model, _loopFactory.Config.Llm.ServerReasoning);
+        var level = _acpSession.State.Meta.ThinkingLevel ?? profile.DefaultLevel;
+        var enabled = _acpSession.State.Meta.ThinkingLevel is null
+            ? profile.DefaultEnabled && profile.DefaultLevel != "off"
+            : _acpSession.State.Meta.ThinkingEnabled;
+        var levels = profile.Kind == ReasoningKind.EffortLevels ? profile.Levels : ["off", "on"];
+        var description = profile.Kind == ReasoningKind.EffortLevels ? ThinkingLevels.Describe(level) : "";
+        return OnThinkingChangedAsync(level, enabled, levels, description);
+    }
 
     public async Task OnCompactionStartedAsync(string reason, int promptTokens)
     {

@@ -306,7 +306,7 @@ public sealed class ConversationLoop : IDisposable
 
         var thinking = _session.Meta.ThinkingEnabled;
         var thinkingLevel = _session.Meta.ThinkingLevel ?? "off";
-        var profile = Utils.ModelReasoningProfile.Resolve(_config.Llm.Model);
+        var profile = Utils.ModelReasoningProfile.Resolve(_config.Llm.Model, _config.Llm.ServerReasoning);
 
         var options = new LlmOptions
         {

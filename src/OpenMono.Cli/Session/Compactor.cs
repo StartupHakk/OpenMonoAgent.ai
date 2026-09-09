@@ -154,7 +154,7 @@ public sealed class Compactor
         SummarySafety.EnsureSummaryFits(summaryMessages, _contextSize);
 
         var sb = new StringBuilder();
-        var options = new LlmOptions { MaxTokens = 4096, Temperature = 0.1 };
+        var options = new LlmOptions { MaxTokens = 4096, Temperature = 0.1, EnableThinking = false };
 
         await foreach (var chunk in _llm.StreamChatAsync(summaryMessages, tools: null, options, ct))
         {

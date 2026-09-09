@@ -83,6 +83,9 @@ public class LlmConfig
     [JsonIgnore]
     public bool ContextSizeExplicit { get; set; }
 
+    [JsonIgnore]
+    public ServerReasoningInfo? ServerReasoning { get; set; }
+
     public void MergeFrom(LlmConfig source)
     {
         if (!string.IsNullOrEmpty(source.Endpoint)) Endpoint = source.Endpoint;

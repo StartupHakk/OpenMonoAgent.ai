@@ -10,7 +10,7 @@ public sealed class ThinkCommand : ICommand
 
     public Task ExecuteAsync(string[] args, CommandContext context, CancellationToken ct)
     {
-        var profile = ModelReasoningProfile.Resolve(context.Config.Llm.Model);
+        var profile = ModelReasoningProfile.Resolve(context.Config.Llm.Model, context.Config.Llm.ServerReasoning);
 
         if (profile.Kind == ReasoningKind.EffortLevels)
             CycleLevels(context, profile, args);

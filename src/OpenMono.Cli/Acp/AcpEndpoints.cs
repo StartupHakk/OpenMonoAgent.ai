@@ -96,6 +96,11 @@ public static class AcpEndpoints
         var session = store.TryGet(id);
         if (session is null) return Results.NotFound();
         Log.Info($"[OMA_MODE] GET session={id}: plan_mode={session.PlanMode} (frontend is pulling current mode)");
+        var thinkingProfile = store.ResolveReasoning(session.Model);
+        var thinkingLevel = session.State.Meta.ThinkingLevel ?? thinkingProfile.DefaultLevel;
+        var thinkingEnabled = session.State.Meta.ThinkingLevel is null
+            ? thinkingProfile.DefaultEnabled && thinkingProfile.DefaultLevel != "off"
+            : session.State.Meta.ThinkingEnabled;
         return Results.Ok(new
         {
             session_id = session.Id,
@@ -103,6 +108,10 @@ public static class AcpEndpoints
             started_at = session.StartedAt.ToString("o"),
             turn_count = session.TurnCount,
             plan_mode = session.PlanMode,
+            thinking_level = thinkingLevel,
+            thinking_enabled = thinkingEnabled,
+            thinking_levels = thinkingProfile.Kind == ReasoningKind.EffortLevels ? thinkingProfile.Levels : ["off", "on"],
+            thinking_description = thinkingProfile.Kind == ReasoningKind.EffortLevels ? ThinkingLevels.Describe(thinkingLevel) : "",
         });
     }
 
