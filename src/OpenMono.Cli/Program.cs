@@ -1011,14 +1011,15 @@ static async Task TryDetectActualModelAsync(AppConfig config)
                 serverCtx = slotsCtx;
         }
 
-        if (serverCtx is > 0 && userConfiguredCtx == 196608)
+        var resolvedCtx = OpenMono.Utils.ContextSizeResolver.ResolveContextSize(serverCtx, userConfiguredCtx);
+        if (resolvedCtx != userConfiguredCtx)
         {
-            config.Llm.ContextSize = serverCtx.Value;
-            Log.Debug($"Detected context size from server: {serverCtx}");
+            config.Llm.ContextSize = resolvedCtx;
+            Log.Info($"Context size from server: {resolvedCtx} (configured value {userConfiguredCtx} kept as fallback)");
         }
-        else if (serverCtx is > 0)
+        else if (serverCtx is > 0 && serverCtx != userConfiguredCtx)
         {
-            Log.Debug($"Server reports n_ctx={serverCtx} but keeping explicitly configured ContextSize={config.Llm.ContextSize}");
+            Log.Warn($"Ignoring implausible server n_ctx={serverCtx}; keeping configured ContextSize={userConfiguredCtx}");
         }
 
         if (!string.IsNullOrWhiteSpace(name)) return;

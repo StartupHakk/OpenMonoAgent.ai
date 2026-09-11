@@ -74,12 +74,6 @@ public class LlmConfig
     public double MinP { get; set; } = 0.0;
     public double RepetitionPenalty { get; set; } = 1.0;
 
-    /// <summary>
-    /// True once ContextSize came from explicit user configuration (settings
-    /// file inference section or OPENMONO_CONTEXT_SIZE), as opposed to the
-    /// compiled default. Server auto-detection must not overwrite an explicit
-    /// value. Not serialized.
-    /// </summary>
     [JsonIgnore]
     public bool ContextSizeExplicit { get; set; }
 

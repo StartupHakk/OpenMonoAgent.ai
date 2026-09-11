@@ -45,9 +45,6 @@ public static class ConfigLoader
 
         ApplyEnvironmentOverrides(config);
 
-        // Context-size precedence: env > explicit llm.context_size > live server
-        // detection > inference.ctx_size > default. inference.ctx_size is a
-        // non-explicit fallback; it never marks the value explicit.
         if (!config.Llm.ContextSizeExplicit &&
             config.Llm.ContextSize != defaultContextSize)
         {

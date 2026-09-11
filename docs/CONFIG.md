@@ -387,7 +387,9 @@ Override via env vars: `OPENMONO_WEB_SEARCH=1` / `OPENMONO_WEB_SCRAPE=1` (truthy
 
 ## Environment variables
 
-All env vars override their settings.json equivalents regardless of load order.
+All env vars override their settings.json equivalents regardless of load order,
+with one exception: `OPENMONO_CONTEXT_SIZE` is a fallback — a usable
+server-reported `n_ctx` (at least 1024) takes precedence at startup.
 
 | Variable | Equivalent setting |
 |----------|--------------------|

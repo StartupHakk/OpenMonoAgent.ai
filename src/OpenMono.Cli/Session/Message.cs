@@ -19,6 +19,7 @@ public sealed record Message
     public List<ToolCall>? ToolCalls { get; init; }
     public string? ToolCallId { get; init; }
     public string? ToolName { get; init; }
+    public string? ThinkingContent { get; init; }
     /// <summary>
     /// For Tool-role messages: whether the tool result represents a failure
     /// (denied, blocked, invalid, or crashed). Surfaced to the model as the

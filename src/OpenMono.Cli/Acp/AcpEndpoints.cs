@@ -388,6 +388,7 @@ public static class AcpEndpoints
                 Content = m.Content ?? "",
                 Timestamp = m.Timestamp.ToString("o"),
                 ToolCalls = toolCalls,
+                Thinking = m.ThinkingContent,
             });
         }
         return result;
@@ -421,6 +422,7 @@ public static class AcpEndpoints
         [JsonPropertyName("content")] public required string Content { get; init; }
         [JsonPropertyName("timestamp")] public required string Timestamp { get; init; }
         [JsonPropertyName("toolCalls")] public List<HistoryToolCallDto>? ToolCalls { get; init; }
+        [JsonPropertyName("thinking")] public string? Thinking { get; init; }
     }
 
     internal sealed record HistoryToolCallDto
