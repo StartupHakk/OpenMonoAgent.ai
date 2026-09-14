@@ -52,6 +52,7 @@ public sealed class ThinkCommand : ICommand
     private static void ToggleBinary(CommandContext context)
     {
         context.Session.Meta.ThinkingEnabled = !context.Session.Meta.ThinkingEnabled;
+        context.Session.Meta.ThinkingLevel = context.Session.Meta.ThinkingEnabled ? "on" : "off";
 
         if (context.Session.Meta.ThinkingEnabled)
         {

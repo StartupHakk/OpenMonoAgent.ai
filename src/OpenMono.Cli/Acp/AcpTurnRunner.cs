@@ -146,6 +146,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
                 else
                 {
                     _acpSession.State.Meta.ThinkingEnabled = !_acpSession.State.Meta.ThinkingEnabled;
+                    _acpSession.State.Meta.ThinkingLevel = _acpSession.State.Meta.ThinkingEnabled ? "on" : "off";
                     await OnTextDeltaAsync(_acpSession.State.Meta.ThinkingEnabled
                         ? "**Thinking mode ON** — I'll reason step-by-step before responding (uses extra context)."
                         : "**Thinking mode OFF** — I'll respond directly.");
