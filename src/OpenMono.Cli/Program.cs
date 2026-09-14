@@ -101,7 +101,7 @@ for (var i = 0; i < args.Length; i++)
             Console.WriteLine("  PgUp / PgDn        Scroll conversation");
             return 0;
         case "--version":
-            Console.WriteLine("OpenMono.ai v1.7.0");
+            Console.WriteLine("OpenMono.ai v1.8.0");
             return 0;
     }
 }
@@ -929,8 +929,8 @@ static async Task TryDetectActualModelAsync(AppConfig config)
     var baseUrl = config.Llm.Endpoint.TrimEnd('/');
     try
     {
-        var url = $"{config.Llm.Endpoint.TrimEnd('/')}/props";
-        var json = await http.GetStringAsync($"{baseUrl}/props");
+        var url = $"{baseUrl}/props";
+        var json = await http.GetStringAsync(url);
         using var doc = System.Text.Json.JsonDocument.Parse(json);
         var root = doc.RootElement;
 
@@ -1031,7 +1031,7 @@ static async Task TryDetectActualModelAsync(AppConfig config)
 
     try
     {
-        var json = await http.GetStringAsync($"{config.Llm.Endpoint.TrimEnd('/')}/v1/models");
+        var json = await http.GetStringAsync($"{baseUrl}/v1/models");
         using var doc = System.Text.Json.JsonDocument.Parse(json);
         if (doc.RootElement.TryGetProperty("data", out var data)
             && data.ValueKind == System.Text.Json.JsonValueKind.Array)
