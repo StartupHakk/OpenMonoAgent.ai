@@ -101,7 +101,7 @@ for (var i = 0; i < args.Length; i++)
             Console.WriteLine("  PgUp / PgDn        Scroll conversation");
             return 0;
         case "--version":
-            Console.WriteLine("OpenMono.ai v1.8.0");
+            Console.WriteLine("OpenMono.ai v1.8.2");
             return 0;
     }
 }
@@ -137,7 +137,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     var sessionManager = new SessionManager(config);
     var session = SessionManager.CreateSession();
 
-    var reasoningProfile = OpenMono.Utils.ModelReasoningProfile.Resolve(config.Llm.Model);
+    var reasoningProfile = OpenMono.Utils.ModelReasoningProfile.Resolve(config.Llm.Model, config.Llm.ServerReasoning);
     session.Meta.ThinkingLevel = reasoningProfile.DefaultLevel;
     session.Meta.ThinkingEnabled = reasoningProfile.DefaultEnabled && reasoningProfile.DefaultLevel != "off";
 
@@ -975,6 +975,34 @@ static async Task TryDetectActualModelAsync(AppConfig config)
             serverCtx = ctx;
         }
 
+        string? reasoningFormat = null;
+        var reasoningInContent = false;
+        string? chatTemplate = null;
+        if (root.TryGetProperty("default_generation_settings", out var rdgs)
+            && rdgs.TryGetProperty("params", out var rparams)
+            && rparams.ValueKind == System.Text.Json.JsonValueKind.Object)
+        {
+            if (rparams.TryGetProperty("reasoning_format", out var rf)
+                && rf.ValueKind == System.Text.Json.JsonValueKind.String)
+                reasoningFormat = rf.GetString();
+            if (rparams.TryGetProperty("reasoning_in_content", out var ric)
+                && (ric.ValueKind == System.Text.Json.JsonValueKind.True || ric.ValueKind == System.Text.Json.JsonValueKind.False))
+                reasoningInContent = ric.GetBoolean();
+        }
+        if (root.TryGetProperty("chat_template", out var ctEl)
+            && ctEl.ValueKind == System.Text.Json.JsonValueKind.String)
+            chatTemplate = ctEl.GetString();
+        var (effortLevels, effortDefault) = OpenMono.Utils.ServerReasoningInfo.ParseEffortLevels(chatTemplate);
+        config.Llm.ServerReasoning = new OpenMono.Utils.ServerReasoningInfo
+        {
+            ReasoningFormat = reasoningFormat,
+            ReasoningInContent = reasoningInContent,
+            HasThinkingTemplate = OpenMono.Utils.ServerReasoningInfo.TemplateShowsThinking(chatTemplate),
+            EffortLevels = effortLevels,
+            EffortDefaultLevel = effortDefault,
+        };
+        Log.Debug($"Detected reasoning from /props: format={reasoningFormat ?? "n/a"} in_content={reasoningInContent} template_thinking={config.Llm.ServerReasoning.HasThinkingTemplate}");
+
         var userConfiguredCtx = config.Llm.ContextSize;
         if (serverCtx is null or <= 0)
         {
@@ -983,14 +1011,15 @@ static async Task TryDetectActualModelAsync(AppConfig config)
                 serverCtx = slotsCtx;
         }
 
-        if (serverCtx is > 0 && userConfiguredCtx == 196608)
+        var resolvedCtx = OpenMono.Utils.ContextSizeResolver.ResolveContextSize(serverCtx, userConfiguredCtx);
+        if (resolvedCtx != userConfiguredCtx)
         {
-            config.Llm.ContextSize = serverCtx.Value;
-            Log.Debug($"Detected context size from server: {serverCtx}");
+            config.Llm.ContextSize = resolvedCtx;
+            Log.Info($"Context size from server: {resolvedCtx} (configured value {userConfiguredCtx} kept as fallback)");
         }
-        else if (serverCtx is > 0)
+        else if (serverCtx is > 0 && serverCtx != userConfiguredCtx)
         {
-            Log.Debug($"Server reports n_ctx={serverCtx} but keeping explicitly configured ContextSize={config.Llm.ContextSize}");
+            Log.Warn($"Ignoring implausible server n_ctx={serverCtx}; keeping configured ContextSize={userConfiguredCtx}");
         }
 
         if (!string.IsNullOrWhiteSpace(name)) return;

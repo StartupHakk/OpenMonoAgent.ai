@@ -83,6 +83,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
         "- `/build` — switch to Build mode (make changes)\n" +
         "- `/mode` — toggle Plan / Build\n" +
         "- `/think` — toggle / set thinking (no arg cycles; `/think [level]` sets a level)\n" +
+        "- `/compact [focus]` — summarize history to free context space\n" +
         "- `/help` — show this list\n\n" +
         "Also available: `/clear`, `/sessions`, `/undo`, `/redo`, `/stop`.";
 
@@ -117,7 +118,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
             case "/think":
             {
-                var profile = ModelReasoningProfile.Resolve(_loopFactory.Config.Llm.Model);
+                var profile = ModelReasoningProfile.Resolve(_loopFactory.Config.Llm.Model, _loopFactory.Config.Llm.ServerReasoning);
                 if (profile.Kind == ReasoningKind.EffortLevels)
                 {
                     var levels = profile.Levels;
@@ -139,15 +140,31 @@ public sealed class AcpTurnRunner : IAcpEventSink
                         await OnTextDeltaAsync(level == "off"
                             ? "**Thinking: OFF** — fast direct responses"
                             : $"**Thinking: {level.ToUpperInvariant()}** — {ThinkingLevels.Describe(level)}");
+                        await EmitThinkingChangedAsync();
                     }
                 }
                 else
                 {
                     _acpSession.State.Meta.ThinkingEnabled = !_acpSession.State.Meta.ThinkingEnabled;
+                    _acpSession.State.Meta.ThinkingLevel = _acpSession.State.Meta.ThinkingEnabled ? "on" : "off";
                     await OnTextDeltaAsync(_acpSession.State.Meta.ThinkingEnabled
                         ? "**Thinking mode ON** — I'll reason step-by-step before responding (uses extra context)."
                         : "**Thinking mode OFF** — I'll respond directly.");
+                    await EmitThinkingChangedAsync();
                 }
+                await _writer.WriteEventAsync("done", new { });
+                return true;
+            }
+
+            case "/compact":
+            {
+                var loop = _loopFactory.Create(_acpSession.State, this, _interaction);
+                var before = _acpSession.State.Messages.Count;
+                await loop.RunManualCompactionAsync(string.IsNullOrWhiteSpace(args) ? null : args, ct);
+                var after = _acpSession.State.Messages.Count;
+                await OnTextDeltaAsync(after < before
+                    ? $"Compacted {before} → {after} messages."
+                    : "Nothing to compact — conversation too short or already compact.");
                 await _writer.WriteEventAsync("done", new { });
                 return true;
             }
@@ -606,16 +623,52 @@ public sealed class AcpTurnRunner : IAcpEventSink
     public Task OnPlanReadyAsync(string planContent, string? planPath)
         => _writer.WriteEventAsync("plan_ready", new { plan = planContent, plan_path = planPath });
 
-    public Task OnCompactionStartedAsync(string reason, int promptTokens)
-        => _writer.WriteEventAsync("compaction_started", new
+    public Task OnThinkingChangedAsync(string level, bool enabled, string[] levels, string description)
+        => _writer.WriteEventAsync("thinking_changed", new
         {
+            kind = "thinking",
+            status = "changed",
+            level = level,
+            enabled = enabled,
+            levels = levels,
+            description = description,
+        });
+
+    private Task EmitThinkingChangedAsync()
+    {
+        var profile = ModelReasoningProfile.Resolve(_loopFactory.Config.Llm.Model, _loopFactory.Config.Llm.ServerReasoning);
+        var level = _acpSession.State.Meta.ThinkingLevel ?? profile.DefaultLevel;
+        var enabled = _acpSession.State.Meta.ThinkingLevel is null
+            ? profile.DefaultEnabled && profile.DefaultLevel != "off"
+            : _acpSession.State.Meta.ThinkingEnabled;
+        var levels = profile.Kind == ReasoningKind.EffortLevels ? profile.Levels : ["off", "on"];
+        var description = profile.Kind == ReasoningKind.EffortLevels ? ThinkingLevels.Describe(level) : "";
+        return OnThinkingChangedAsync(level, enabled, levels, description);
+    }
+
+    public async Task OnCompactionStartedAsync(string reason, int promptTokens)
+    {
+        await _writer.WriteEventAsync("compaction_started", new
+        {
+            kind = "compaction",
+            status = "started",
+            title = "Compacting context…",
             reason = reason,
             prompt_tokens = promptTokens,
         });
+        await _writer.WriteEventAsync("compacting", new { });
+    }
 
     public Task OnCompactionAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null, string? reason = null, int messagesBefore = 0, int messagesAfter = 0, int tokensBefore = 0, int tokensAfter = 0)
-        => _writer.WriteEventAsync("compaction", new
+    {
+        var reductionPct = tokensBefore > 0 ? 100 - (tokensAfter * 100 / tokensBefore) : 0;
+        var reasonTag = string.IsNullOrWhiteSpace(reason) ? "" : reason == "manual" ? " (manual)" : " (auto)";
+        return _writer.WriteEventAsync("compaction", new
         {
+            kind = "compaction",
+            status = "done",
+            title = $"Compacted {messagesBefore} → {messagesAfter} messages (−{reductionPct}%){reasonTag}",
+            reduction_pct = reductionPct,
             messages_compressed = messagesCompressed,
             duration_seconds = durationSeconds,
             checkpoint_index = checkpointIndex,
@@ -626,11 +679,27 @@ public sealed class AcpTurnRunner : IAcpEventSink
             summary_text = summaryText,
             reason = reason,
         });
+    }
 
-    public Task OnCheckpointAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null)
+    public Task OnCheckpointStartedAsync(string trigger, int promptTokens)
+        => _writer.WriteEventAsync("checkpoint_started", new
+        {
+            kind = "checkpoint",
+            status = "started",
+            title = "Checkpointing context…",
+            trigger = trigger,
+            prompt_tokens = promptTokens,
+        });
+
+    public Task OnCheckpointAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null, string? trigger = null, int messagesKept = 0)
         => _writer.WriteEventAsync("checkpoint", new
         {
+            kind = "checkpoint",
+            status = "done",
+            title = $"Checkpoint #{checkpointIndex} — {messagesCompressed} messages → summary",
+            trigger = trigger,
             messages_compressed = messagesCompressed,
+            messages_kept = messagesKept,
             duration_seconds = durationSeconds,
             checkpoint_index = checkpointIndex,
             summary_text = summaryText,

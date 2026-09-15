@@ -144,21 +144,21 @@ public sealed class AcpEventSinkTests
 
         await loop.RunManualCompactionAsync(null, CancellationToken.None);
 
-        // A "compacting" start event fires (so the frontend shows its spinner immediately)…
-        sink.CompactingStartedCount.Should().Be(1);
+        sink.CompactionStarted.Should().ContainSingle();
+        sink.CompactionStarted[0].reason.Should().Be("manual");
 
         // …followed by exactly one compaction result carrying before/after message + token counts.
         sink.Compactions.Should().ContainSingle();
         var c = sink.Compactions[0];
-        c.report.MessagesBefore.Should().Be(41);          // 1 system + 40 msgs
-        c.report.MessagesAfter.Should().BeLessThan(c.report.MessagesBefore);
-        c.report.MessagesAfter.Should().BeGreaterThan(0);
-        c.report.TokensBefore.Should().BeGreaterThan(c.report.TokensAfter);
-        c.report.MessagesCompressed.Should().Be(32); // 40 msgs − 4 kept recent turns − 4 system/summary = summarized set
+        c.messagesBefore.Should().Be(41);          // 1 system + 40 msgs
+        c.messagesAfter.Should().BeLessThan(c.messagesBefore);
+        c.messagesAfter.Should().BeGreaterThan(0);
+        c.tokensBefore.Should().BeGreaterThan(c.tokensAfter);
+        c.messagesCompressed.Should().Be(32); // 40 msgs − 4 kept recent turns − 4 system/summary = summarized set
         c.checkpointIndex.Should().BeGreaterThanOrEqualTo(0);
 
         // History shrank to exactly the post-compaction count and the flag cleared.
-        session.Messages.Count.Should().Be(c.report.MessagesAfter);
+        session.Messages.Count.Should().Be(c.messagesAfter);
         session.Meta.IsCompacting.Should().BeFalse();
     }
 
@@ -350,7 +350,10 @@ public sealed class AcpEventSinkTests
         public List<(string callId, string name, bool ok, double durationMs)> ToolEnds { get; } = new();
         public List<(string callId, string preview, string? artifactId)> ToolPreviews { get; } = new();
         public List<(int input, int output, int total, int contextTokens, int contextWindow)> UsageEvents { get; } = new();
-        public List<(CompactionReport report, int checkpointIndex)> Compactions { get; } = new();
+        public List<(int messagesCompressed, double durationSeconds, int checkpointIndex, string? reason, int messagesBefore, int messagesAfter, int tokensBefore, int tokensAfter)> Compactions { get; } = new();
+        public List<(string reason, int promptTokens)> CompactionStarted { get; } = new();
+        public List<(int messagesCompressed, int checkpointIndex, string? trigger, int messagesKept)> Checkpoints { get; } = new();
+        public List<(string trigger, int promptTokens)> CheckpointStarted { get; } = new();
         public List<string> ModeChanges { get; } = new();
 
         public List<string?> PlanReady { get; } = new();
@@ -366,16 +369,20 @@ public sealed class AcpEventSinkTests
         { ToolStatuses.Add((callId, status)); return Task.CompletedTask; }
         public Task OnToolEndAsync(string callId, string name, bool ok, double durationMs)
         { ToolEnds.Add((callId, name, ok, durationMs)); return Task.CompletedTask; }
-        public Task OnCompactionAsync(CompactionReport report, int checkpointIndex)
-        { Compactions.Add((report, checkpointIndex)); return Task.CompletedTask; }
+        public Task OnCompactionStartedAsync(string reason, int promptTokens)
+        { CompactionStarted.Add((reason, promptTokens)); return Task.CompletedTask; }
+        public Task OnCompactionAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null, string? reason = null, int messagesBefore = 0, int messagesAfter = 0, int tokensBefore = 0, int tokensAfter = 0)
+        { Compactions.Add((messagesCompressed, durationSeconds, checkpointIndex, reason, messagesBefore, messagesAfter, tokensBefore, tokensAfter)); return Task.CompletedTask; }
+        public Task OnCheckpointStartedAsync(string trigger, int promptTokens)
+        { CheckpointStarted.Add((trigger, promptTokens)); return Task.CompletedTask; }
+        public Task OnCheckpointAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null, string? trigger = null, int messagesKept = 0)
+        { Checkpoints.Add((messagesCompressed, checkpointIndex, trigger, messagesKept)); return Task.CompletedTask; }
         public Task OnUsageAsync(int i, int o, int t, int ctx, int win, double genTps, double avgTps) { UsageEvents.Add((i, o, t, ctx, win)); return Task.CompletedTask; }
         public Task OnToolResultPreviewAsync(string callId, string preview, string? artifactId)
         { ToolPreviews.Add((callId, preview, artifactId)); return Task.CompletedTask; }
         public Task OnSubAgentLogAsync(string line) => Task.CompletedTask;
         public List<string> OutputTruncated { get; } = new();
         public Task OnOutputTruncatedAsync(string toolName) { OutputTruncated.Add(toolName); return Task.CompletedTask; }
-        public int CompactingStartedCount { get; private set; }
-        public Task OnCompactingStartedAsync() { CompactingStartedCount++; return Task.CompletedTask; }
     }
 
     private sealed class RecordingWriteTool : ITool

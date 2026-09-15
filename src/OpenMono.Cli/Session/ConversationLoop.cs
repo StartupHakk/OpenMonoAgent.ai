@@ -277,10 +277,23 @@ public sealed class ConversationLoop : IDisposable
         if (_checkpointer.NeedsCheckpoint(_session, preForwardEstimate))
         {
             _output.WriteDebug($"[Checkpoint] Triggered pre-turn — messages={_session.Messages.Count} forward={preForwardEstimate}");
+            if (_sink is not null)
+                await _sink.OnCheckpointStartedAsync("pre-turn", preForwardEstimate);
             var cpSw = Stopwatch.StartNew();
-            var entry = await _checkpointer.CreateCheckpointAsync(_session, ct);
-            cpSw.Stop();
-            RenderCheckpoint(entry, cpSw.Elapsed, "pre-turn");
+            try
+            {
+                var entry = await _checkpointer.CreateCheckpointAsync(_session, ct);
+                cpSw.Stop();
+                await RenderCheckpoint(entry, cpSw.Elapsed, "pre-turn");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                cpSw.Stop();
+                _output.WriteDebug($"[Checkpoint] Failed pre-turn — {ex.GetType().Name}");
+                if (_sink is not null)
+                    await _sink.OnSubAgentLogAsync($"Checkpoint failed: {ex.Message}");
+                throw;
+            }
             _output.WriteDebug($"[Checkpoint] Done — effective window={_checkpointer.BuildContextWindow(_session).Count} messages");
         }
 
@@ -293,7 +306,7 @@ public sealed class ConversationLoop : IDisposable
 
         var thinking = _session.Meta.ThinkingEnabled;
         var thinkingLevel = _session.Meta.ThinkingLevel ?? "off";
-        var profile = Utils.ModelReasoningProfile.Resolve(_config.Llm.Model);
+        var profile = Utils.ModelReasoningProfile.Resolve(_config.Llm.Model, _config.Llm.ServerReasoning);
 
         var options = new LlmOptions
         {
@@ -334,10 +347,23 @@ public sealed class ConversationLoop : IDisposable
                 if (_checkpointer.NeedsCheckpoint(_session, iterForwardEstimate))
                 {
                     _output.WriteDebug($"[Checkpoint] Triggered mid-turn — messages={_session.Messages.Count} forward={iterForwardEstimate}");
+                    if (_sink is not null)
+                        await _sink.OnCheckpointStartedAsync("mid-turn", iterForwardEstimate);
                     var cpSw = Stopwatch.StartNew();
-                    var entry = await _checkpointer.CreateCheckpointAsync(_session, ct);
-                    cpSw.Stop();
-                    RenderCheckpoint(entry, cpSw.Elapsed, "mid-turn");
+                    try
+                    {
+                        var entry = await _checkpointer.CreateCheckpointAsync(_session, ct);
+                        cpSw.Stop();
+                        await RenderCheckpoint(entry, cpSw.Elapsed, "mid-turn");
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        cpSw.Stop();
+                        _output.WriteDebug($"[Checkpoint] Failed mid-turn — {ex.GetType().Name}");
+                        if (_sink is not null)
+                            await _sink.OnSubAgentLogAsync($"Checkpoint failed: {ex.Message}");
+                        throw;
+                    }
                     _output.WriteDebug($"[Checkpoint] Done — effective window={_checkpointer.BuildContextWindow(_session).Count} messages");
                     _doomLoop.Reset();
                     i = -1; continue;
@@ -409,6 +435,7 @@ public sealed class ConversationLoop : IDisposable
             }
 
             var textBuffer = new StringBuilder();
+            var thinkingBuffer = new StringBuilder();
             var toolCalls = new List<ToolCall>();
             var receivedFirstChunk = false;
             var thinkingStarted = false;
@@ -448,6 +475,7 @@ public sealed class ConversationLoop : IDisposable
                 if (chunk.ThinkingDelta is not null)
                 {
                     _output.AppendThinking(chunk.ThinkingDelta);
+                    thinkingBuffer.Append(chunk.ThinkingDelta);
                     thinkingStarted = true;
                     thinkingChars += chunk.ThinkingDelta.Length;
                     if (_sink is not null) await _sink.OnThinkingDeltaAsync(chunk.ThinkingDelta);
@@ -575,6 +603,7 @@ public sealed class ConversationLoop : IDisposable
             {
                 Role = MessageRole.Assistant,
                 Content = textBuffer.Length > 0 ? textBuffer.ToString() : null,
+                ThinkingContent = thinkingBuffer.Length > 0 ? thinkingBuffer.ToString() : null,
                 ToolCalls = toolCalls.Count > 0 ? toolCalls : null,
             };
 
@@ -598,6 +627,7 @@ public sealed class ConversationLoop : IDisposable
                 {
                     Role = MessageRole.Assistant,
                     Content = assistantContent,
+                    ThinkingContent = thinkingBuffer.Length > 0 ? thinkingBuffer.ToString() : null,
                     ToolCalls = toolCalls.Count > 0 ? toolCalls : null,
                 });
 
@@ -931,7 +961,7 @@ public sealed class ConversationLoop : IDisposable
         return true;
     }
 
-    private void RenderCheckpoint(CheckpointEntry entry, TimeSpan elapsed, string trigger)
+    private async Task RenderCheckpoint(CheckpointEntry entry, TimeSpan elapsed, string trigger)
     {
         var report = new CheckpointReport
         {
@@ -945,11 +975,19 @@ public sealed class ConversationLoop : IDisposable
         report.RenderTo(_output.WriteInfo);
 
         if (_sink is not null)
-            _ = _sink.OnCheckpointAsync(entry.MessagesCompressed, elapsed.TotalSeconds, report.CheckpointIndex, entry.Summary);
+            await _sink.OnCheckpointAsync(entry.MessagesCompressed, elapsed.TotalSeconds, report.CheckpointIndex, entry.Summary, trigger, report.MessagesKept);
     }
 
     private async Task RunCompactionAsync(int promptTokens, string? customInstructions, CancellationToken ct, string reason)
     {
+        if (!Compactor.HasCompactableContent(_session.Messages))
+        {
+            _output.WriteDebug($"[Compact] Skipped ({reason}) — messages={_session.Messages.Count} lastPromptTokens={promptTokens}");
+            if (reason == "manual")
+                _output.WriteInfo("Nothing to compact — conversation too short or already compact.");
+            return;
+        }
+
         _output.WriteDebug($"[Compact] Triggered ({reason}) — messages={_session.Messages.Count} lastPromptTokens={promptTokens}");
         _session.Meta.IsCompacting = true;
         _output.ShowWaitingIndicator("Compacting");
@@ -972,6 +1010,13 @@ public sealed class ConversationLoop : IDisposable
             _session.Checkpoints.Clear();
             _session.CheckpointCutoffIndex = 0;
         }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _output.WriteDebug($"[Compact] Failed ({reason}) — {ex.GetType().Name}");
+            if (_sink is not null)
+                await _sink.OnSubAgentLogAsync($"Compaction failed ({reason}): {ex.Message}");
+            throw;
+        }
         finally
         {
             _session.Meta.IsCompacting = false;
@@ -981,7 +1026,6 @@ public sealed class ConversationLoop : IDisposable
         // Reflect the new (smaller) occupancy immediately, rather than leaving the pre-compaction
         // number on screen until the next real LLM response reports usage.
         _session.Meta.TokenTracker?.SetEstimatedPromptTokens(report.TokensAfter);
-        await EmitUsageAsync();
 
         report.RenderTo(_output.WriteInfo, promptTokens);
         _output.WriteDebug($"[Compact] Done — {_session.Messages.Count} messages remaining");
@@ -989,6 +1033,8 @@ public sealed class ConversationLoop : IDisposable
         if (_sink is not null)
             await _sink.OnCompactionAsync(report.MessagesCompressed, report.Duration.TotalSeconds, _session.Checkpoints.Count, report.SummaryText, reason,
                 report.MessagesBefore, report.MessagesAfter, report.TokensBefore, report.TokensAfter);
+
+        await EmitUsageAsync();
     }
 
     private Task EmitUsageAsync()
