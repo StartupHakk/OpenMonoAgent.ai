@@ -10,7 +10,7 @@ public sealed class DecisionCommand : ICommand
 {
     public string Name => "decision";
 
-    public string Description => "Local decision layer: status, ask, rank, verify, gate, chief";
+    public string Description => "Local decision layer: status, ask, rank, verify, gate, chief, claim, done, queue";
 
     public CommandType Type => CommandType.Local;
 
@@ -19,7 +19,7 @@ public sealed class DecisionCommand : ICommand
         args = Tokenize(string.Join(" ", args));
         if (args.Length == 0)
         {
-            context.Renderer.WriteError("Usage: /decision status|ask|rank|verify|gate|chief …");
+            context.Renderer.WriteError("Usage: /decision status|ask|rank|verify|gate|chief|claim|done|queue …");
             return;
         }
         var options = DecisionOptions.FromSettings(context.Config.Decision);
@@ -44,8 +44,15 @@ public sealed class DecisionCommand : ICommand
             case "chief":
                 await RunChiefAsync(options, args[1..], context, ct);
                 break;
+            case "claim":
+            case "done":
+                ClaimOrDone(args, context);
+                break;
+            case "queue":
+                ListQueue(args, context);
+                break;
             default:
-                context.Renderer.WriteError($"Unknown /decision subcommand '{args[0]}'. Use status|ask|rank|verify|gate|chief.");
+                context.Renderer.WriteError($"Unknown /decision subcommand '{args[0]}'. Use status|ask|rank|verify|gate|chief|claim|done|queue.");
                 break;
         }
     }
@@ -56,7 +63,31 @@ public sealed class DecisionCommand : ICommand
             "\nauto_threshold=", settings.AutoThreshold.ToString("F2"),
             " review_threshold=", settings.ReviewThreshold.ToString("F2"),
             " min_confidence=", settings.MinConfidence.ToString("F2"),
-            " max_steps=", settings.MaxSteps.ToString());
+            " max_steps=", settings.MaxSteps.ToString(),
+            " force_ask=", settings.ForceAskPatterns.Count.ToString());
+
+    private static void ClaimOrDone(string[] args, CommandContext context)
+    {
+        var claiming = args[0].Equals("claim", StringComparison.OrdinalIgnoreCase); var flags = ParseFlags(args[1..]);
+        if (!flags.TryGetValue("path", out var path) || string.IsNullOrWhiteSpace(path)) { context.Renderer.WriteError(claiming ? "Usage: /decision claim --path <file>" : "Usage: /decision done --path <file>"); return; }
+        var handoff = claiming ? JobHandoff.TryClaim(path) : JobHandoff.MarkDone(path);
+        if (handoff is null)
+            context.Renderer.WriteError($"No handoff at '{path}'.");
+        else
+            context.Renderer.WriteInfo($"{handoff.Status}: {handoff.Choice} confidence={handoff.Confidence:F2} destination={handoff.Destination}");
+    }
+
+    private static void ListQueue(string[] args, CommandContext context)
+    {
+        var flags = ParseFlags(args[1..]);
+        if (!flags.TryGetValue("dest", out var dest) || dest is not ("research" or "write" or "review")) { context.Renderer.WriteError("Usage: /decision queue --dest <research|write|review> [--max <n>]"); return; }
+        var max = flags.TryGetValue("max", out var maxRaw) && int.TryParse(maxRaw, out var parsed) && parsed > 0 ? Math.Min(parsed, 200) : 200;
+        var handoffs = JobHandoff.List(context.WorkingDirectory, dest, max);
+        foreach (var handoff in handoffs)
+            context.Renderer.WriteInfo($"{handoff.Status} {handoff.Uuid} {handoff.Choice} {handoff.Confidence:F2}");
+        if (handoffs.Count == 0)
+            context.Renderer.WriteInfo("Queue empty.");
+    }
 
     private static string JsonArgs(string[] args) => string.Join(" ", args[1..]);
 

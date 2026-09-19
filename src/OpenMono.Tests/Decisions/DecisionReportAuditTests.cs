@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using OpenMono.Config;
 using OpenMono.Decisions;
@@ -55,6 +56,38 @@ public class DecisionReportAuditTests
         lines.Should().HaveCount(1);
         lines[0].Should().Contain("sess-1").And.Contain("chief");
         Directory.Delete(dataDir, true);
+    }
+
+    [Fact]
+    public void ToRedactedMarkdown_NeverEmitsRawValues()
+    {
+        var report = new DecisionReport(
+            "triage",
+            true,
+            "execute:false",
+            [],
+            [new DecisionItem("file", "a.cs", "act", 0.9, 0, "key=AKIAIOSFODNN7EXAMPLE")],
+            [],
+            new Dictionary<string, long>(),
+            ["leaked AKIAIOSFODNN7EXAMPLE in output"]);
+
+        var markdown = report.ToRedactedMarkdown();
+
+        markdown.Should().NotContain("AKIAIOSFODNN7EXAMPLE");
+        report.ToString().Should().NotContain("AKIAIOSFODNN7EXAMPLE");
+    }
+
+    [Fact]
+    public void LegacyAuditLine_DeserializesWithDefaults()
+    {
+        var line = """{"timestamp":"2026-01-01T00:00:00Z","session_id":"s","task":"gate","summary":"Bash allow 0.99","latency_ms":0}""";
+
+        var entry = JsonSerializer.Deserialize<DecisionAudit.Entry>(line, JsonOptions.Default);
+
+        entry.Should().NotBeNull();
+        entry!.Backend.Should().Be("local-heuristic");
+        entry.Model.Should().Be("local-heuristic");
+        entry.Note.Should().Be("");
     }
 
     [Fact]

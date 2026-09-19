@@ -89,7 +89,8 @@ public sealed class DecisionGateTool : ToolBase
         var audit = _audit ?? new DecisionAudit(context.Config);
         await audit.AppendAsync(new DecisionAudit.Entry(
             DateTime.UtcNow.ToString("o"), context.Session.Id,
-            "gate", $"{tool} {result.Decision} {result.Confidence:F2}", 0), ct);
+            "gate", $"{tool} {result.Decision} {result.Confidence:F2}", 0,
+            "local-heuristic", "local-heuristic", $"{tool}->{result.Decision}"), ct);
         var payload = new
         {
             decision = result.Decision,

@@ -11,7 +11,10 @@ public sealed class DecisionAudit(AppConfig config)
         string SessionId,
         string Task,
         string Summary,
-        long LatencyMs);
+        long LatencyMs,
+        string Backend = "local-heuristic",
+        string Model = "local-heuristic",
+        string Note = "");
 
     private static readonly SemaphoreSlim Gate = new(1, 1);
 

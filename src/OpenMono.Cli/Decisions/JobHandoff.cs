@@ -72,4 +72,51 @@ public sealed record JobHandoff
             return null;
         }
     }
+
+    public static JobHandoff? TryClaim(string path)
+    {
+        var handoff = Load(path);
+        if (handoff is null || handoff.Status != "queued")
+            return handoff;
+        return StoreStatus(path, handoff with { Status = "claimed" });
+    }
+
+    public static JobHandoff? MarkDone(string path)
+    {
+        var handoff = Load(path);
+        if (handoff is null)
+            return null;
+        return StoreStatus(path, handoff with { Status = "done" });
+    }
+
+    public static IReadOnlyList<JobHandoff> List(string queueBaseDirectory, string destination, int max = 200)
+    {
+        var dir = Path.Combine(queueBaseDirectory, ".openmono", "decision-queue", destination);
+        if (!Directory.Exists(dir))
+            return [];
+        var found = new List<JobHandoff>();
+        foreach (var path in Directory.EnumerateFiles(dir, "*.json"))
+        {
+            var handoff = Load(path);
+            if (handoff is not null)
+                found.Add(handoff);
+        }
+        found.Sort((left, right) => string.CompareOrdinal(right.Timestamp, left.Timestamp));
+        return found.Count <= max ? found : found.GetRange(0, max);
+    }
+
+    private static JobHandoff? StoreStatus(string path, JobHandoff handoff)
+    {
+        try
+        {
+            var temp = path + ".tmp";
+            File.WriteAllText(temp, JsonSerializer.Serialize(handoff, JsonOptions.Indented));
+            File.Move(temp, path, overwrite: true);
+            return handoff;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Load(path);
+        }
+    }
 }
