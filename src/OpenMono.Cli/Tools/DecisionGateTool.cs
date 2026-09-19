@@ -24,12 +24,16 @@ public sealed class DecisionGateTool : ToolBase
     private readonly DecisionOptions _options;
     private readonly string _workingDirectory;
     private readonly HeuristicBackend _backend;
+    private readonly DecisionAudit? _audit;
 
-    public DecisionGateTool(DecisionOptions options, string workingDirectory, HeuristicBackend? backend = null)
+    public DecisionGateTool(
+        DecisionOptions options, string workingDirectory,
+        HeuristicBackend? backend = null, DecisionAudit? audit = null)
     {
         _options = options;
         _workingDirectory = workingDirectory;
         _backend = backend ?? new HeuristicBackend(options);
+        _audit = audit;
     }
 
     public override string Name => "decide_gate_action";
@@ -74,14 +78,18 @@ public sealed class DecisionGateTool : ToolBase
         return Confirm("destructive", destructive ? 0.8 : 0.65, toolName, toolArgsJson, userRequest);
     }
 
-    protected override Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
+    protected override async Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
     {
         var tool = input.TryGetProperty("tool", out var t) ? t.GetString() ?? "" : "";
         var args = input.TryGetProperty("args", out var a) ? a.GetRawText() : "{}";
         var userRequest = input.TryGetProperty("user_request", out var u) ? u.GetString() ?? "" : "";
         if (string.IsNullOrWhiteSpace(tool))
-            return Task.FromResult(ToolResult.InvalidInput("Missing tool name.", "Provide tool, args, user_request."));
+            return ToolResult.InvalidInput("Missing tool name.", "Provide tool, args, user_request.");
         var result = Check(tool, args, userRequest);
+        var audit = _audit ?? new DecisionAudit(context.Config);
+        await audit.AppendAsync(new DecisionAudit.Entry(
+            DateTime.UtcNow.ToString("o"), context.Session.Id,
+            "gate", $"{tool} {result.Decision} {result.Confidence:F2}", 0), ct);
         var payload = new
         {
             decision = result.Decision,
@@ -96,7 +104,7 @@ public sealed class DecisionGateTool : ToolBase
             },
         };
         var json = JsonSerializer.Serialize(payload, Config.JsonOptions.Default);
-        return Task.FromResult(ToolResult.Success(json));
+        return ToolResult.Success(json);
     }
 
     private DecisionGateResult Allow(string reason, string toolName, string argsJson, string userRequest) =>

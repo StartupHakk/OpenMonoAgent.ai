@@ -11,11 +11,13 @@ public sealed class DecideEvaluateTool : ToolBase
 
     private readonly DecisionOptions _options;
     private readonly HeuristicBackend _backend;
+    private readonly DecisionAudit? _audit;
 
-    public DecideEvaluateTool(DecisionOptions options, HeuristicBackend? backend = null)
+    public DecideEvaluateTool(DecisionOptions options, HeuristicBackend? backend = null, DecisionAudit? audit = null)
     {
         _options = options;
         _backend = backend ?? new HeuristicBackend(options);
+        _audit = audit;
     }
 
     public override string Name => "decide_evaluate";
@@ -34,12 +36,12 @@ public sealed class DecideEvaluateTool : ToolBase
         .AddProperty("questions", new { type = "object", description = "Map of id to {type, instructions, criteria}" })
         .Require("state", "questions");
 
-    protected override Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
+    protected override async Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
     {
         if (input.GetRawText().Length > MaxInputChars)
-            return Task.FromResult(ToolResult.InvalidInput("State is too large.", "Narrow state below 64K chars."));
+            return ToolResult.InvalidInput("State is too large.", "Narrow state below 64K chars.");
         if (!input.TryGetProperty("questions", out var questions) || questions.ValueKind != JsonValueKind.Object)
-            return Task.FromResult(ToolResult.InvalidInput("Missing questions object.", "Provide questions as {id: {type, instructions, criteria}}."));
+            return ToolResult.InvalidInput("Missing questions object.", "Provide questions as {id: {type, instructions, criteria}}.");
         var stateText = input.TryGetProperty("state", out var state) ? state.GetRawText() : "";
         var truncated = false;
         if (stateText.Length > MaxStateChars)
@@ -63,7 +65,11 @@ public sealed class DecideEvaluateTool : ToolBase
             latency_ms = sw.ElapsedMilliseconds,
             truncated,
         };
-        return Task.FromResult(ToolResult.Success(JsonSerializer.Serialize(payload, Config.JsonOptions.Default)));
+        var audit = _audit ?? new DecisionAudit(context.Config);
+        await audit.AppendAsync(new DecisionAudit.Entry(
+            DateTime.UtcNow.ToString("o"), context.Session.Id,
+            "evaluate", $"{answers.Count}q gate={gate} {sw.ElapsedMilliseconds}ms", sw.ElapsedMilliseconds), ct);
+        return ToolResult.Success(JsonSerializer.Serialize(payload, Config.JsonOptions.Default));
     }
 
     private Answer AnswerOne(JsonElement question, string stateText)

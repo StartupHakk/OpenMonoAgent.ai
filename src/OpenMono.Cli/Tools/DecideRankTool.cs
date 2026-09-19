@@ -11,11 +11,13 @@ public sealed class DecideRankTool : ToolBase
 
     private readonly DecisionOptions _options;
     private readonly HeuristicBackend _backend;
+    private readonly DecisionAudit? _audit;
 
-    public DecideRankTool(DecisionOptions options, HeuristicBackend? backend = null)
+    public DecideRankTool(DecisionOptions options, HeuristicBackend? backend = null, DecisionAudit? audit = null)
     {
         _options = options;
         _backend = backend ?? new HeuristicBackend(options);
+        _audit = audit;
     }
 
     public override string Name => "decide_rank";
@@ -40,12 +42,12 @@ public sealed class DecideRankTool : ToolBase
         .AddProperty("min_relevance", new { type = "number", description = "Minimum relevance kept, default 0.5" })
         .Require("query", "candidates");
 
-    protected override Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
+    protected override async Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
     {
         if (!input.TryGetProperty("query", out var queryEl) || queryEl.GetString() is not { } query)
-            return Task.FromResult(ToolResult.InvalidInput("Missing query.", "Provide query and candidates."));
+            return ToolResult.InvalidInput("Missing query.", "Provide query and candidates.");
         if (!input.TryGetProperty("candidates", out var candidatesEl) || candidatesEl.ValueKind != JsonValueKind.Array)
-            return Task.FromResult(ToolResult.InvalidInput("Missing candidates array.", "Provide candidates as [{id, text}]."));
+            return ToolResult.InvalidInput("Missing candidates array.", "Provide candidates as [{id, text}].");
         var minRelevance = _options.MinConfidence;
         if (input.TryGetProperty("min_relevance", out var minEl) && minEl.ValueKind == JsonValueKind.Number)
             minRelevance = Math.Clamp(minEl.GetDouble(), 0, 1);
@@ -56,10 +58,10 @@ public sealed class DecideRankTool : ToolBase
                 candidate.TryGetProperty("text", out var text) && text.GetString() is { } ctext)
                 candidates.Add((cid, ctext));
             else
-                return Task.FromResult(ToolResult.InvalidInput("Malformed candidate.", "Each candidate needs id and text."));
+                return ToolResult.InvalidInput("Malformed candidate.", "Each candidate needs id and text.");
         }
         if (candidates.Count > MaxCandidates)
-            return Task.FromResult(ToolResult.InvalidInput($"Too many candidates ({candidates.Count}).", "Keep at most 500 per call."));
+            return ToolResult.InvalidInput($"Too many candidates ({candidates.Count}).", "Keep at most 500 per call.");
         var sw = Stopwatch.StartNew();
         var scored = new List<(string Id, double Relevance)>(candidates.Count);
         foreach (var chunk in candidates.Chunk(ChunkSize))
@@ -81,6 +83,10 @@ public sealed class DecideRankTool : ToolBase
             any_relevant = ranked.Count > 0,
             latency_ms = sw.ElapsedMilliseconds,
         };
-        return Task.FromResult(ToolResult.Success(JsonSerializer.Serialize(payload, Config.JsonOptions.Default)));
+        var audit = _audit ?? new DecisionAudit(context.Config);
+        await audit.AppendAsync(new DecisionAudit.Entry(
+            DateTime.UtcNow.ToString("o"), context.Session.Id,
+            "rank", $"{candidates.Count}c kept={ranked.Count} {sw.ElapsedMilliseconds}ms", sw.ElapsedMilliseconds), ct);
+        return ToolResult.Success(JsonSerializer.Serialize(payload, Config.JsonOptions.Default));
     }
 }

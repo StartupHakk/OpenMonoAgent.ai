@@ -72,6 +72,19 @@ public class ChiefRouterTests : IDisposable
         handoff.Destination.Should().Be("review");
     }
 
+    [Theory]
+    [InlineData(0.6, "write")]
+    [InlineData(0.95, "review")]
+    public async Task RouteAsync_ThresholdSweepMovesBoundary(double threshold, string expected)
+    {
+        var (handoff, _) = await _router.RouteAsync(
+            "Compare three AI-agent tools",
+            "Sources collected. Evidence gathered. Findings summarized. Ready to draft.",
+            threshold, CancellationToken.None);
+
+        handoff.Destination.Should().Be(expected);
+    }
+
     [Fact]
     public async Task RouteAsync_OversizedStateCapsToReview()
     {

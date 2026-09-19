@@ -32,6 +32,26 @@ public class DecisionCommandTests : IDisposable
     }
 
     [Fact]
+    public void Tokenize_SplitsRespectingQuotes()
+    {
+        DecisionCommand.Tokenize("chief --goal \"Compare tools\" --notes \"No sources yet\"")
+            .Should().Equal("chief", "--goal", "Compare tools", "--notes", "No sources yet");
+    }
+
+    [Fact]
+    public async Task Chief_AcceptsSingleRawArg()
+    {
+        var command = new DecisionCommand();
+        var context = Context();
+
+        await command.ExecuteAsync(
+            ["chief --goal \"Compare tools\" --notes \"No sources yet\""], context, CancellationToken.None);
+
+        Directory.EnumerateFiles(
+            Path.Combine(_tempDir, ".openmono", "decision-queue", "research"), "*.json").Should().HaveCount(1);
+    }
+
+    [Fact]
     public void ParseFlags_CollectsMultiWordValues()
     {
         var flags = DecisionCommand.ParseFlags(["--goal", "Compare", "three", "tools", "--notes", "None"]);

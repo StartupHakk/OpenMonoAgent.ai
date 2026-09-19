@@ -57,7 +57,8 @@ public sealed class ToolDispatcher : IDisposable
         _cache = cache ?? new ToolResultCache();
         _artifactStore = artifactStore ?? ArtifactStore.ForSession(session, config.DataDirectory);
         _executor = executor ?? new LocalToolExecutor(
-            _journal, _renderer, _config, _session, _permissions, _cache, _artifactStore, _hookRunner);
+            _journal, _renderer, _config, _session, _permissions, _cache, _artifactStore, _hookRunner,
+            sink: null, decisionOptions: Decisions.DecisionOptions.FromSettings(_config.Decision));
     }
 
     public CursorStore Cursors => _cursorStore;

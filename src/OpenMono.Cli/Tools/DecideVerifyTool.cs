@@ -10,11 +10,13 @@ public sealed class DecideVerifyTool : ToolBase
 
     private readonly DecisionOptions _options;
     private readonly HeuristicBackend _backend;
+    private readonly DecisionAudit? _audit;
 
-    public DecideVerifyTool(DecisionOptions options, HeuristicBackend? backend = null)
+    public DecideVerifyTool(DecisionOptions options, HeuristicBackend? backend = null, DecisionAudit? audit = null)
     {
         _options = options;
         _backend = backend ?? new HeuristicBackend(options);
+        _audit = audit;
     }
 
     public override string Name => "decide_verify";
@@ -38,30 +40,33 @@ public sealed class DecideVerifyTool : ToolBase
         })
         .Require("evidence", "claims");
 
-    protected override Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
+    protected override async Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
     {
         if (!input.TryGetProperty("evidence", out var evidenceEl) || evidenceEl.GetString() is not { } evidence)
-            return Task.FromResult(ToolResult.InvalidInput("Missing evidence.", "Provide evidence and claims."));
+            return ToolResult.InvalidInput("Missing evidence.", "Provide evidence and claims.");
         if (!input.TryGetProperty("claims", out var claimsEl) || claimsEl.ValueKind != JsonValueKind.Array)
-            return Task.FromResult(ToolResult.InvalidInput("Missing claims array.", "Provide claims as [string]."));
+            return ToolResult.InvalidInput("Missing claims array.", "Provide claims as [string].");
         var claims = new List<string>();
         foreach (var claim in claimsEl.EnumerateArray())
         {
             if (claim.ValueKind == JsonValueKind.String && claim.GetString() is { } text)
                 claims.Add(text);
             else
-                return Task.FromResult(ToolResult.InvalidInput("Malformed claim.", "Each claim must be a string."));
+                return ToolResult.InvalidInput("Malformed claim.", "Each claim must be a string.");
         }
         if (claims.Count > MaxClaims)
-            return Task.FromResult(ToolResult.InvalidInput($"Too many claims ({claims.Count}).", "Keep at most 100 per call."));
+            return ToolResult.InvalidInput($"Too many claims ({claims.Count}).", "Keep at most 100 per call.");
         var sw = Stopwatch.StartNew();
         var verdicts = new List<object>(claims.Count);
         var allSupported = true;
+        var supported = 0;
         foreach (var claim in claims)
         {
             var (verdict, confidence) = _backend.Verify(evidence, claim);
             if (verdict != "supported")
                 allSupported = false;
+            else
+                supported++;
             verdicts.Add(new { claim, verdict, confidence });
             ct.ThrowIfCancellationRequested();
         }
@@ -72,6 +77,10 @@ public sealed class DecideVerifyTool : ToolBase
             all_supported = allSupported,
             latency_ms = sw.ElapsedMilliseconds,
         };
-        return Task.FromResult(ToolResult.Success(JsonSerializer.Serialize(payload, Config.JsonOptions.Default)));
+        var audit = _audit ?? new DecisionAudit(context.Config);
+        await audit.AppendAsync(new DecisionAudit.Entry(
+            DateTime.UtcNow.ToString("o"), context.Session.Id,
+            "verify", $"{claims.Count}c supported={supported} {sw.ElapsedMilliseconds}ms", sw.ElapsedMilliseconds), ct);
+        return ToolResult.Success(JsonSerializer.Serialize(payload, Config.JsonOptions.Default));
     }
 }

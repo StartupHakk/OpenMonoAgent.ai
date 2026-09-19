@@ -16,6 +16,7 @@ public sealed class DecisionCommand : ICommand
 
     public async Task ExecuteAsync(string[] args, CommandContext context, CancellationToken ct)
     {
+        args = Tokenize(string.Join(" ", args));
         if (args.Length == 0)
         {
             context.Renderer.WriteError("Usage: /decision status|ask|rank|verify|gate|chief …");
@@ -91,7 +92,7 @@ public sealed class DecisionCommand : ICommand
         var flags = ParseFlags(args);
         if (!flags.TryGetValue("goal", out var goal) || string.IsNullOrWhiteSpace(goal))
         {
-            context.Renderer.WriteError("Usage: /decision chief --goal <goal> --notes <notes> [--threshold <0..1>]");
+            context.Renderer.WriteError("Usage: /decision chief --goal \"<goal>\" --notes \"<notes>\" [--threshold <0..1>]");
             return;
         }
         flags.TryGetValue("notes", out var notes);
@@ -102,6 +103,35 @@ public sealed class DecisionCommand : ICommand
         var (handoff, path) = await router.RouteAsync(goal, notes ?? "", threshold, ct);
         context.Renderer.WriteInfo($"Saved handoff: {path}");
         context.Renderer.WriteInfo($"choice={handoff.Choice} confidence={handoff.Confidence:F2} destination={handoff.Destination}");
+    }
+
+    internal static string[] Tokenize(string raw)
+    {
+        var tokens = new List<string>();
+        var current = new System.Text.StringBuilder();
+        var inQuotes = false;
+        foreach (var ch in raw)
+        {
+            if (ch == '"')
+            {
+                inQuotes = !inQuotes;
+            }
+            else if (char.IsWhiteSpace(ch) && !inQuotes)
+            {
+                if (current.Length > 0)
+                {
+                    tokens.Add(current.ToString());
+                    current.Clear();
+                }
+            }
+            else
+            {
+                current.Append(ch);
+            }
+        }
+        if (current.Length > 0)
+            tokens.Add(current.ToString());
+        return [.. tokens];
     }
 
     internal static Dictionary<string, string> ParseFlags(string[] args)

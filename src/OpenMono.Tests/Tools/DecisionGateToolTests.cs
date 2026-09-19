@@ -92,6 +92,27 @@ public class DecisionGateToolTests : IDisposable
         result.Reasons.Should().Contain("unparseable-args");
     }
 
+    [Theory]
+    [InlineData("pip install requests", "allow")]
+    [InlineData("ls -la", "allow")]
+    [InlineData("git status", "allow")]
+    public void Check_MatrixBenignCommandsAllow(string command, string expected)
+    {
+        var result = _gate.Check("Bash", $"{{\"command\": \"{command}\"}}", "work");
+
+        result.Decision.Should().Be(expected);
+    }
+
+    [Fact]
+    public void Check_MatrixInScopeSingleFileRemoveAllows()
+    {
+        var path = Path.Combine(_tempDir, "scratch.txt");
+        File.WriteAllText(path, "x");
+        var result = _gate.Check("Bash", $"{{\"command\": \"rm {path}\"}}", "clean scratch");
+
+        result.Decision.Should().Be("allow");
+    }
+
     [Fact]
     public void Check_AllowsUngatedTools()
     {
@@ -108,7 +129,7 @@ public class DecisionGateToolTests : IDisposable
             ToolRegistry = new ToolRegistry(),
             Session = new SessionState(),
             Permissions = new PermissionEngine(new AppConfig(), new TerminalRenderer(), new TerminalRenderer()),
-            Config = new AppConfig { WorkingDirectory = _tempDir },
+            Config = new AppConfig { WorkingDirectory = _tempDir, DataDirectory = _tempDir },
             WorkingDirectory = _tempDir,
             WriteOutput = _ => { },
             AskUser = (_, _) => Task.FromResult(""),
@@ -132,7 +153,7 @@ public class DecisionGateToolTests : IDisposable
             ToolRegistry = new ToolRegistry(),
             Session = new SessionState(),
             Permissions = new PermissionEngine(new AppConfig(), new TerminalRenderer(), new TerminalRenderer()),
-            Config = new AppConfig { WorkingDirectory = _tempDir },
+            Config = new AppConfig { WorkingDirectory = _tempDir, DataDirectory = _tempDir },
             WorkingDirectory = _tempDir,
             WriteOutput = _ => { },
             AskUser = (_, _) => Task.FromResult(""),

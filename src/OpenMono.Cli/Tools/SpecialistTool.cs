@@ -19,11 +19,13 @@ public sealed class SpecialistTool : ToolBase
 
     private readonly DecisionOptions _options;
     private readonly string _workingDirectory;
+    private readonly DecisionAudit? _audit;
 
-    public SpecialistTool(DecisionOptions options, string workingDirectory)
+    public SpecialistTool(DecisionOptions options, string workingDirectory, DecisionAudit? audit = null)
     {
         _options = options;
         _workingDirectory = workingDirectory;
+        _audit = audit;
     }
 
     public override string Name => "specialist";
@@ -44,11 +46,11 @@ public sealed class SpecialistTool : ToolBase
         .AddInteger("max_steps", "Maximum files classified", minimum: 1, maximum: 256)
         .Require("task");
 
-    protected override Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
+    protected override async Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
     {
         var task = input.TryGetProperty("task", out var t) ? t.GetString() ?? "" : "";
         if (task != "triage-files" && task != "commit-ready")
-            return Task.FromResult(ToolResult.InvalidInput($"Unknown task '{task}'.", "Use triage-files or commit-ready."));
+            return ToolResult.InvalidInput($"Unknown task '{task}'.", "Use triage-files or commit-ready.");
         var scope = input.TryGetProperty("scope", out var s) ? s.GetString() ?? "" : "";
         var minConfidence = _options.MinConfidence;
         if (input.TryGetProperty("min_confidence", out var minEl) && minEl.ValueKind == JsonValueKind.Number)
@@ -82,7 +84,11 @@ public sealed class SpecialistTool : ToolBase
             task, true, "execute:false submit:false", valid, ordered, skipped,
             new Dictionary<string, long> { ["enumerate"] = enumerateMs, ["score"] = sw.ElapsedMilliseconds },
             warnings);
-        return Task.FromResult(ToolResult.SuccessWithPayload(report.ToRedactedMarkdown(), report));
+        var audit = _audit ?? new DecisionAudit(context.Config);
+        await audit.AppendAsync(new DecisionAudit.Entry(
+            DateTime.UtcNow.ToString("o"), context.Session.Id,
+            $"specialist-{task}", $"{valid.Count}f steps={ordered.Count} {sw.ElapsedMilliseconds}ms", sw.ElapsedMilliseconds), ct);
+        return ToolResult.SuccessWithPayload(report.ToRedactedMarkdown(), report);
     }
 
     private (string Action, double Confidence) TriageFile(string path, List<string> warnings)

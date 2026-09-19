@@ -30,7 +30,7 @@ public class SpecialistToolTests : IDisposable
         ToolRegistry = new ToolRegistry(),
         Session = new SessionState(),
         Permissions = new PermissionEngine(new AppConfig(), new TerminalRenderer(), new TerminalRenderer()),
-        Config = new AppConfig { WorkingDirectory = _tempDir },
+        Config = new AppConfig { WorkingDirectory = _tempDir, DataDirectory = _tempDir },
         WorkingDirectory = _tempDir,
         WriteOutput = _ => { },
         AskUser = (_, _) => Task.FromResult(""),

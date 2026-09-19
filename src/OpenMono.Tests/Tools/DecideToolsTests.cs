@@ -9,16 +9,17 @@ using OpenMono.Tools;
 
 namespace OpenMono.Tests.Tools;
 
-public class DecideToolsTests
+public class DecideToolsTests : IDisposable
 {
     private readonly DecisionOptions _options = new(true, 0.85, 0.6, 0.5, 64);
+    private readonly string _tempDir = Path.Combine(Path.GetTempPath(), $"openmono-test-{Guid.NewGuid():N}");
 
     private ToolContext Context(string workdir) => new()
     {
         ToolRegistry = new ToolRegistry(),
         Session = new SessionState(),
         Permissions = new PermissionEngine(new AppConfig(), new TerminalRenderer(), new TerminalRenderer()),
-        Config = new AppConfig { WorkingDirectory = workdir },
+        Config = new AppConfig { WorkingDirectory = workdir, DataDirectory = _tempDir },
         WorkingDirectory = workdir,
         WriteOutput = _ => { },
         AskUser = (_, _) => Task.FromResult(""),
@@ -169,6 +170,40 @@ public class DecideToolsTests
         var result = await tool.ExecuteAsync(input, Context(Path.GetTempPath()), CancellationToken.None);
 
         JsonDocument.Parse(result.Content).RootElement.GetProperty("verdict").GetString().Should().Be("done");
+    }
+
+    [Fact]
+    public async Task Rank_WritesAuditLine()
+    {
+        var dataDir = Path.Combine(Path.GetTempPath(), $"openmono-test-{Guid.NewGuid():N}");
+        var tool = new DecideRankTool(_options);
+        var context = new ToolContext
+        {
+            ToolRegistry = new ToolRegistry(),
+            Session = new SessionState(),
+            Permissions = new PermissionEngine(new AppConfig(), new TerminalRenderer(), new TerminalRenderer()),
+            Config = new AppConfig { WorkingDirectory = Path.GetTempPath(), DataDirectory = dataDir },
+            WorkingDirectory = Path.GetTempPath(),
+            WriteOutput = _ => { },
+            AskUser = (_, _) => Task.FromResult(""),
+        };
+        var input = JsonDocument.Parse("""
+            {"query": "phone", "candidates": [{"id": "a", "text": "phone field"}]}
+            """).RootElement;
+
+        await tool.ExecuteAsync(input, context, CancellationToken.None);
+
+        var lines = await File.ReadAllLinesAsync(Path.Combine(dataDir, "decision-audit.jsonl"));
+        lines.Should().HaveCount(1);
+        lines[0].Should().Contain("rank");
+        Directory.Delete(dataDir, true);
+    }
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_tempDir))
+            Directory.Delete(_tempDir, true);
+        GC.SuppressFinalize(this);
     }
 
     [Fact]

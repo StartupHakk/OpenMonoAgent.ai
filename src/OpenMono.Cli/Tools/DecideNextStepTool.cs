@@ -10,11 +10,13 @@ public sealed class DecideNextStepTool : ToolBase
 
     private readonly DecisionOptions _options;
     private readonly HeuristicBackend _backend;
+    private readonly DecisionAudit? _audit;
 
-    public DecideNextStepTool(DecisionOptions options, HeuristicBackend? backend = null)
+    public DecideNextStepTool(DecisionOptions options, HeuristicBackend? backend = null, DecisionAudit? audit = null)
     {
         _options = options;
         _backend = backend ?? new HeuristicBackend(options);
+        _audit = audit;
     }
 
     public override string Name => "decide_next_step";
@@ -35,7 +37,7 @@ public sealed class DecideNextStepTool : ToolBase
         .AddInteger("attempts", "Attempt count so far", minimum: 0)
         .Require("goal", "last_action", "result", "attempts");
 
-    protected override Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
+    protected override async Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
     {
         var goal = input.TryGetProperty("goal", out var g) ? g.GetString() ?? "" : "";
         var result = input.TryGetProperty("result", out var r) ? r.GetString() ?? "" : "";
@@ -43,10 +45,14 @@ public sealed class DecideNextStepTool : ToolBase
             ? a.GetInt32()
             : 0;
         if (string.IsNullOrWhiteSpace(goal))
-            return Task.FromResult(ToolResult.InvalidInput("Missing goal.", "Provide goal, last_action, result, attempts."));
+            return ToolResult.InvalidInput("Missing goal.", "Provide goal, last_action, result, attempts.");
         var (verdict, confidence) = Decide(goal, result, attempts);
         var payload = new { verdict, confidence };
-        return Task.FromResult(ToolResult.Success(JsonSerializer.Serialize(payload, Config.JsonOptions.Default)));
+        var audit = _audit ?? new DecisionAudit(context.Config);
+        await audit.AppendAsync(new DecisionAudit.Entry(
+            DateTime.UtcNow.ToString("o"), context.Session.Id,
+            "next-step", $"{verdict} {confidence:F2}", 0), ct);
+        return ToolResult.Success(JsonSerializer.Serialize(payload, Config.JsonOptions.Default));
     }
 
     private (string Verdict, double Confidence) Decide(string goal, string result, int attempts)

@@ -119,7 +119,8 @@ public sealed class ConversationLoop : IDisposable
             _cache,
             _artifactStore,
             _hookRunner,
-            _sink);
+            _sink,
+            Decisions.DecisionOptions.FromSettings(_config.Decision));
         _toolSubset = toolSubset;
         _maxIterations = maxIterations;
         _agentDepth = agentDepth;

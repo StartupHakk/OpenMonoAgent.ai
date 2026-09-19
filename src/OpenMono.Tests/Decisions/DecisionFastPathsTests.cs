@@ -122,6 +122,18 @@ public class DecisionFastPathsTests
     }
 
     [Fact]
+    public void ShouldConsult_StaysCheapAtScale()
+    {
+        var input = Args("git status");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        for (var i = 0; i < 100000; i++)
+            DecisionFastPaths.ShouldConsult("FileRead");
+        sw.Stop();
+
+        sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
     public void IsDestructive_NeverFlagsUngatedTools()
     {
         var input = JsonDocument.Parse("""{"file_path": "/etc/passwd"}""").RootElement;
