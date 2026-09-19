@@ -139,6 +139,7 @@ public static class ConfigLoader
             config.Agents.MergeFrom(overrides.Agents);
             config.Web.MergeFrom(overrides.Web);
             config.Inference.MergeFrom(overrides.Inference);
+            config.Decision.MergeFrom(overrides.Decision);
 
             foreach (var (tool, rules) in overrides.Permissions.Tools)
             {
@@ -270,5 +271,25 @@ public static class ConfigLoader
             foreach (var p in config.Providers.Values) p.Active = false;
             ps.Active = true;
         }
+
+        var decisionEnabled = Environment.GetEnvironmentVariable("OPENMONO_DECISION_ENABLED");
+        if (!string.IsNullOrEmpty(decisionEnabled))
+            config.Decision.Enabled = decisionEnabled.Trim().ToLowerInvariant() is "1" or "true" or "yes" or "on";
+
+        var autoThreshold = Environment.GetEnvironmentVariable("OPENMONO_DECISION_AUTO_THRESHOLD");
+        if (!string.IsNullOrEmpty(autoThreshold) && double.TryParse(autoThreshold, out var autoVal))
+            config.Decision.AutoThreshold = autoVal;
+
+        var reviewThreshold = Environment.GetEnvironmentVariable("OPENMONO_DECISION_REVIEW_THRESHOLD");
+        if (!string.IsNullOrEmpty(reviewThreshold) && double.TryParse(reviewThreshold, out var reviewVal))
+            config.Decision.ReviewThreshold = reviewVal;
+
+        var minConfidence = Environment.GetEnvironmentVariable("OPENMONO_DECISION_MIN_CONFIDENCE");
+        if (!string.IsNullOrEmpty(minConfidence) && double.TryParse(minConfidence, out var minConfVal))
+            config.Decision.MinConfidence = minConfVal;
+
+        var maxSteps = Environment.GetEnvironmentVariable("OPENMONO_DECISION_MAX_STEPS");
+        if (!string.IsNullOrEmpty(maxSteps) && int.TryParse(maxSteps, out var maxStepsVal))
+            config.Decision.MaxSteps = maxStepsVal;
     }
 }

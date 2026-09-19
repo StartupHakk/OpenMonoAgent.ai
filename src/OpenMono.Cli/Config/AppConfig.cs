@@ -35,6 +35,41 @@ public sealed class AppConfig
     public string? HostWorkingDirectory { get; set; }
     public string DataDirectory { get; set; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".openmono");
+    public DecisionSettings Decision { get; set; } = new();
+}
+
+public sealed class DecisionSettings
+{
+    public bool Enabled { get; set; }
+    public double AutoThreshold
+    {
+        get;
+        set => field = Math.Clamp(value, 0, 1);
+    } = 0.85;
+    public double ReviewThreshold
+    {
+        get;
+        set => field = Math.Clamp(value, 0, 1);
+    } = 0.6;
+    public double MinConfidence
+    {
+        get;
+        set => field = Math.Clamp(value, 0, 1);
+    } = 0.5;
+    public int MaxSteps
+    {
+        get;
+        set => field = Math.Clamp(value, 1, 256);
+    } = 64;
+
+    public void MergeFrom(DecisionSettings source)
+    {
+        Enabled = source.Enabled;
+        if (source.AutoThreshold > 0) AutoThreshold = source.AutoThreshold;
+        if (source.ReviewThreshold > 0) ReviewThreshold = source.ReviewThreshold;
+        if (source.MinConfidence > 0) MinConfidence = source.MinConfidence;
+        if (source.MaxSteps > 0) MaxSteps = source.MaxSteps;
+    }
 }
 
 public sealed class ProviderSettings
