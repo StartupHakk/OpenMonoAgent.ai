@@ -35,6 +35,10 @@ public sealed class DecideNextStepTool : ToolBase
         .AddString("last_action", "Action just taken")
         .AddString("result", "Result of the last action")
         .AddInteger("attempts", "Attempt count so far", minimum: 0)
+        .AddString("mode", "Loop verdict (default) or route to a tool")
+        .AddString("choice", "Explicit route choice validated against the tool menu")
+        .AddString("include_tools", "Comma-separated globs keeping route tools")
+        .AddString("exclude_tools", "Comma-separated globs removing route tools")
         .Require("goal", "last_action", "result", "attempts");
 
     protected override async Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
@@ -46,6 +50,7 @@ public sealed class DecideNextStepTool : ToolBase
             : 0;
         if (string.IsNullOrWhiteSpace(goal))
             return ToolResult.InvalidInput("Missing goal.", "Provide goal, last_action, result, attempts.");
+        if (input.TryGetProperty("mode", out var modeEl) && modeEl.ValueKind == JsonValueKind.String && modeEl.GetString() == "route") return await RouteAsync(input, context, string.Concat(goal, "\n", result), ct);
         var (verdict, confidence) = Decide(goal, result, attempts);
         var payload = new { verdict, confidence };
         var audit = _audit ?? new DecisionAudit(context.Config);
@@ -55,6 +60,21 @@ public sealed class DecideNextStepTool : ToolBase
         return ToolResult.Success(JsonSerializer.Serialize(payload, Config.JsonOptions.Default));
     }
 
+    private async Task<ToolResult> RouteAsync(JsonElement input, ToolContext context, string state, CancellationToken ct)
+    {
+        var names = context.ToolRegistry.All.Select(t => (t.Name, (string?)t.Description)).ToList();
+        IReadOnlyDictionary<string, string?> menu;
+        try { menu = ChoiceMenu.Build("route", ChoiceMenu.Filter(names, InputText(input, "include_tools"), InputText(input, "exclude_tools"))); }
+        catch (InvalidOperationException ex) { return ToolResult.InvalidInput(ex.Message, "Narrow menu with include_tools or exclude_tools."); }
+        var wanted = InputText(input, "choice"); string pick = ChoiceMenu.OtherKey; double confidence = 0.5;
+        if (!string.IsNullOrWhiteSpace(wanted) && menu.ContainsKey(wanted)) { pick = wanted; confidence = 0.95; }
+        else if (string.IsNullOrWhiteSpace(wanted)) { (pick, confidence, _) = _backend.Choose(state, menu); }
+        var choice = pick == ChoiceMenu.OtherKey ? "ask_user" : pick;
+        var audit = _audit ?? new DecisionAudit(context.Config);
+        await audit.AppendAsync(new DecisionAudit.Entry(DateTime.UtcNow.ToString("o"), context.Session.Id, "route", choice, 0), ct);
+        return ToolResult.Success(JsonSerializer.Serialize(new { choice, confidence = choice == pick ? confidence : 0.5 }, Config.JsonOptions.Default));
+    }
+    private static string? InputText(JsonElement input, string name) => input.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.String ? el.GetString() : null;
     private (string Verdict, double Confidence) Decide(string goal, string result, int attempts)
     {
         if (attempts >= 3)

@@ -41,4 +41,23 @@ public class DecisionPolicyTests
     {
         DecisionPolicy.ScoreBand(score, 0.85, 0.6).Should().Be(expected);
     }
+
+    [Theory]
+    [InlineData("write", 0.7, 0.7, 0.5, "write")]
+    [InlineData("write", 0.69, 0.7, 0.5, "review")]
+    [InlineData("write", 0.49, 0.7, 0.5, "escalate")]
+    public void ApplyGate_DelegatesToTypedGate(string choice, double confidence, double auto, double review, string expected)
+    {
+        DecisionPolicy.ApplyGate(choice, confidence, auto, review).Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData(0.6, 0.6, 0.5, "yes")]
+    [InlineData(0.4, 0.6, 0.5, "no")]
+    [InlineData(0.55, 0.6, 0.5, "review")]
+    [InlineData(0.5, 0.9, 0.8, "escalate")]
+    public void NoulGate_DelegatesToTypedGate(double p, double auto, double review, string expected)
+    {
+        DecisionPolicy.NoulGate(p, auto, review).Should().Be(expected);
+    }
 }

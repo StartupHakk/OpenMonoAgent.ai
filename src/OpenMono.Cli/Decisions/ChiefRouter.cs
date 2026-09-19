@@ -40,7 +40,9 @@ public sealed class ChiefRouter(DecisionOptions options, string workingDirectory
         if (ContainsAny(lowered, EmptyMarkers) || !ContainsAny(lowered, EvidenceMarkers))
             return await SaveHandoffAsync(goal, completedWork, "research", "research", 0.9, auto, false, ct);
         var backend = new HeuristicBackend(Options);
-        var (choice, confidence, _) = backend.Choose(state, WorkerOptions);
+        var workerMenu = ChoiceMenu.Build("next_worker", WorkerOptions.Select(kv => (kv.Key, kv.Value)).ToList());
+        var (pick, confidence, _) = backend.Choose(state, workerMenu);
+        var choice = pick == ChoiceMenu.OtherKey ? "review" : pick;
         var gate = DecisionPolicy.ApplyGate(choice, confidence, auto, Options.ReviewThreshold);
         var destination = gate == choice && choice != "review" ? choice : "review";
         return await SaveHandoffAsync(goal, completedWork, choice, destination, confidence, auto, false, ct);
