@@ -291,5 +291,9 @@ public static class ConfigLoader
         var maxSteps = Environment.GetEnvironmentVariable("OPENMONO_DECISION_MAX_STEPS");
         if (!string.IsNullOrEmpty(maxSteps) && int.TryParse(maxSteps, out var maxStepsVal))
             config.Decision.MaxSteps = maxStepsVal;
+
+        var forceAsk = Environment.GetEnvironmentVariable("OPENMONO_DECISION_FORCE_ASK_PATTERNS");
+        if (!string.IsNullOrEmpty(forceAsk))
+            config.Decision.ForceAskPatterns = [.. forceAsk.Split(';', StringSplitOptions.RemoveEmptyEntries).Select(p => p.Trim()).Where(p => p.Length > 0 && p.Length <= 200).Take(32)];
     }
 }

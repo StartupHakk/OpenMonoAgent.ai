@@ -65,16 +65,16 @@ public sealed class DecisionGateTool : ToolBase
             return Confirm(["unparseable-args"], 0.5, toolName, toolArgsJson, userRequest);
         }
         if (!DecisionFastPaths.ShouldConsult(toolName))
-            return Allow("ungated-tool", toolName, toolArgsJson, userRequest);
+            return ApplyForceAsk(Allow("ungated-tool", toolName, toolArgsJson, userRequest), toolName, toolArgsJson, args);
         if (DecisionFastPaths.TryAllow(toolName, args, _workingDirectory, out var fastReason))
-            return Allow(fastReason, toolName, toolArgsJson, userRequest);
+            return ApplyForceAsk(Allow(fastReason, toolName, toolArgsJson, userRequest), toolName, toolArgsJson, args);
         var destructive = DecisionFastPaths.IsDestructive(toolName, args);
         if (IsWipe(toolName, args))
             return Block("wipe-pattern", toolName, toolArgsJson, userRequest);
         if (ExfiltratesSecrets(toolName, args))
             return Block("secret-egress", toolName, toolArgsJson, userRequest);
         if (!destructive)
-            return Allow("heuristic-benign", toolName, toolArgsJson, userRequest);
+            return ApplyForceAsk(Allow("heuristic-benign", toolName, toolArgsJson, userRequest), toolName, toolArgsJson, args);
         return Confirm("destructive", destructive ? 0.8 : 0.65, toolName, toolArgsJson, userRequest);
     }
 
@@ -125,6 +125,26 @@ public sealed class DecisionGateTool : ToolBase
 
     private DecisionGateResult Confirm(IReadOnlyList<string> reasons, double confidence, string toolName, string argsJson, string userRequest) =>
         new("confirm", confidence, reasons, SignalsFor(toolName, argsJson, 2));
+
+    private DecisionGateResult ApplyForceAsk(DecisionGateResult result, string toolName, string argsJson, JsonElement args)
+    {
+        if (!string.Equals(result.Decision, "allow", StringComparison.Ordinal) || _options.ForceAskPatterns.Count == 0) return result;
+        var salient = args.TryGetProperty("command", out var cmd) && cmd.GetString() is { } c ? c : args.TryGetProperty("file_path", out var fp) && fp.GetString() is { } f ? f : argsJson;
+        var shortHay = string.Concat(toolName, " ", salient.Length <= 2000 ? salient : salient[..2000]);
+        var fullHay = string.Concat(toolName, " ", TruncateArgs(argsJson));
+        foreach (var pattern in _options.ForceAskPatterns) if (GlobMatch(pattern, shortHay) || GlobMatch(pattern, fullHay)) return new DecisionGateResult("confirm", Math.Max(result.Confidence, 0.8), ["force-ask"], result.Signals);
+        return result;
+    }
+
+    private static string TruncateArgs(string argsJson) => argsJson.Length <= 2000 ? argsJson : argsJson[..2000];
+
+    private static bool GlobMatch(string pattern, string text)
+    {
+        int p = 0, t = 0, star = -1, mark = 0;
+        while (t < text.Length) { if (p < pattern.Length && (pattern[p] == '?' || char.ToUpperInvariant(pattern[p]) == char.ToUpperInvariant(text[t]))) { p++; t++; } else if (p < pattern.Length && pattern[p] == '*') { star = p++; mark = t; } else if (star >= 0) { p = star + 1; t = ++mark; } else return false; }
+        while (p < pattern.Length && pattern[p] == '*') p++;
+        return p == pattern.Length;
+    }
 
     private GateSignals SignalsFor(string toolName, string argsJson, int blastRadius)
     {

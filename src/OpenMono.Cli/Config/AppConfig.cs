@@ -61,6 +61,7 @@ public sealed class DecisionSettings
         get;
         set => field = Math.Clamp(value, 1, 256);
     } = 64;
+    public List<string> ForceAskPatterns { get; set; } = [];
 
     public void MergeFrom(DecisionSettings source)
     {
@@ -69,6 +70,7 @@ public sealed class DecisionSettings
         if (source.ReviewThreshold > 0) ReviewThreshold = source.ReviewThreshold;
         if (source.MinConfidence > 0) MinConfidence = source.MinConfidence;
         if (source.MaxSteps > 0) MaxSteps = source.MaxSteps;
+        if (source.ForceAskPatterns.Count > 0) ForceAskPatterns = [.. source.ForceAskPatterns.Where(p => !string.IsNullOrWhiteSpace(p) && p.Length <= 200).Take(32)];
     }
 }
 
