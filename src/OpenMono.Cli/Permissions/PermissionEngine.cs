@@ -260,7 +260,7 @@ public sealed class PermissionEngine
         return PathGuard.Validate(full, _config.WorkingDirectory) is null;
     }
 
-    private static bool IsSafeReadOnlyCommand(ProcessExecCap cap)
+    internal static bool IsSafeReadOnlyCommand(ProcessExecCap cap)
     {
         var safeReadOnlyCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
