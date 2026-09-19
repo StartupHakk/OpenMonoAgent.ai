@@ -3,6 +3,7 @@ using Microsoft.Extensions.Hosting;
 using OpenMono.Acp;
 using OpenMono.Commands;
 using OpenMono.Config;
+using OpenMono.Decisions;
 using OpenMono.History;
 using OpenMono.Hooks;
 using OpenMono.Llm;
@@ -218,6 +219,14 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     var playbookExecutor = new PlaybookExecutor(llm, tools, renderer, config, permissions);
     tools.Register(new PlaybookTool(playbookRegistry, playbookExecutor));
 
+    var decisionOptions = DecisionOptions.FromSettings(config.Decision);
+    tools.Register(new DecideEvaluateTool(decisionOptions));
+    tools.Register(new DecisionGateTool(decisionOptions, config.WorkingDirectory));
+    tools.Register(new DecideNextStepTool(decisionOptions));
+    tools.Register(new DecideRankTool(decisionOptions));
+    tools.Register(new DecideVerifyTool(decisionOptions));
+    tools.Register(new SpecialistTool(decisionOptions, config.WorkingDirectory));
+
     var systemPrompt = await SystemPrompt.BuildAsync(config, memoryStore, playbookRegistry);
     session.AddMessage(new Message { Role = MessageRole.System, Content = systemPrompt });
 
@@ -377,6 +386,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     commands.Register(new PromptCommand());
     commands.Register(new ModelCommand());
     commands.Register(new BtwCommand());
+    commands.Register(new DecisionCommand());
 
     var compactor = new Compactor(llm, config.Llm.ContextSize);
     var loop = new ConversationLoop(llm, tools, permissions, renderer, renderer, renderer, config, session, compactor, memoryStore,
