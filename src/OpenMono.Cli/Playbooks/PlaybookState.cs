@@ -10,9 +10,14 @@ public sealed class PlaybookState
     public DateTime StartedAt { get; init; } = DateTime.UtcNow;
     public Dictionary<string, object> Parameters { get; init; } = [];
     public Dictionary<string, string> StepOutputs { get; init; } = [];
+    public Dictionary<string, string> Judgments { get; init; } = [];
     public List<string> CompletedSteps { get; init; } = [];
     public string? CurrentStepId { get; set; }
     public int TokensUsed { get; set; }
+
+    public void RecordJudgment(string stepId, string judgment) => Judgments[stepId] = judgment;
+
+    public string LatestJudgment() => Judgments.Count > 0 ? Judgments.Values.Last() : "";
 
     public bool IsStepCompleted(string stepId) => CompletedSteps.Contains(stepId);
 

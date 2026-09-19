@@ -103,6 +103,17 @@ public sealed class TurnJournal : IDisposable
         });
     }
 
+    public void RecordDecision(string callId, string decision, string detail)
+    {
+        Append(new DecisionNoted
+        {
+            CallId = callId,
+            Decision = decision,
+            Detail = detail,
+            Timestamp = DateTime.UtcNow
+        });
+    }
+
     public void RecordToolStarted(string callId)
     {
         Append(new ToolStarted { CallId = callId, Timestamp = DateTime.UtcNow });
@@ -223,6 +234,7 @@ public sealed class TurnJournal : IDisposable
 [JsonDerivedType(typeof(SanityChecked), "sanity_checked")]
 [JsonDerivedType(typeof(SanityRejected), "sanity_rejected")]
 [JsonDerivedType(typeof(PermissionDecided), "permission_decided")]
+[JsonDerivedType(typeof(DecisionNoted), "decision_noted")]
 [JsonDerivedType(typeof(ToolStarted), "tool_started")]
 [JsonDerivedType(typeof(ToolCompleted), "tool_completed")]
 [JsonDerivedType(typeof(ToolCrashed), "tool_crashed")]
@@ -281,6 +293,13 @@ public sealed record PermissionDecided : JournalEvent
     public string? Reason { get; init; }
 }
 
+public sealed record DecisionNoted : JournalEvent
+{
+    public required string CallId { get; init; }
+    public required string Decision { get; init; }
+    public required string Detail { get; init; }
+}
+
 public sealed record ToolStarted : JournalEvent
 {
     public required string CallId { get; init; }
@@ -313,6 +332,7 @@ public sealed record ToolCrashed : JournalEvent
 [JsonSerializable(typeof(SanityChecked))]
 [JsonSerializable(typeof(SanityRejected))]
 [JsonSerializable(typeof(PermissionDecided))]
+[JsonSerializable(typeof(DecisionNoted))]
 [JsonSerializable(typeof(ToolStarted))]
 [JsonSerializable(typeof(ToolCompleted))]
 [JsonSerializable(typeof(ToolCrashed))]

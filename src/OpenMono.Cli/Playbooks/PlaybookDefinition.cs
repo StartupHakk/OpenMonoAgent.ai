@@ -70,6 +70,8 @@ public sealed record StepDefinition
     public string? InlinePrompt { get; init; }
     public string[] Requires { get; init; } = [];
     public GateType Gate { get; init; } = GateType.None;
+    public string? JudgeQuestion { get; init; }
+    public double? JudgeThreshold { get; init; }
     public string? Agent { get; init; }
     public string? Output { get; init; }
     public string? OutputSchema { get; init; }
@@ -85,6 +87,6 @@ public sealed record ConstraintSet
 }
 
 public enum TriggerMode { Manual, Auto, Both }
-public enum GateType { None, Confirm, Review, Approve }
+public enum GateType { None, Confirm, Review, Approve, Judge }
 public enum ContextMode { Full, Selective, Fork }
 public enum ParameterType { String, Number, Boolean, Array }

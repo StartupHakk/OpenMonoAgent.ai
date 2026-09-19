@@ -29,6 +29,8 @@ public static partial class TemplateEngine
 
         result = result.Replace("{{constraints}}", RenderConstraints(playbook.Constraints));
 
+        result = result.Replace("{{judgment}}", state.LatestJudgment());
+
         result = result.Replace("{{playbook.base-path}}", playbook.BasePath);
 
         result = result.Replace("{{env.CWD}}", workingDirectory);

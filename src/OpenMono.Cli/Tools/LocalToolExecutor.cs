@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using OpenMono.Acp;
 using OpenMono.Config;
+using OpenMono.Decisions;
 using OpenMono.Hooks;
 using OpenMono.Permissions;
 using OpenMono.Rendering;
@@ -21,6 +22,8 @@ public sealed class LocalToolExecutor : IToolExecutor
     private readonly ArtifactStore _artifactStore;
     private readonly HookRunner _hookRunner;
     private readonly IAcpEventSink? _sink;
+    private readonly DecisionOptions? _decisionOptions;
+    private readonly DecisionGateTool? _decisionGate;
     private int _activeToolCount;
 
     // Throttled live context-usage emission while tools run, so the client's context ring
@@ -40,7 +43,9 @@ public sealed class LocalToolExecutor : IToolExecutor
         ToolResultCache cache,
         ArtifactStore artifactStore,
         HookRunner hookRunner,
-        IAcpEventSink? sink = null)
+        IAcpEventSink? sink = null,
+        DecisionOptions? decisionOptions = null,
+        DecisionGateTool? decisionGate = null)
     {
         _journal = journal;
         _output = output;
@@ -51,6 +56,8 @@ public sealed class LocalToolExecutor : IToolExecutor
         _artifactStore = artifactStore;
         _hookRunner = hookRunner;
         _sink = sink;
+        _decisionOptions = decisionOptions;
+        _decisionGate = decisionGate;
     }
 
     public async Task<ToolResult> ExecuteAsync(ToolCall call, ITool? tool, ToolContext ctx, CancellationToken ct)
@@ -123,6 +130,25 @@ public sealed class LocalToolExecutor : IToolExecutor
                 await _sink.OnToolEndAsync(call.Id, call.Name, ok: false, durationMs: 0.0);
             }
             return ToolResult.Error(planModeError);
+        }
+
+        if (DecisionFastPaths.ShouldConsult(call.Name) && _decisionOptions is { Enabled: true })
+        {
+            if (DecisionFastPaths.TryAllow(call.Name, input, _config.WorkingDirectory, out var fastReason))
+            {
+                _journal.RecordDecision(call.Id, "allow", $"fast-allow {call.Name} ({fastReason})");
+            }
+            else
+            {
+                var gate = _decisionGate ?? new DecisionGateTool(_decisionOptions, _config.WorkingDirectory);
+                var userRequest = _session.Messages.LastOrDefault(m => m.Role == MessageRole.User)?.Content ?? "";
+                var gateResult = gate.Check(call.Name, call.Arguments, userRequest);
+                _journal.RecordDecision(call.Id, gateResult.Decision,
+                    $"{call.Name} conf={gateResult.Confidence:F2} {string.Join(';', gateResult.Reasons)}");
+                if (gateResult.Decision == "block")
+                    return ToolResult.PermissionDenied(
+                        $"Blocked by local decision gate: {string.Join("; ", gateResult.Reasons)}. Ask the user how to proceed instead.");
+            }
         }
 
         var capabilities = tool.RequiredCapabilities(input);

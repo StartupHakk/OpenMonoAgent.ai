@@ -64,6 +64,11 @@ public static class DecisionFastPaths
             return true;
         if (SecretScanner.Scan(command).Count > 0)
             return true;
+        return LooksLikeEgress(command);
+    }
+
+    internal static bool LooksLikeEgress(string command)
+    {
         var lowered = command.ToLowerInvariant();
         return EgressMarkers.Any(m => lowered.Contains(m, StringComparison.Ordinal));
     }

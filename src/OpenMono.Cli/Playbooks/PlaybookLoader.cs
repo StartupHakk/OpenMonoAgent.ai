@@ -198,6 +198,28 @@ public sealed class PlaybookLoader
         if (d.TryGetValue("params", out var pRaw) && pRaw is Dictionary<object, object> pMap)
             @params = pMap.ToDictionary(kv => kv.Key?.ToString() ?? "", kv => kv.Value?.ToString() ?? "");
 
+        var gateRaw = ObjStr(d, "gate");
+        GateType gate;
+        if (gateRaw is null)
+        {
+            gate = GateType.None;
+        }
+        else if (!System.Enum.TryParse<GateType>(gateRaw, ignoreCase: true, out gate))
+        {
+            Utils.Log.Warn($"Playbook step '{id}' has unknown gate '{gateRaw}' — skipping step.");
+            return null;
+        }
+
+        string? judgeQuestion = null;
+        double? judgeThreshold = null;
+        if (d.TryGetValue("judge", out var jRaw) && jRaw is Dictionary<object, object> jMap)
+        {
+            judgeQuestion = ObjStr(jMap, "question");
+            if (jMap.TryGetValue("threshold", out var tRaw) &&
+                double.TryParse(tRaw?.ToString(), out var threshold))
+                judgeThreshold = threshold;
+        }
+
         return new StepDefinition
         {
             Id = id,
@@ -208,7 +230,9 @@ public sealed class PlaybookLoader
             Output = ObjStr(d, "output"),
             OutputSchema = ObjStr(d, "output-schema"),
             Playbook = ObjStr(d, "playbook"),
-            Gate = ParseEnum<GateType>(ObjStr(d, "gate"), GateType.None),
+            Gate = gate,
+            JudgeQuestion = judgeQuestion,
+            JudgeThreshold = judgeThreshold,
             Requires = ObjStrList(d, "requires"),
             Params = @params,
         };

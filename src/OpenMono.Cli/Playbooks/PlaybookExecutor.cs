@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using OpenMono.Agents;
 using OpenMono.Config;
+using OpenMono.Decisions;
 using OpenMono.Hooks;
 using OpenMono.Llm;
 using OpenMono.Permissions;
@@ -168,6 +169,19 @@ public sealed class PlaybookExecutor : IDisposable
                 {
                     _renderer.WriteInfo($"  Step '{step.Id}' — gate '{step.Gate}' auto-approved (skip-permissions)");
                 }
+                else if (step.Gate == GateType.Judge)
+                {
+                    var judgeResult = await HandleJudgeGateAsync(playbook, step, state, stepContent, ct);
+                    if (judgeResult is not null)
+                    {
+                        if (judgeResult == "skip")
+                        {
+                            _renderer.WriteInfo($"  Step '{step.Id}' — skipped by judge");
+                            continue;
+                        }
+                        return judgeResult;
+                    }
+                }
                 else if (step.Gate != GateType.None)
                 {
                     if (IsNonInteractiveSession())
@@ -269,6 +283,56 @@ public sealed class PlaybookExecutor : IDisposable
         }
 
         return await TemplateEngine.ResolveAsync(raw, state, playbook, _config.WorkingDirectory, ct);
+    }
+
+    private async Task<string?> HandleJudgeGateAsync(
+        PlaybookDefinition playbook, StepDefinition step, PlaybookState state, string stepContent, CancellationToken ct)
+    {
+        var options = DecisionOptions.FromSettings(_config.Decision);
+        var backend = new HeuristicBackend(options);
+        var goal = state.Parameters.TryGetValue("goal", out var goalRaw)
+            ? goalRaw?.ToString() ?? ""
+            : playbook.Description;
+        var prior = string.Join("\n", state.StepOutputs.Select(kv => kv.Key + ": " + kv.Value));
+        var judgeState = ContextRenderer.RenderTask(goal, new Dictionary<string, string?>
+        {
+            ["step_id"] = step.Id,
+            ["step_output"] = prior,
+            ["constraints"] = string.Join("; ", playbook.Constraints.Inline),
+        });
+        var question = step.JudgeQuestion ?? "Should this step proceed?";
+        var (choice, confidence, _) = backend.Choose(judgeState, new Dictionary<string, string?>
+        {
+            ["auto_continue"] = "Evidence supports proceeding without review.",
+            ["needs_review"] = "Uncertain or risky, show a review prompt.",
+            ["escalate"] = "Blocked or unclear, ask the user how to proceed.",
+        });
+        var verdict = DecisionPolicy.ApplyGate(choice, confidence,
+            step.JudgeThreshold ?? options.AutoThreshold, options.ReviewThreshold);
+        var judgment = $"[{choice} {confidence:F2} -> {verdict}] {question}";
+        state.RecordJudgment(step.Id, judgment);
+        if (verdict == "auto_continue")
+        {
+            _renderer.WriteInfo($"  Step '{step.Id}' — judge auto-continue ({confidence:F2})");
+            return null;
+        }
+        if (verdict == "review" || verdict == "needs_review")
+        {
+            var approved = await HandleGateAsync(GateType.Review, step.Id, stepContent + "\n" + judgment, ct);
+            return approved ? null : "skip";
+        }
+        if (IsNonInteractiveSession())
+            return $"Playbook '{playbook.Name}' aborted: judge escalated step '{step.Id}' and the session is non-interactive.";
+        var answer = await _renderer.AskUserAsync(
+            $"Step '{step.Id}' escalated by judge ({judgment}). Reply 'skip' to skip, 'continue' to proceed, anything else aborts.", ct);
+        if (answer.Equals("skip", StringComparison.OrdinalIgnoreCase))
+            return "skip";
+        if (answer.Equals("continue", StringComparison.OrdinalIgnoreCase) ||
+            answer.Equals("proceed", StringComparison.OrdinalIgnoreCase) ||
+            answer.Equals("y", StringComparison.OrdinalIgnoreCase) ||
+            answer.Equals("yes", StringComparison.OrdinalIgnoreCase))
+            return null;
+        return $"Playbook '{playbook.Name}' aborted at judge-escalated step '{step.Id}'.";
     }
 
     private async Task<bool> HandleGateAsync(GateType gate, string stepId, string content, CancellationToken ct)
