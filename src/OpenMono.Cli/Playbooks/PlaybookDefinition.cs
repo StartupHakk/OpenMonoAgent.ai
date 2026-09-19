@@ -41,6 +41,16 @@ public sealed record PlaybookDefinition
     /// <summary>Maximum tool-call rounds per step before aborting. Default: 10.</summary>
     public int MaxToolLoops { get; init; } = 10;
 
+    /// <summary>When true, a doom-loop abort re-runs the playbook internally (fresh from step 1,
+    /// no model involvement) instead of escalating immediately. Default false: abort escalates
+    /// on the first doom loop and retry-attempt-limit is ignored.</summary>
+    public bool RetryOnAbort { get; init; } = false;
+
+    /// <summary>Max internal re-runs after a doom-loop abort when <see cref="RetryOnAbort"/> is
+    /// true. The live counter (retry-count) starts at 0 and the run hard-aborts when it reaches
+    /// this limit. Default: 2.</summary>
+    public int RetryAttemptLimit { get; init; } = 2;
+
     /// <summary>When set, overrides the global config temperature for this playbook's LLM calls.</summary>
     public double? Temperature { get; init; }
 

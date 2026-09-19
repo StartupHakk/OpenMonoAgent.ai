@@ -23,9 +23,26 @@ public sealed record ToolResult
 
     public string Content => ModelPreview;
 
+    /// <summary>
+    /// Model-facing content: the preview plus <see cref="RetryHint"/> when present.
+    /// Every history construction site must use this (not <see cref="Content"/>) or
+    /// retry hints are write-only strings the model never sees.
+    /// </summary>
+    public string ContentForModel => string.IsNullOrEmpty(RetryHint)
+        ? ModelPreview
+        : $"{ModelPreview}\nHint: {RetryHint}";
+
     public bool IsError => Class != ResultClass.Success;
 
     public string? ErrorMessage => IsError ? ModelPreview : null;
+
+    /// <summary>
+    /// Machine-readable failure reason (e.g. "doom_loop_escalated", "gate_refused",
+    /// "script_failed", "dependency_missing"). Null on success. Emitted on the ACP
+    /// <c>tool_end</c> event as <c>error_code</c> so harnesses can react without
+    /// parsing tool output text.
+    /// </summary>
+    public string? ErrorCode { get; init; }
 
     public Dictionary<string, object>? Metadata { get; init; }
 
@@ -34,6 +51,14 @@ public sealed record ToolResult
 
     public static ToolResult Error(string message) =>
         new() { ModelPreview = message, Class = ResultClass.InvalidInput };
+
+    /// <summary>
+    /// A failed tool result with a machine-readable <paramref name="errorCode"/>
+    /// (closed vocabulary — see PlaybookAbortCodes). Surfaces on ACP
+    /// <c>tool_end</c> as <c>ok:false + error_code</c>.
+    /// </summary>
+    public static ToolResult Failure(string message, string errorCode, string? retryHint = null) =>
+        new() { ModelPreview = message, Class = ResultClass.InvalidInput, RetryHint = retryHint, ErrorCode = errorCode };
 
     public static ToolResult SuccessWithPayload(string preview, object payload) =>
         new() { ModelPreview = preview, MachinePayload = payload, Class = ResultClass.Success };

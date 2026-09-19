@@ -109,6 +109,66 @@ public class ToolDispatcherTests : IDisposable
     }
 
     [Fact]
+    public async Task DoomLoop_ResetDoomLoop_ClearsHistoryAndTier()
+    {
+        var tool = new FlagTool();
+        using var dispatcher = MakeDispatcher(4, tool);
+        var a = new List<ToolCall> { new() { Id = "1", Name = tool.Name, Arguments = """{"i":1}""" } };
+        var b = new List<ToolCall> { new() { Id = "2", Name = tool.Name, Arguments = """{"i":2}""" } };
+
+        // Simulate prior-step history leaking: A,B then clean slate, then A must not fire.
+        await dispatcher.ExecuteToolCallsAsync(a, CancellationToken.None);
+        await dispatcher.ExecuteToolCallsAsync(b, CancellationToken.None);
+        dispatcher.ResetDoomLoop("test");
+
+        var r1 = await dispatcher.ExecuteToolCallsAsync(a, CancellationToken.None);
+        var r2 = await dispatcher.ExecuteToolCallsAsync(b, CancellationToken.None);
+        var a2 = new List<ToolCall> { new() { Id = "3", Name = tool.Name, Arguments = """{"i":1}""" } };
+        var r3 = await dispatcher.ExecuteToolCallsAsync(a2, CancellationToken.None);
+
+        r3[0].EscalatedToUser.Should().BeFalse();
+        r3[0].Content.Should().NotContain("Doom loop", "A,B,A after a clean slate is not a loop");
+        dispatcher.DoomLoop.ConsecutiveHits.Should().Be(0);
+        _ = r1; _ = r2;
+    }
+
+    [Fact]
+    public async Task DoomLoop_CleanBatches_DecayStreak()
+    {
+        var tool = new FlagTool();
+        using var dispatcher = MakeDispatcher(4, tool);
+        var same = new List<ToolCall> { new() { Id = "1", Name = tool.Name, Arguments = "{}" } };
+
+        // Reach hit 2 (batches 1,2 execute; 3,4 → hits 1,2).
+        await dispatcher.ExecuteToolCallsAsync(same, CancellationToken.None);
+        await dispatcher.ExecuteToolCallsAsync(same, CancellationToken.None);
+        await dispatcher.ExecuteToolCallsAsync(same, CancellationToken.None);
+        await dispatcher.ExecuteToolCallsAsync(same, CancellationToken.None);
+        dispatcher.DoomLoop.ConsecutiveHits.Should().Be(2);
+
+        // Three varied batches decay the streak back to zero.
+        for (var i = 10; i < 13; i++)
+        {
+            var varied = new List<ToolCall> { new() { Id = $"{i}", Name = tool.Name, Arguments = $"{{\"i\":{i}}}" } };
+            await dispatcher.ExecuteToolCallsAsync(varied, CancellationToken.None);
+        }
+        dispatcher.DoomLoop.ConsecutiveHits.Should().Be(0, "3 clean batches clear a stale streak");
+    }
+
+    [Fact]
+    public void DoomLoopState_RecordClean_NeedsThreeInARow()
+    {
+        var state = new DoomLoopState();
+        state.RecordHit();
+        state.RecordHit();
+        state.RecordClean().Should().BeFalse();
+        state.RecordClean().Should().BeFalse();
+        state.ConsecutiveHits.Should().Be(2, "fewer than 3 clean batches must not clear");
+        state.RecordClean().Should().BeTrue();
+        state.ConsecutiveHits.Should().Be(0);
+    }
+
+    [Fact]
     public async Task PreToolUseHook_ExitingWithCode2_BlocksTheTool()
     {
         var tool = new FlagTool();
@@ -141,6 +201,37 @@ public class ToolDispatcherTests : IDisposable
         return new ToolDispatcher(
             registry, permissions, renderer, config, new SessionState(),
             maxReadOnlyConcurrency: maxReadOnly);
+    }
+
+    // After a playbook abort the session waits for genuine new direction: tool calls made
+    // outside a fresh executor attempt must be refused, not executed — prose barriers were
+    // observed being ignored live while the model hand-rebuilt aborted work.
+    [Fact]
+    public async Task EscalationBarrier_BlocksToolCalls_UntilCleared()
+    {
+        var tool = new FlagTool();
+        var registry = new ToolRegistry();
+        registry.Register(tool);
+        var config = new AppConfig { WorkingDirectory = _tempDir, DataDirectory = _tempDir };
+        var renderer = new TerminalRenderer();
+        var permissions = new PermissionEngine(config, renderer, renderer);
+        var session = new SessionState();
+        using var dispatcher = new ToolDispatcher(
+            registry, permissions, renderer, config, session,
+            maxReadOnlyConcurrency: 4);
+
+        var calls = new List<ToolCall> { new() { Id = "1", Name = tool.Name, Arguments = "{}" } };
+
+        session.Meta.AwaitingEscalationAck = true;
+        var blocked = await dispatcher.ExecuteToolCallsAsync(calls, CancellationToken.None);
+        blocked[0].IsError.Should().BeTrue("a blocked call fails, it never runs");
+        tool.Executed.Should().BeFalse("the tool must not execute while the barrier holds");
+        blocked[0].Content.Should().Contain("Blocked");
+
+        dispatcher.ClearEscalationAck();
+        var allowed = await dispatcher.ExecuteToolCallsAsync(calls, CancellationToken.None);
+        allowed[0].IsError.Should().BeFalse();
+        tool.Executed.Should().BeTrue("clearing the barrier restores normal dispatch");
     }
 
     public void Dispose()

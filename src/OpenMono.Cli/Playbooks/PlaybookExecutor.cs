@@ -104,20 +104,152 @@ public sealed class PlaybookExecutor : IDisposable
         string sessionId,
         CancellationToken ct)
     {
+        return (await ExecuteDetailedAsync(playbook, parameters, resumeFrom, sessionId, ct)).Output;
+    }
+
+    /// <summary>
+    /// Structured playbook result. <see cref="Abort"/> is non-null when the run did
+    /// not complete: the output text starts with "Playbook '...' aborted" AND the
+    /// abort carries a machine-readable <see cref="PlaybookAbortInfo.ErrorCode"/>
+    /// so callers (and ACP <c>tool_end</c>) never have to parse prose.
+    /// </summary>
+    public sealed record PlaybookExecResult(string Output, PlaybookAbortInfo? Abort);
+
+    public sealed record PlaybookAbortInfo(string ErrorCode, string StepId, string Detail);
+
+    public static class PlaybookAbortCodes
+    {
+        public const string DoomLoopEscalated = "doom_loop_escalated";
+        public const string GateRefused = "gate_refused";
+        public const string ScriptFailed = "script_failed";
+        public const string DependencyMissing = "dependency_missing";
+        public const string ParameterError = "parameter_error";
+        public const string StepFailed = "step_failed";
+        /// <summary>A step burned its whole <c>max-tool-loops</c> budget (frontmatter,
+        /// per-playbook) without finishing. Distinct from <see cref="StepFailed"/> so
+        /// harnesses can tell "ran out of turns" from "a tool reported an error".</summary>
+        public const string ToolLoopExhausted = "tool_loop_exhausted";
+    }
+
+    /// <summary>Marker embedded in the step error when the tool-loop budget is spent. The
+    /// step-error → abort-code mapping below keys off this (it cannot carry a code directly
+    /// because RunStepAsync only returns an error string).</summary>
+    public const string ToolLoopExhaustedMarker = "maximum tool loop count";
+
+    public async Task<PlaybookExecResult> ExecuteDetailedAsync(
+        PlaybookDefinition playbook,
+        Dictionary<string, object> parameters,
+        PlaybookState? resumeFrom,
+        string sessionId,
+        CancellationToken ct)
+    {
 
         var validationError = ParameterValidator.Validate(playbook, parameters);
         if (validationError is not null)
-            return $"Parameter error: {validationError}";
+            return new PlaybookExecResult($"Parameter error: {validationError}",
+                new PlaybookAbortInfo(PlaybookAbortCodes.ParameterError, "", validationError));
 
-        var state = resumeFrom ?? new PlaybookState
+        // retry-count lives here: completed internal re-runs so far. Doom-loop AND
+        // tool-loop-exhaustion aborts retry, and only when the playbook opts in
+        // (retry-on-abort) and retry-count is under retry-attempt-limit. Zero model moves
+        // happen between an abort and its re-run — the loop re-invokes the attempt directly
+        // instead of yielding control to the model (a bare failure handed back to the model
+        // gets re-implemented by hand outside the playbook — observed live).
+        var limit = playbook.RetryOnAbort ? Math.Max(0, playbook.RetryAttemptLimit) : 0;
+        var aborts = new List<PlaybookAbortRecord>();
+        if (resumeFrom is not null)
+            aborts.AddRange(resumeFrom.Aborts);
+
+        for (var retryCount = 0; ; retryCount++)
         {
-            PlaybookName = playbook.Name,
-            SessionId = sessionId,
-            Parameters = parameters,
-        };
+            // Fresh executor-driven attempt: lift any escalation barrier left by the previous
+            // attempt's abort so the step loop's own tool calls flow. Model-driven calls made
+            // outside an attempt stay blocked (the flag is only cleared here and on explicit
+            // new invocations — never on continuations).
+            _dispatcher.ClearEscalationAck();
+            PlaybookState state;
+            if (retryCount == 0)
+            {
+                state = resumeFrom ?? new PlaybookState
+                {
+                    PlaybookName = playbook.Name,
+                    SessionId = sessionId,
+                    Parameters = parameters,
+                };
+            }
+            else
+            {
+                // Fresh non-resume run from step 1, carrying the abort history so it survives
+                // in the state file (step checkpoints are NOT carried — the re-run is clean).
+                state = new PlaybookState
+                {
+                    PlaybookName = playbook.Name,
+                    SessionId = sessionId,
+                    Parameters = parameters,
+                };
+                state.Aborts.AddRange(aborts);
+            }
 
+            var result = await RunAttemptAsync(playbook, state, sessionId, retryCount, limit, ct);
+
+            if (result.Abort is null)
+                return result;
+
+            // Only budget aborts re-run: a doom loop (possibly a false positive) or a spent
+            // tool-loop budget (a fresh attempt may sample differently). Anything else
+            // (gate, script, dependency, parameter, step failure) hard-aborts immediately.
+            var retryableAbort = result.Abort.ErrorCode is PlaybookAbortCodes.DoomLoopEscalated
+                or PlaybookAbortCodes.ToolLoopExhausted;
+            if (!retryableAbort || retryCount >= limit)
+            {
+                // Hard abort: non-retryable failures never retry, and a retryable abort at
+                // retry-count == limit escalates to the caller (turn ends there).
+                if (retryableAbort && playbook.RetryOnAbort)
+                    return result with { Output = $"{result.Output}\n(retry-on-abort: {retryCount}/{limit} internal re-run(s) exhausted — escalating)" };
+                return result;
+            }
+
+            var entry = new PlaybookAbortRecord(
+                Step: result.Abort.StepId.Length > 0 ? result.Abort.StepId : null,
+                Pattern: TruncateSignature(
+                    !string.IsNullOrEmpty(_dispatcher.LastDoomPattern)
+                        ? _dispatcher.LastDoomPattern
+                        : _dispatcher.LastDoomSignature),
+                Attempt: retryCount + 1,
+                MaxAttempts: limit,
+                At: DateTime.UtcNow.ToString("O"),
+                Code: result.Abort.ErrorCode);
+            aborts.Add(entry);
+            state.Aborts.Add(entry);
+            // Persist immediately: harnesses polling the state file forward each attempt
+            // mid-run instead of only seeing the terminal abort.
+            await state.SaveAsync(_config.DataDirectory, ct);
+            _renderer.WriteWarning($"  Playbook '{playbook.Name}' aborted ({result.Abort.ErrorCode}) (attempt {retryCount + 1}/{limit}) — re-running from step 1 with no model input");
+        }
+    }
+
+    /// <summary>Cap the recorded doom-loop pattern so a long repeating sequence still fits the
+    /// downstream scan_errors.pattern column (server stores up to 1000). The pattern is a
+    /// sequence of tool-call summaries, so a generous cap keeps the full "which calls cycled"
+    /// while staying bounded.</summary>
+    private static string TruncateSignature(string sig) =>
+        string.IsNullOrEmpty(sig) ? "" : sig.Length > 1000 ? sig[..1000] : sig;
+
+    /// <summary>One full playbook run, from step 1 (or a resume checkpoint) to completion or
+    /// abort. Called once per attempt by <see cref="ExecuteDetailedAsync"/>.</summary>
+    private async Task<PlaybookExecResult> RunAttemptAsync(
+        PlaybookDefinition playbook,
+        PlaybookState state,
+        string sessionId,
+        int retryCount,
+        int limit,
+        CancellationToken ct)
+    {
         var plan = BuildToolPlan(playbook);
         var runId = state.SessionId;
+        // Clean slate for the whole playbook run so a previous run's / step's tool calls
+        // can never combine with this run's to form a phantom doom-loop cycle.
+        _dispatcher.ResetDoomLoop($"playbook '{playbook.Name}' run {runId} start");
         _permissions.PushPlaybookScope(runId, plan.Tools.Select(t => t.Name));
 
         _recorder = new ContextUsageRecorder(playbook.Name, runId, _config.DataDirectory, active: playbook.ReportCtx);
@@ -128,7 +260,8 @@ public sealed class PlaybookExecutor : IDisposable
         try
         {
             var thinkLabel = playbook.Thinking is { Length: > 0 } t ? $" · thinking={t}" : "";
-            _renderer.WriteInfo($"Playbook: {playbook.Name} v{playbook.Version}{thinkLabel}");
+            var retryLabel = retryCount > 0 ? $" · retry {retryCount}/{limit}" : "";
+            _renderer.WriteInfo($"Playbook: {playbook.Name} v{playbook.Version}{thinkLabel}{retryLabel}");
             if (logPath is not null)
             {
                 log!.WriteLine($"=== Playbook '{playbook.Name}' v{playbook.Version} — run {runId} — started {DateTime.UtcNow:O} ===");
@@ -153,7 +286,8 @@ public sealed class PlaybookExecutor : IDisposable
                 foreach (var dep in step.Requires)
                 {
                     if (!state.IsStepCompleted(dep))
-                        return $"Step '{step.Id}' requires '{dep}' which is not completed.";
+                        return new PlaybookExecResult($"Step '{step.Id}' requires '{dep}' which is not completed.",
+                            new PlaybookAbortInfo(PlaybookAbortCodes.DependencyMissing, step.Id, dep));
                 }
 
                 state.CurrentStepId = step.Id;
@@ -174,7 +308,8 @@ public sealed class PlaybookExecutor : IDisposable
                     {
                         var msg = $"Playbook '{playbook.Name}' aborted: gate '{step.Id}' ({step.Gate}) requires interactive confirmation.";
                         _renderer.WriteWarning($"  {msg}");
-                        return msg;
+                        return new PlaybookExecResult(msg,
+                            new PlaybookAbortInfo(PlaybookAbortCodes.GateRefused, step.Id, step.Gate.ToString()));
                     }
 
                     var gateResult = await HandleGateAsync(step.Gate, step.Id, stepContent, ct);
@@ -192,7 +327,13 @@ public sealed class PlaybookExecutor : IDisposable
                     log?.WriteLine($"--- Step '{step.Id}' — ERROR ---\n{stepError}");
                     _renderer.WriteWarning($"  Step '{step.Id}' aborted — {stepError}");
                     _recorder?.CompleteStep(step.Id);
-                    return $"Playbook '{playbook.Name}' aborted at step '{step.Id}'.\n{stepError}";
+                    var code = stepError.Contains(ToolLoopExhaustedMarker, StringComparison.Ordinal)
+                        ? PlaybookAbortCodes.ToolLoopExhausted
+                        : stepError.Contains("doom loop", StringComparison.OrdinalIgnoreCase)
+                            ? PlaybookAbortCodes.DoomLoopEscalated
+                            : PlaybookAbortCodes.StepFailed;
+                    return new PlaybookExecResult($"Playbook '{playbook.Name}' aborted at step '{step.Id}'.\n{stepError}",
+                        new PlaybookAbortInfo(code, step.Id, stepError));
                 }
                 log?.WriteLine($"--- Step '{step.Id}' — output ---\n{output}");
 
@@ -206,7 +347,9 @@ public sealed class PlaybookExecutor : IDisposable
                         if (exit != 0)
                         {
                             _renderer.WriteWarning($"  Step '{step.Id}' aborted — validation script failed:\n{stdout}{stderr}");
-                            return $"Playbook '{playbook.Name}' aborted at step '{step.Id}'.\n{stdout}{stderr}";
+                            var detail = $"{stdout}{stderr}";
+                            return new PlaybookExecResult($"Playbook '{playbook.Name}' aborted at step '{step.Id}'.\n{stdout}{stderr}",
+                                new PlaybookAbortInfo(PlaybookAbortCodes.ScriptFailed, step.Id, detail));
                         }
                     }
                 }
@@ -224,7 +367,7 @@ public sealed class PlaybookExecutor : IDisposable
             _renderer.WriteInfo($"Playbook '{playbook.Name}' completed ({state.CompletedSteps.Count} steps)");
             log?.WriteLine($"=== Playbook '{playbook.Name}' completed {DateTime.UtcNow:O} ({state.CompletedSteps.Count} steps) ===");
             if (_recorder is not null) _recorder.Aborted = false;
-            return finalOutput.Length > 0 ? finalOutput.ToString() : "Playbook completed.";
+            return new PlaybookExecResult(finalOutput.Length > 0 ? finalOutput.ToString() : "Playbook completed.", Abort: null);
         }
         finally
         {
@@ -387,9 +530,9 @@ public sealed class PlaybookExecutor : IDisposable
         var maxToolLoops = playbook.MaxToolLoops;
         var toolLoopCount = 0;
 
-        // A playbook step is a fresh task — clear any doom-loop streak carried over from a
-        // previous step so the escalation counter starts clean for this step's tool calls.
-        _dispatcher.DoomLoop.Reset();
+        // A playbook step is a fresh task — clear signature history AND the escalation
+        // streak so the counter starts clean for this step's tool calls.
+        _dispatcher.ResetDoomLoop($"playbook '{playbook.Name}' step '{step.Id}' start");
 
         while (toolLoopCount < maxToolLoops)
         {
@@ -529,7 +672,7 @@ public sealed class PlaybookExecutor : IDisposable
                     messages.Add(new Message
                     {
                         Role = MessageRole.Tool,
-                        Content = toolResult.Content,
+                        Content = toolResult.ContentForModel,
                         ToolCallId = call.Id
                     });
                     result.AppendLine($"\n[Tool: {call.Name}]\n{toolResult.Content}");
@@ -547,7 +690,7 @@ public sealed class PlaybookExecutor : IDisposable
                     messages.Add(new Message
                     {
                         Role = MessageRole.Tool,
-                        Content = toolResult.Content,
+                        Content = toolResult.ContentForModel,
                         ToolCallId = call.Id
                     });
 
@@ -566,9 +709,16 @@ public sealed class PlaybookExecutor : IDisposable
             }
         }
 
+        // The tool-loop budget (max-tool-loops, per-playbook frontmatter) is spent: this is an
+        // ABORT, not a shrug. Previously this fell through with a null error and the step
+        // continued to schema enforcement as if it had finished — a run that never completed
+        // could look healthy. The marker maps to PlaybookAbortCodes.ToolLoopExhausted above,
+        // which ends the turn via BreakTurn (never retried: only doom aborts re-run).
         if (toolLoopCount >= maxToolLoops)
         {
-            _renderer.WriteWarning($"Step '{step.Id}' reached maximum tool loop count ({maxToolLoops})");
+            var msg = $"step '{step.Id}' reached maximum tool loop count ({maxToolLoops}) — aborting";
+            _renderer.WriteWarning($"  {msg}");
+            return (result.ToString(), msg);
         }
 
         if (outputSchema is { } schema)

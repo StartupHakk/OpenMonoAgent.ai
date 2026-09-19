@@ -56,6 +56,21 @@ public class DoomLoopDetectorTests
     }
 
     [Fact]
+    public void AlternatingThreeBatches_ABA_DoesNotFire()
+    {
+        var d = new DoomLoopDetector();
+        var a = new List<ToolCall> { new() { Id = "1", Name = "Bash", Arguments = """{"command":"py graph"}""" } };
+        var b = new List<ToolCall> { new() { Id = "2", Name = "Bash", Arguments = """{"command":"grep x"}""" } };
+        var a2 = new List<ToolCall> { new() { Id = "3", Name = "Bash", Arguments = """{"command":"py graph"}""" } };
+
+        // Regression for the emit-findings log: A,B,A is not a loop (period-1 needs 3
+        // identical back-to-back; period-2 needs A,B,A,B).
+        d.Check(a).Should().BeFalse();
+        d.Check(b).Should().BeFalse();
+        d.Check(a2).Should().BeFalse();
+    }
+
+    [Fact]
     public void Reset_ClearsDetectorHistory()
     {
         var d = new DoomLoopDetector();

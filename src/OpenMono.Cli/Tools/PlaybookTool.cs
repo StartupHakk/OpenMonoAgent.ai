@@ -114,9 +114,34 @@ public sealed class PlaybookTool : ToolBase
                 context.Config.DataDirectory, name, context.Session.Id, ct);
         }
 
-        var result = await _executor.ExecuteAsync(playbook, parameters, state, context.Session.Id, ct);
+        var execResult = await _executor.ExecuteDetailedAsync(playbook, parameters, state, context.Session.Id, ct);
         Utils.Log.Info($"[PLAYBOOK_EXEC] Playbook '{name}' completed, backend mode is: {(context.Session.Meta.PlanMode ? "PLAN" : "BUILD")}");
-        return ToolResult.Success(result);
+        if (execResult.Abort is not null)
+        {
+            // An aborted playbook is a FAILED tool call, not a successful one with bad
+            // news inside. The failure (plus ErrorCode) surfaces on ACP tool_end as
+            // ok:false + error_code so harnesses can react without parsing prose.
+            //
+            // The hint is deliberately stop/report, NOT re-run: an abort that reaches this
+            // point already exhausted the playbook's own retry-on-abort budget (or never had
+            // one). Re-running, resuming, or repairing output by hand here is self-recovery
+            // past the budget — report and wait for direction instead. Escalation also ends
+            // the turn (see ConversationLoop) so the harness picks the abort up immediately.
+            var abort = execResult.Abort;
+            var failure = ToolResult.Failure(execResult.Output, abort.ErrorCode,
+                $"Playbook '{name}' aborted ({abort.ErrorCode}). Stop: do NOT re-run it, do NOT " +
+                $"resume it, and do NOT fix output files by hand. Briefly report what was already " +
+                $"completed and wait for direction.");
+            // Preserve Tier-3 escalation semantics for nested playbooks: a doom-loop
+            // abort inside an inner playbook must abort the outer step too, and any abort
+            // escalated here must end the turn.
+            if (abort.ErrorCode == PlaybookExecutor.PlaybookAbortCodes.DoomLoopEscalated)
+                failure = failure.WithEscalation();
+            else
+                failure = failure.WithBreakTurn();
+            return failure;
+        }
+        return ToolResult.Success(execResult.Output);
     }
 
     private static string FormatPlaybookApprovalPrompt(PlaybookToolPlan plan)
@@ -210,34 +235,5 @@ public sealed class PlaybookTool : ToolBase
     }
 
     private static Dictionary<string, object> ParseArguments(string args, PlaybookDefinition playbook)
-    {
-        var result = new Dictionary<string, object>();
-        if (string.IsNullOrWhiteSpace(args)) return result;
-
-        var parts = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        for (var i = 0; i < parts.Length; i++)
-        {
-            if (parts[i].StartsWith("--") && parts[i].Contains('='))
-            {
-                var kv = parts[i][2..].Split('=', 2);
-                result[kv[0]] = kv[1];
-            }
-            else if (parts[i].StartsWith("--") && i + 1 < parts.Length)
-            {
-                result[parts[i][2..]] = parts[i + 1];
-                i++;
-            }
-            else if (!result.ContainsKey("_positional"))
-            {
-
-                var firstParam = playbook.Parameters.FirstOrDefault(p => p.Value.Required);
-                if (firstParam.Key is not null)
-                    result[firstParam.Key] = parts[i];
-                else
-                    result["_positional"] = parts[i];
-            }
-        }
-
-        return result;
-    }
+        => PlaybookArgParser.ParseArguments(args, playbook);
 }

@@ -138,6 +138,8 @@ public sealed class ConversationLoop : IDisposable
     {
         _doomLoop.Reset();
         _doomLoopState.Reset();
+        // A fresh user message acknowledges any pending escalation barrier.
+        _session.Meta.AwaitingEscalationAck = false;
         _session.AddMessage(new Message {
             Role = MessageRole.User,
             Content = imageParts is { Count: > 0 }
@@ -214,7 +216,7 @@ public sealed class ConversationLoop : IDisposable
                 result = await _executor.ExecuteAsync(call, tool, context, ct);
             }
 
-            var content = result.Content;
+            var content = result.ContentForModel;
             if (content.Length > LargeResultThreshold)
             {
                 var refPath = await StoreContentReplacementAsync(call.Name, content, ct);
@@ -249,6 +251,80 @@ public sealed class ConversationLoop : IDisposable
                     await _sink.OnToolResultPreviewAsync(call.Id, result.ModelPreview, artifactId);
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Deterministic playbook execution for the <c>/playbook</c> slash command.
+    /// Bypasses the LLM: constructs a <c>Playbook</c> tool call directly, executes
+    /// it via the normal executor (so permission pauses, sink events, and
+    /// cancellation all behave identically), appends the Assistant + Tool messages
+    /// for history, and — on abort — appends the escalation barrier so a later
+    /// LLM turn cannot silently re-run the playbook's work by hand.
+    /// Returns the raw <see cref="Tools.ToolResult"/> for the caller to report.
+    /// </summary>
+    public async Task<Tools.ToolResult> ExecutePlaybookDirectAsync(
+        string name, string arguments, bool resume, CancellationToken ct)
+    {
+        // Explicit invocation is new direction (REPL twin of the ACP /playbook command).
+        _session.Meta.AwaitingEscalationAck = false;
+        var callId = $"pb_{Guid.NewGuid():N}"[..20];
+        var argsJson = JsonSerializer.Serialize(new { name, arguments, resume });
+        var call = new ToolCall { Id = callId, Name = "Playbook", Arguments = argsJson };
+        var tool = _tools.Resolve("Playbook");
+        var context = BuildToolContext();
+
+        Tools.ToolResult result;
+        try
+        {
+            result = await _executor.ExecuteAsync(call, tool, context, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+
+        _session.AddMessage(new Message
+        {
+            Role = MessageRole.Assistant,
+            Content = $"[Direct invocation] /playbook {name}",
+            ToolCalls = [call],
+        });
+        _session.AddMessage(new Message
+        {
+            Role = MessageRole.Tool,
+            ToolCallId = call.Id,
+            ToolName = call.Name,
+            Content = result.ContentForModel,
+            IsError = result.IsError,
+        });
+
+        if (result.BreakTurn || result.EscalatedToUser)
+            await AppendPlaybookEscalationBarrierAsync(name, result, ct);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Appends a User-role stop barrier after a playbook abort/escalation, marks the
+    /// session as awaiting user acknowledgement, and notifies the sink. A bare Tool
+    /// failure message is not enough: the next LLM turn reads it as a normal failed
+    /// tool result and retries the instructions manually outside the playbook.
+    /// </summary>
+    public async Task AppendPlaybookEscalationBarrierAsync(
+        string playbookName, Tools.ToolResult result, CancellationToken ct)
+    {
+        var barrier =
+            $"[System: Playbook '{playbookName}' was aborted ({(result.ErrorCode ?? "aborted")}). " +
+            "Stop: do NOT re-run it, do NOT resume it, and do NOT re-implement its steps manually " +
+            "with other tools. Briefly report what was already completed and wait for the user's direction.]";
+        _session.AddMessage(new Message { Role = MessageRole.User, Content = barrier });
+        _session.Meta.AwaitingEscalationAck = true;
+        _journal.FinishTurn($"playbook_aborted:{result.ErrorCode ?? "aborted"}");
+        if (_sink is not null)
+        {
+            await _sink.OnSubAgentLogAsync($"Playbook '{playbookName}' aborted — escalation barrier appended.");
+            await _sink.OnEscalatedAsync("playbook_aborted", playbookName, result.ErrorCode);
         }
     }
 
@@ -655,6 +731,8 @@ public sealed class ConversationLoop : IDisposable
             {
                 var tier = _doomLoopState.RecordHit();
                 var names = string.Join(", ", toolCalls.Select(tc => tc.Name).Distinct());
+                var pattern = DescribeDoomPattern(toolCalls);
+                Log.Warn($"[DOOMLOOP] hit={tier} hits={_doomLoopState.ConsecutiveHits}/5 period={_doomLoop.LastPeriod} history={_doomLoop.HistoryCount} tools=[{names}] turn={_session.TurnCount}");
 
                 if (tier == DoomLoopTier.Escalate)
                 {
@@ -662,13 +740,13 @@ public sealed class ConversationLoop : IDisposable
                     // the SHS harness can detect it (and re-run the step / surface to the user)
                     // instead of the turn silently burning its iteration budget.
                     await siblingAbortCts.CancelAsync();
-                    var escMsg = "⚠ Doom loop detected 5+ times: agent is repeating the same tool calls. Escalating to the user.";
+                    var escMsg = $"⚠ Doom loop detected (hit {_doomLoopState.ConsecutiveHits}/5): {names} repeating. Escalating to the user. Pattern: {pattern}";
                     _output.WriteWarning(escMsg);
                     if (_sink is not null) _ = _sink.OnSubAgentLogAsync(escMsg);
                     _session.AddMessage(new Message
                     {
                         Role = MessageRole.User,
-                        Content = DoomLoopPrompts.Max(names),
+                        Content = DoomLoopPrompts.MaxWithPattern(names, pattern, _doomLoopState.ConsecutiveHits),
                     });
                     _journal.FinishTurn("doom_loop_escalated");
                     await EmitTurnUsageAsync();
@@ -677,10 +755,14 @@ public sealed class ConversationLoop : IDisposable
 
                 // Tier 1 / Tier 2: nudge the model to change course, then let the tool calls run.
                 var nudgeLabel = DoomLoopPrompts.NudgeLabel(tier);
-                var nudgeMsg = $"⚠ Doom loop detected — same tool calls repeated; {nudgeLabel} the agent.";
+                var nudgeMsg = $"⚠ Doom loop detected (hit {_doomLoopState.ConsecutiveHits}/5) — {names} repeating; {nudgeLabel} the agent. Pattern: {pattern}";
                 _output.WriteWarning(nudgeMsg);
                 if (_sink is not null) _ = _sink.OnSubAgentLogAsync(nudgeMsg);
-                _session.AddMessage(new Message { Role = MessageRole.User, Content = DoomLoopPrompts.Nudge(names, tier) });
+                _session.AddMessage(new Message { Role = MessageRole.User, Content = DoomLoopPrompts.NudgeWithPattern(names, tier, pattern, _doomLoopState.ConsecutiveHits) });
+            }
+            else if (_doomLoopState.RecordClean())
+            {
+                Log.Info($"[DOOMLOOP] streak cleared after {DoomLoopState.CleanBatchesToClear} clean batches (turn {_session.TurnCount})");
             }
 
             // Capture mode before tools run so an agent-initiated change (EnterPlanMode /
@@ -708,7 +790,7 @@ public sealed class ConversationLoop : IDisposable
             foreach (var (call, result) in toolCalls.Zip(results))
             {
 
-                var content = result.Content;
+            var content = result.ContentForModel;
                 if (content.Length > LargeResultThreshold)
                 {
                     var refPath = await StoreContentReplacementAsync(call.Name, content, ct);
@@ -759,9 +841,14 @@ public sealed class ConversationLoop : IDisposable
                     ContentParts = [new TextPart("Images retrieved by tools:"), .. pendingImages],
                 });
 
-            if (results.Any(r => r.BreakTurn))
+            if (results.Any(r => r.BreakTurn || r.EscalatedToUser))
             {
-                if (_session.Meta.LastPlanContent is { Length: > 0 } planText)
+                // Turn ends here on both paths. The plan presentation (card + PlanPresented
+                // instructions) belongs ONLY to the plan path: an escalation or a non-plan
+                // BreakTurn (e.g. a playbook hard abort) has no plan to present, and the
+                // PlanPresented message would inject false plan-mode instructions.
+                var escalatedOnly = results.Any(r => r.EscalatedToUser) && !results.Any(r => r.BreakTurn);
+                if (!escalatedOnly && _session.Meta.LastPlanContent is { Length: > 0 } planText)
                 {
                     if (_sink is not null)
                     {
@@ -775,13 +862,28 @@ public sealed class ConversationLoop : IDisposable
                         _output.WriteMarkdown(planText);
                         _output.WriteInfo($"\n{ModeInstructions.ProceedOptions}\n\n(press 1, 2, or 3 — no Enter needed)");
                     }
+                    _session.AddMessage(new Message
+                    {
+                        Role = MessageRole.User,
+                        Content = ModeInstructions.PlanPresented,
+                    });
+                    _journal.FinishTurn("turn_break");
                 }
-                _session.AddMessage(new Message
+                else
                 {
-                    Role = MessageRole.User,
-                    Content = ModeInstructions.PlanPresented,
-                });
-                _journal.FinishTurn("turn_break");
+                    // Escalated (or BreakTurn with no plan): end the turn so the harness
+                    // picks the abort up immediately. No further model moves.
+                    // Append a User-role barrier per aborting call: without it the next
+                    // turn sees only a Tool failure and re-implements the aborted work
+                    // manually outside the playbook.
+                    foreach (var (call, result) in toolCalls.Zip(results))
+                    {
+                        if (!result.BreakTurn && !result.EscalatedToUser) continue;
+                        await AppendPlaybookEscalationBarrierAsync(
+                            DescribeAbortingCall(call), result, ct);
+                    }
+                    _journal.FinishTurn(escalatedOnly ? "escalated_to_user" : "turn_break");
+                }
                 await EmitTurnUsageAsync();
                 return;
             }
@@ -1073,6 +1175,21 @@ public sealed class ConversationLoop : IDisposable
         ToolContext context,
         CancellationToken ct)
     {
+        // Mechanical escalation barrier — turn-loop dispatch path. After a playbook abort the
+        // session waits for genuine new direction (see ToolDispatcher for the executor-side
+        // twin). Prose barriers were observed being ignored live: the model acknowledged an
+        // abort and hand-rebuilt the aborted work tool-by-tool. Refusal cannot be reasoned
+        // around; the model gets error results, makes no progress, and the turn ends.
+        if (_session.Meta.AwaitingEscalationAck)
+        {
+            Log.Warn($"[OMA_ESCALATION] Blocking {toolCalls.Count} turn-loop tool call(s) — session is awaiting escalation acknowledgement");
+            return toolCalls
+                .Select(tc => ToolResult.Error(
+                    $"Blocked: playbook work is suspended after an abort ({tc.Name} not executed). " +
+                    "Do not retry with other tools — report status and wait for the user's direction."))
+                .ToList();
+        }
+
         var parallel = new List<(int Index, ToolCall Call, ITool Tool)>();
         var writeable = new List<(int Index, ToolCall Call, ITool Tool)>();
 
@@ -1224,6 +1341,31 @@ public sealed class ConversationLoop : IDisposable
         }
 
         return [.. results];
+    }
+
+    private static string DescribeAbortingCall(ToolCall call)
+    {
+        if (!string.Equals(call.Name, "Playbook", StringComparison.OrdinalIgnoreCase))
+            return call.Name;
+        try
+        {
+            using var doc = JsonDocument.Parse(call.Arguments);
+            if (doc.RootElement.TryGetProperty("name", out var nameEl))
+                return nameEl.GetString() ?? call.Name;
+        }
+        catch (JsonException) { }
+        return call.Name;
+    }
+
+    private string DescribeDoomPattern(List<ToolCall> currentBatch)
+    {
+        var period = _doomLoop.LastPeriod ?? 1;
+        var history = _doomLoop.RecentSignatures;
+        var windowSize = Math.Min(history.Count, Math.Max(period * 2, 3));
+        static string Trunc(string v, int max) => v.Length <= max ? v : v[..max] + "…";
+        var window = history.TakeLast(windowSize).Select(s => Trunc(s, 120)).ToList();
+        var batch = string.Join("+", currentBatch.Select(c => $"{c.Name}({Trunc(c.Arguments, 80)})"));
+        return $"{string.Join(" → ", window)} (period {period}, current: {batch})";
     }
 
     private ToolContext BuildToolContext() => new()
