@@ -9,13 +9,13 @@ public sealed class DecideNextStepTool : ToolBase
     ["failed", "failure", "error", "blocked", "stuck", "denied", "timeout"];
 
     private readonly DecisionOptions _options;
-    private readonly HeuristicBackend _backend;
+    private readonly IDecisionBackend _backend;
     private readonly DecisionAudit? _audit;
 
-    public DecideNextStepTool(DecisionOptions options, HeuristicBackend? backend = null, DecisionAudit? audit = null)
+    public DecideNextStepTool(DecisionOptions options, IDecisionBackend? backend = null, DecisionAudit? audit = null)
     {
         _options = options;
-        _backend = backend ?? new HeuristicBackend(options);
+        _backend = backend ?? DecisionBackendFactory.Create(options);
         _audit = audit;
     }
 

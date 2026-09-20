@@ -23,16 +23,16 @@ public sealed class DecisionGateTool : ToolBase
 
     private readonly DecisionOptions _options;
     private readonly string _workingDirectory;
-    private readonly HeuristicBackend _backend;
+    private readonly IDecisionBackend _backend;
     private readonly DecisionAudit? _audit;
 
     public DecisionGateTool(
         DecisionOptions options, string workingDirectory,
-        HeuristicBackend? backend = null, DecisionAudit? audit = null)
+        IDecisionBackend? backend = null, DecisionAudit? audit = null)
     {
         _options = options;
         _workingDirectory = workingDirectory;
-        _backend = backend ?? new HeuristicBackend(options);
+        _backend = backend ?? DecisionBackendFactory.Create(options);
         _audit = audit;
     }
 

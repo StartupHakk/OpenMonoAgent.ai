@@ -41,6 +41,7 @@ public sealed class AppConfig
 public sealed class DecisionSettings
 {
     public bool Enabled { get; set; }
+    public string Backend { get; set; } = OpenMono.Decisions.DecisionBackendFactory.HeuristicName;
     public double AutoThreshold
     {
         get;
@@ -66,6 +67,7 @@ public sealed class DecisionSettings
     public void MergeFrom(DecisionSettings source)
     {
         Enabled = source.Enabled;
+        if (!string.IsNullOrWhiteSpace(source.Backend)) Backend = source.Backend;
         if (source.AutoThreshold > 0) AutoThreshold = source.AutoThreshold;
         if (source.ReviewThreshold > 0) ReviewThreshold = source.ReviewThreshold;
         if (source.MinConfidence > 0) MinConfidence = source.MinConfidence;
