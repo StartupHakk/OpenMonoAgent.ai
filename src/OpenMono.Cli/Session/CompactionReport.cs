@@ -16,6 +16,15 @@ public sealed record CompactionReport
     public required int ContextWindowSize { get; init; }
     public string? SummaryText { get; init; }
     public string? Reason { get; init; }
+    /// <summary>
+    /// How the compacted output was produced: "summary" (lossy LLM
+    /// summary, the pre-Phase-4 behavior) or "verbatim" (Phase 4
+    /// relevance pass via the active IDecisionBackend — retained content
+    /// is byte-identical, never paraphrased).
+    /// </summary>
+    public string Strategy { get; init; } = "summary";
+    public int VerbatimDropped { get; init; }
+    public int VerbatimTruncated { get; init; }
 
     public void RenderTo(Action<string> writeInfo, int promptTokensBefore = 0)
     {
@@ -38,7 +47,16 @@ public sealed record CompactionReport
             return;
         }
 
-        writeInfo($"Compressing {MessagesCompressed} messages → structured summary");
+        if (Strategy == "verbatim")
+        {
+            writeInfo($"Verbatim-compacted {MessagesCompressed} messages — " +
+                $"{VerbatimDropped} dropped as stale, {VerbatimTruncated} truncated, " +
+                $"rest kept byte-identical");
+        }
+        else
+        {
+            writeInfo($"Compressing {MessagesCompressed} messages → structured summary");
+        }
 
         if (CompressedByRole.Count > 0)
         {
