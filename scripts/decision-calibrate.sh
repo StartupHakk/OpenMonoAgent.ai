@@ -1,21 +1,28 @@
 #!/usr/bin/env bash
+# Phase 3: measure, don't just run. Evaluates the active decision backend
+# over the hand-labeled corpus (src/OpenMono.Tests/Decisions/
+# decision-corpus.json), prints Brier/ECE, and writes
+# docs/decision-calibration.md. The heuristic backend is the miscalibrated
+# control — expect poor numbers; that is the baseline to beat.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/.."
 
-echo "== decision calibration replay =="
+echo "== decision calibration =="
 echo ">> build"
-dotnet build public/OpenMono.sln --nologo -v q 2>&1 | tail -3
+dotnet build OpenMono.sln --nologo -v q 2>&1 | tail -3
 
-echo ">> frozen goldens + gate matrix + sweep"
-dotnet test public/src/OpenMono.Tests/ \
-  --filter "FullyQualifiedName~Decision|FullyQualifiedName~JudgeGate|FullyQualifiedName~SpecialistToolTests" \
+echo ">> corpus calibration (measures Brier/ECE, writes docs/decision-calibration.md)"
+dotnet test src/OpenMono.Tests/ \
+  --filter "FullyQualifiedName~DecisionCalibration" \
   --nologo -v q 2>&1 | tail -3
 
+echo ">> decision suites (goldens + gate matrix + sweep, no-build)"
+dotnet test src/OpenMono.Tests/ \
+  --filter "FullyQualifiedName~Decision|FullyQualifiedName~JudgeGate|FullyQualifiedName~SpecialistToolTests" \
+  --no-build --nologo -v q 2>&1 | tail -3
+
 echo ""
-echo "frozen golden table (see docs/decision-calibration.md):"
-echo "  no sources      -> research @ 0.90"
-echo "  evidence        -> write @ 0.625 (review at default 0.85, write at 0.6)"
-echo "  unclear/done    -> review @ 0.90"
-echo "  oversized state -> review, capped"
-echo "  git status / ls -> allow (fast path, zero backend calls)"
-echo "  git reset --hard -> confirm | rm -rf / -> block | secret+egress -> block"
+echo ">> calibration result"
+grep -E "^- (Backend|Corpus|Brier|ECE)" docs/decision-calibration.md
+echo ""
+echo "full reliability table: docs/decision-calibration.md"

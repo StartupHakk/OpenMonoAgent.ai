@@ -19,4 +19,8 @@
     <ProjectReference Include="..\OpenMono.Cli\OpenMono.Cli.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Decisions\decision-corpus.json" />
+  </ItemGroup>
+
 </Project>
