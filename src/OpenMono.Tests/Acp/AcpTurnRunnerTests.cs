@@ -618,6 +618,62 @@ public sealed class AcpTurnRunnerTests
 
 
 
+    [Fact]
+    public async Task Pause_persists_completed_sibling_results_so_resume_never_reexecutes_them()
+    {
+        var tools = new ToolRegistry();
+        var counting = new CountingTool();
+        var asking = new AskingTool();
+        tools.Register(counting);
+        tools.Register(asking);
+
+        // One assistant message, two sequential (writeable) calls: the first auto-executes,
+        // the second pauses for permission mid-batch.
+        var (runner, session, _) = BuildHarness(
+            tools: tools,
+            llmRounds: new List<List<StreamChunk>>
+            {
+                new()
+                {
+                    new() { ToolCallDelta = new ToolCall { Id = "call_a", Name = "CountingTool", Arguments = "{}" }, IsComplete = false },
+                    new() { ToolCallDelta = new ToolCall { Id = "call_b", Name = "AskingTool", Arguments = "{}" }, IsComplete = false },
+                    new() { IsComplete = true },
+                },
+                new() { new() { TextDelta = "done.", IsComplete = false }, new() { IsComplete = true, Usage = new UsageInfo() } },
+            });
+
+        await runner.RunUserMessageAsync("run both", CancellationToken.None);
+
+        counting.ExecuteCount.Should().Be(1);
+        session.Messages.Should().Contain(m => m.Role == MessageRole.Tool && m.ToolCallId == "call_a",
+            "the completed first call must be persisted when the batch pauses, or the resume re-executes it");
+
+        var pauseId = session.PendingIds.Single();
+        using var payload = JsonDocument.Parse($"{{\"id\":\"{pauseId}\",\"decision\":\"allow\"}}");
+        await runner.ResumeWithPermissionAsync(payload.RootElement, CancellationToken.None);
+
+        counting.ExecuteCount.Should().Be(1, "an already-executed write must never run twice across a pause");
+        asking.ExecuteCount.Should().Be(1);
+        session.Messages.Count(m => m.Role == MessageRole.Tool && m.ToolCallId == "call_a").Should().Be(1);
+        session.Messages.Count(m => m.Role == MessageRole.Tool && m.ToolCallId == "call_b").Should().Be(1);
+    }
+
+    private sealed class CountingTool : ITool
+    {
+        public string Name => "CountingTool";
+        public string Description => "Executes without prompting and counts invocations";
+        public bool IsConcurrencySafe => false;
+        public bool IsReadOnly => false;
+        public JsonElement InputSchema { get; } = JsonDocument.Parse("""{"type":"object"}""").RootElement.Clone();
+        public PermissionLevel RequiredPermission(JsonElement input) => PermissionLevel.AutoAllow;
+        public int ExecuteCount { get; private set; }
+        public Task<ToolResult> ExecuteAsync(JsonElement input, ToolContext ctx, CancellationToken ct)
+        {
+            ExecuteCount++;
+            return Task.FromResult(ToolResult.Success("counted"));
+        }
+    }
+
     private sealed class AskingTool : ITool
     {
         public string Name => "AskingTool";
