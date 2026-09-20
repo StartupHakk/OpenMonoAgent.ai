@@ -19,9 +19,6 @@ public sealed class HeuristicBackend(DecisionOptions options) : IDecisionBackend
         "so", "than", "too", "very", "can", "will", "just", "should", "now",
     };
 
-    private static readonly string[] Negations =
-    ["not ", "no ", "never ", "n't ", "none ", "cannot ", "without "];
-
     public (string Choice, double Confidence, IReadOnlyDictionary<string, double> Probabilities) Choose(
         string state,
         IReadOnlyDictionary<string, string?> options,
@@ -53,8 +50,7 @@ public sealed class HeuristicBackend(DecisionOptions options) : IDecisionBackend
         var covered = propTokens.Count(stateTokens.Contains);
         var p = (double)covered / propTokens.Count;
         p = Math.Clamp(p, 0.05, 0.95);
-        var lowered = proposition.ToLowerInvariant();
-        if (Negations.Any(n => lowered.Contains(n, StringComparison.Ordinal)))
+        if (DecisionText.ContainsNegation(proposition))
             p = 1 - p;
         return p;
     }
@@ -82,10 +78,9 @@ public sealed class HeuristicBackend(DecisionOptions options) : IDecisionBackend
         if (claimTokens.Count == 0)
             return ("not_addressed", NotAddressedConfidence);
         var coverage = (double)claimTokens.Count(evidenceTokens.Contains) / claimTokens.Count;
-        if (coverage >= 0.6)
+        if (coverage >= DecisionPolicy.VerifySupportedCoverage)
             return ("supported", SupportedConfidence);
-        var lowered = evidence.ToLowerInvariant();
-        if (coverage >= 0.4 && Negations.Any(n => lowered.Contains(n, StringComparison.Ordinal)))
+        if (coverage >= DecisionPolicy.VerifyContradictionCoverage && DecisionText.ContainsNegation(evidence))
             return ("contradicted", ContradictedConfidence);
         return ("not_addressed", NotAddressedConfidence);
     }

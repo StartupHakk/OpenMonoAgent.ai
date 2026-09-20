@@ -79,8 +79,7 @@ public sealed class DecideNextStepTool : ToolBase
     {
         if (attempts >= 3)
         {
-            var lowered = result.ToLowerInvariant();
-            if (FailureMarkers.Any(m => lowered.Contains(m, StringComparison.Ordinal)))
+            if (DecisionText.ContainsAnyPhrase(result, FailureMarkers))
                 return ("ask_user", 0.7);
             return ("change_approach", 0.8);
         }

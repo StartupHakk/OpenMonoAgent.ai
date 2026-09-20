@@ -6,8 +6,8 @@ namespace OpenMono.Tools;
 
 public sealed class DecideEvaluateTool : ToolBase
 {
-    public const int MaxInputChars = 65536;
-    public const int MaxStateChars = 8000;
+    public const int MaxInputChars = DecisionCaps.MaxInputChars;
+    public const int MaxStateChars = DecisionCaps.MaxStateChars;
 
     private readonly DecisionOptions _options;
     private readonly IDecisionBackend _backend;
