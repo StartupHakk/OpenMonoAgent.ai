@@ -1,8 +1,8 @@
 namespace OpenMono.Decisions;
 
-public sealed class ChiefRouter(DecisionOptions options, string workingDirectory)
+public sealed class ChiefRouter(DecisionOptions options, string workingDirectory, IDecisionBackend? backend = null)
 {
-    public const int MaxStateChars = 200000;
+    public const int MaxStateChars = DecisionCaps.MaxRouteStateChars;
 
     private static readonly string[] DoneMarkers =
     ["complete", "completed", "done", "finished", "published", "shipped"];
@@ -27,6 +27,8 @@ public sealed class ChiefRouter(DecisionOptions options, string workingDirectory
 
     public DecisionOptions Options { get; } = options;
 
+    private readonly IDecisionBackend _backend = backend ?? DecisionBackendFactory.Create(options);
+
     public async Task<(JobHandoff Handoff, string Path)> RouteAsync(
         string goal, string completedWork, double? autoThreshold, CancellationToken ct)
     {
@@ -34,14 +36,15 @@ public sealed class ChiefRouter(DecisionOptions options, string workingDirectory
         var state = string.Concat(goal, "\n", completedWork);
         if (state.Length > MaxStateChars)
             return await SaveHandoffAsync(goal, completedWork, "review", "review", 0.9, auto, true, ct);
-        var lowered = state.ToLowerInvariant();
-        if (ContainsAny(lowered, DoneMarkers) || ContainsAny(lowered, UnclearMarkers))
+        if (DecisionText.LooksNonEnglish(state))
+            return await SaveHandoffAsync(goal, completedWork, "review", "review", 0.5, auto, false, ct);
+        if (DecisionText.ContainsAnyPhrase(state, DoneMarkers) || DecisionText.ContainsAnyPhrase(state, UnclearMarkers))
             return await SaveHandoffAsync(goal, completedWork, "review", "review", 0.9, auto, false, ct);
-        if (ContainsAny(lowered, EmptyMarkers) || !ContainsAny(lowered, EvidenceMarkers))
+        if (DecisionText.ContainsAnyPhrase(state, EmptyMarkers) || !DecisionText.ContainsAnyPhrase(state, EvidenceMarkers))
             return await SaveHandoffAsync(goal, completedWork, "research", "research", 0.9, auto, false, ct);
-        var backend = new HeuristicBackend(Options);
+        var backend = _backend;
         var workerMenu = ChoiceMenu.Build("next_worker", WorkerOptions.Select(kv => (kv.Key, kv.Value)).ToList());
-        var (pick, confidence, _) = backend.Choose(state, workerMenu);
+        var (pick, confidence, _) = backend.Choose(state, workerMenu, ct);
         var choice = pick == ChoiceMenu.OtherKey ? "review" : pick;
         var gate = DecisionPolicy.ApplyGate(choice, confidence, auto, Options.ReviewThreshold);
         var destination = gate == choice && choice != "review" ? choice : "review";
@@ -78,14 +81,4 @@ public sealed class ChiefRouter(DecisionOptions options, string workingDirectory
 
     public static string HandoffPath(string workingDirectory, JobHandoff handoff) =>
         Path.Combine(workingDirectory, ".openmono", "decision-queue", handoff.Destination, handoff.Uuid + ".json");
-
-    private static bool ContainsAny(string lowered, string[] markers)
-    {
-        foreach (var marker in markers)
-        {
-            if (lowered.Contains(marker, StringComparison.Ordinal))
-                return true;
-        }
-        return false;
-    }
 }

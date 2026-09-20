@@ -9,13 +9,13 @@ public sealed class DecideVerifyTool : ToolBase
     public const int MaxClaims = 100;
 
     private readonly DecisionOptions _options;
-    private readonly HeuristicBackend _backend;
+    private readonly IDecisionBackend _backend;
     private readonly DecisionAudit? _audit;
 
-    public DecideVerifyTool(DecisionOptions options, HeuristicBackend? backend = null, DecisionAudit? audit = null)
+    public DecideVerifyTool(DecisionOptions options, IDecisionBackend? backend = null, DecisionAudit? audit = null)
     {
         _options = options;
-        _backend = backend ?? new HeuristicBackend(options);
+        _backend = backend ?? DecisionBackendFactory.Create(options);
         _audit = audit;
     }
 

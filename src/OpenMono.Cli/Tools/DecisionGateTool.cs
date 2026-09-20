@@ -23,16 +23,16 @@ public sealed class DecisionGateTool : ToolBase
 
     private readonly DecisionOptions _options;
     private readonly string _workingDirectory;
-    private readonly HeuristicBackend _backend;
+    private readonly IDecisionBackend _backend;
     private readonly DecisionAudit? _audit;
 
     public DecisionGateTool(
         DecisionOptions options, string workingDirectory,
-        HeuristicBackend? backend = null, DecisionAudit? audit = null)
+        IDecisionBackend? backend = null, DecisionAudit? audit = null)
     {
         _options = options;
         _workingDirectory = workingDirectory;
-        _backend = backend ?? new HeuristicBackend(options);
+        _backend = backend ?? DecisionBackendFactory.Create(options);
         _audit = audit;
     }
 
@@ -58,24 +58,27 @@ public sealed class DecisionGateTool : ToolBase
         JsonElement args;
         try
         {
-            args = JsonDocument.Parse(toolArgsJson).RootElement;
+            // Single parse per gate call: the element is threaded through every
+            // helper below so SignalsFor never re-parses the raw JSON.
+            using var doc = JsonDocument.Parse(toolArgsJson);
+            args = doc.RootElement.Clone();
         }
         catch (JsonException)
         {
-            return Confirm(["unparseable-args"], 0.5, toolName, toolArgsJson, userRequest);
+            return Confirm(["unparseable-args"], 0.5, toolName, null, userRequest);
         }
         if (!DecisionFastPaths.ShouldConsult(toolName))
-            return ApplyForceAsk(Allow("ungated-tool", toolName, toolArgsJson, userRequest), toolName, toolArgsJson, args);
+            return ApplyForceAsk(Allow("ungated-tool", toolName, args), toolName, toolArgsJson, args);
         if (DecisionFastPaths.TryAllow(toolName, args, _workingDirectory, out var fastReason))
-            return ApplyForceAsk(Allow(fastReason, toolName, toolArgsJson, userRequest), toolName, toolArgsJson, args);
+            return ApplyForceAsk(Allow(fastReason, toolName, args), toolName, toolArgsJson, args);
         var destructive = DecisionFastPaths.IsDestructive(toolName, args);
         if (IsWipe(toolName, args))
-            return Block("wipe-pattern", toolName, toolArgsJson, userRequest);
+            return Block("wipe-pattern", toolName, args);
         if (ExfiltratesSecrets(toolName, args))
-            return Block("secret-egress", toolName, toolArgsJson, userRequest);
+            return Block("secret-egress", toolName, args);
         if (!destructive)
-            return ApplyForceAsk(Allow("heuristic-benign", toolName, toolArgsJson, userRequest), toolName, toolArgsJson, args);
-        return Confirm("destructive", destructive ? 0.8 : 0.65, toolName, toolArgsJson, userRequest);
+            return ApplyForceAsk(Allow("heuristic-benign", toolName, args), toolName, toolArgsJson, args);
+        return Confirm("destructive", destructive ? 0.8 : 0.65, toolName, args, userRequest);
     }
 
     protected override async Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
@@ -87,7 +90,10 @@ public sealed class DecisionGateTool : ToolBase
             return ToolResult.InvalidInput("Missing tool name.", "Provide tool, args, user_request.");
         var result = Check(tool, args, userRequest);
         var audit = _audit ?? new DecisionAudit(context.Config);
-        await audit.AppendAsync(new DecisionAudit.Entry(
+        // The gate decision itself never depends on the audit write, but an
+        // unwritable audit file must be visible, not silent: surface it in
+        // the payload so the caller (and journal) can record audit=failed.
+        var auditOk = await audit.AppendAsync(new DecisionAudit.Entry(
             DateTime.UtcNow.ToString("o"), context.Session.Id,
             "gate", $"{tool} {result.Decision} {result.Confidence:F2}", 0,
             "local-heuristic", "local-heuristic", $"{tool}->{result.Decision}"), ct);
@@ -96,6 +102,7 @@ public sealed class DecisionGateTool : ToolBase
             decision = result.Decision,
             confidence = result.Confidence,
             reasons = result.Reasons,
+            audit = auditOk ? "ok" : "failed",
             signals = new
             {
                 destructive = result.Signals.Destructive,
@@ -108,24 +115,24 @@ public sealed class DecisionGateTool : ToolBase
         return ToolResult.Success(json);
     }
 
-    private DecisionGateResult Allow(string reason, string toolName, string argsJson, string userRequest) =>
-        new("allow", 0.99, [reason], SignalsFor(toolName, argsJson, 0));
+    private DecisionGateResult Allow(string reason, string toolName, JsonElement? args) =>
+        new("allow", 0.99, [reason], SignalsFor(toolName, args, 0));
 
-    private DecisionGateResult Block(string reason, string toolName, string argsJson, string userRequest) =>
-        new("block", 0.9, [reason], SignalsFor(toolName, argsJson, 3));
+    private DecisionGateResult Block(string reason, string toolName, JsonElement? args) =>
+        new("block", 0.9, [reason], SignalsFor(toolName, args, 3));
 
     private DecisionGateResult Confirm(
-        string reason, double confidence, string toolName, string argsJson, string userRequest)
+        string reason, double confidence, string toolName, JsonElement? args, string userRequest)
     {
         var risk = _backend.JudgeTrue(
-            string.Concat(userRequest, "\n", toolName, " ", argsJson),
+            string.Concat(userRequest, "\n", toolName, " ", args?.GetRawText() ?? "{}"),
             "this action risks data loss or exfiltration");
         var conf = risk >= _options.ReviewThreshold ? Math.Max(confidence, 0.8) : confidence;
-        return new("confirm", conf, [reason], SignalsFor(toolName, argsJson, 2));
+        return new("confirm", conf, [reason], SignalsFor(toolName, args, 2));
     }
 
-    private DecisionGateResult Confirm(IReadOnlyList<string> reasons, double confidence, string toolName, string argsJson, string userRequest) =>
-        new("confirm", confidence, reasons, SignalsFor(toolName, argsJson, 2));
+    private DecisionGateResult Confirm(IReadOnlyList<string> reasons, double confidence, string toolName, JsonElement? args, string userRequest) =>
+        new("confirm", confidence, reasons, SignalsFor(toolName, args, 2));
 
     private DecisionGateResult ApplyForceAsk(DecisionGateResult result, string toolName, string argsJson, JsonElement args)
     {
@@ -147,21 +154,13 @@ public sealed class DecisionGateTool : ToolBase
         return p == pattern.Length;
     }
 
-    private GateSignals SignalsFor(string toolName, string argsJson, int blastRadius)
+    private GateSignals SignalsFor(string toolName, JsonElement? args, int blastRadius)
     {
-        var destructive = false;
-        var outwardFacing = false;
-        var inScope = true;
-        try
-        {
-            var args = JsonDocument.Parse(argsJson).RootElement;
-            destructive = DecisionFastPaths.IsDestructive(toolName, args);
-            outwardFacing = IsEgress(toolName, args);
-            inScope = IsInScope(toolName, args);
-        }
-        catch (JsonException)
-        {
-        }
+        if (args is not { } parsed)
+            return new GateSignals(false, false, true, blastRadius);
+        var destructive = DecisionFastPaths.IsDestructive(toolName, parsed);
+        var outwardFacing = IsEgress(toolName, parsed);
+        var inScope = IsInScope(toolName, parsed);
         return new GateSignals(destructive, outwardFacing, inScope, blastRadius);
     }
 

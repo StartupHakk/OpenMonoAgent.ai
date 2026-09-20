@@ -9,13 +9,13 @@ public sealed class DecideNextStepTool : ToolBase
     ["failed", "failure", "error", "blocked", "stuck", "denied", "timeout"];
 
     private readonly DecisionOptions _options;
-    private readonly HeuristicBackend _backend;
+    private readonly IDecisionBackend _backend;
     private readonly DecisionAudit? _audit;
 
-    public DecideNextStepTool(DecisionOptions options, HeuristicBackend? backend = null, DecisionAudit? audit = null)
+    public DecideNextStepTool(DecisionOptions options, IDecisionBackend? backend = null, DecisionAudit? audit = null)
     {
         _options = options;
-        _backend = backend ?? new HeuristicBackend(options);
+        _backend = backend ?? DecisionBackendFactory.Create(options);
         _audit = audit;
     }
 
@@ -79,8 +79,7 @@ public sealed class DecideNextStepTool : ToolBase
     {
         if (attempts >= 3)
         {
-            var lowered = result.ToLowerInvariant();
-            if (FailureMarkers.Any(m => lowered.Contains(m, StringComparison.Ordinal)))
+            if (DecisionText.ContainsAnyPhrase(result, FailureMarkers))
                 return ("ask_user", 0.7);
             return ("change_approach", 0.8);
         }

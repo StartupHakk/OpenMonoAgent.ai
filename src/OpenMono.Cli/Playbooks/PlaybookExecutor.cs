@@ -285,11 +285,12 @@ public sealed class PlaybookExecutor : IDisposable
         return await TemplateEngine.ResolveAsync(raw, state, playbook, _config.WorkingDirectory, ct);
     }
 
-    private async Task<string?> HandleJudgeGateAsync(
-        PlaybookDefinition playbook, StepDefinition step, PlaybookState state, string stepContent, CancellationToken ct)
+    internal async Task<string?> HandleJudgeGateAsync(
+        PlaybookDefinition playbook, StepDefinition step, PlaybookState state, string stepContent, CancellationToken ct,
+        IDecisionBackend? backend = null)
     {
         var options = DecisionOptions.FromSettings(_config.Decision);
-        var backend = new HeuristicBackend(options);
+        backend ??= DecisionBackendFactory.Create(options);
         var goal = state.Parameters.TryGetValue("goal", out var goalRaw)
             ? goalRaw?.ToString() ?? ""
             : playbook.Description;

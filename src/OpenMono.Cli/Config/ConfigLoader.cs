@@ -276,6 +276,10 @@ public static class ConfigLoader
         if (!string.IsNullOrEmpty(decisionEnabled))
             config.Decision.Enabled = decisionEnabled.Trim().ToLowerInvariant() is "1" or "true" or "yes" or "on";
 
+        var decisionBackend = Environment.GetEnvironmentVariable("OPENMONO_DECISION_BACKEND");
+        if (!string.IsNullOrWhiteSpace(decisionBackend))
+            config.Decision.Backend = decisionBackend.Trim();
+
         var autoThreshold = Environment.GetEnvironmentVariable("OPENMONO_DECISION_AUTO_THRESHOLD");
         if (!string.IsNullOrEmpty(autoThreshold) && double.TryParse(autoThreshold, out var autoVal))
             config.Decision.AutoThreshold = autoVal;

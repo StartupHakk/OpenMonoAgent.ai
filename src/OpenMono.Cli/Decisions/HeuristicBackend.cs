@@ -1,6 +1,6 @@
 namespace OpenMono.Decisions;
 
-public sealed class HeuristicBackend(DecisionOptions options)
+public sealed class HeuristicBackend(DecisionOptions options) : IDecisionBackend
 {
     public const double ExactMatchConfidence = 0.95;
     public const double ContainsMatchConfidence = 0.75;
@@ -19,13 +19,12 @@ public sealed class HeuristicBackend(DecisionOptions options)
         "so", "than", "too", "very", "can", "will", "just", "should", "now",
     };
 
-    private static readonly string[] Negations =
-    ["not ", "no ", "never ", "n't ", "none ", "cannot ", "without "];
-
     public (string Choice, double Confidence, IReadOnlyDictionary<string, double> Probabilities) Choose(
         string state,
-        IReadOnlyDictionary<string, string?> options)
+        IReadOnlyDictionary<string, string?> options,
+        CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var first = options.Keys.First();
         var stateTokens = Tokenize(state);
         if (stateTokens.Count == 0 || options.Count == 0)
@@ -41,8 +40,9 @@ public sealed class HeuristicBackend(DecisionOptions options)
         return (best, probs[best], probs);
     }
 
-    public double JudgeTrue(string state, string proposition)
+    public double JudgeTrue(string state, string proposition, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var stateTokens = new HashSet<string>(Tokenize(state));
         var propTokens = Tokenize(proposition);
         if (propTokens.Count == 0)
@@ -50,14 +50,14 @@ public sealed class HeuristicBackend(DecisionOptions options)
         var covered = propTokens.Count(stateTokens.Contains);
         var p = (double)covered / propTokens.Count;
         p = Math.Clamp(p, 0.05, 0.95);
-        var lowered = proposition.ToLowerInvariant();
-        if (Negations.Any(n => lowered.Contains(n, StringComparison.Ordinal)))
+        if (DecisionText.ContainsNegation(proposition))
             p = 1 - p;
         return p;
     }
 
-    public double Relevance(string query, string candidate)
+    public double Relevance(string query, string candidate, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var q = query.Trim().ToLowerInvariant();
         var c = candidate.Trim().ToLowerInvariant();
         if (q.Length == 0 || c.Length == 0)
@@ -70,17 +70,17 @@ public sealed class HeuristicBackend(DecisionOptions options)
         return f1;
     }
 
-    public (string Verdict, double Confidence) Verify(string evidence, string claim)
+    public (string Verdict, double Confidence) Verify(string evidence, string claim, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var evidenceTokens = new HashSet<string>(Tokenize(evidence));
         var claimTokens = Tokenize(claim);
         if (claimTokens.Count == 0)
             return ("not_addressed", NotAddressedConfidence);
         var coverage = (double)claimTokens.Count(evidenceTokens.Contains) / claimTokens.Count;
-        if (coverage >= 0.6)
+        if (coverage >= DecisionPolicy.VerifySupportedCoverage)
             return ("supported", SupportedConfidence);
-        var lowered = evidence.ToLowerInvariant();
-        if (coverage >= 0.4 && Negations.Any(n => lowered.Contains(n, StringComparison.Ordinal)))
+        if (coverage >= DecisionPolicy.VerifyContradictionCoverage && DecisionText.ContainsNegation(evidence))
             return ("contradicted", ContradictedConfidence);
         return ("not_addressed", NotAddressedConfidence);
     }
