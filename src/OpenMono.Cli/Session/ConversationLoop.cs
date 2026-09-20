@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using OpenMono.Acp;
 using OpenMono.Config;
+using OpenMono.Decisions;
 using OpenMono.History;
 using OpenMono.Hooks;
 using OpenMono.Llm;
@@ -97,7 +98,10 @@ public sealed class ConversationLoop : IDisposable
         _liveFeedback = liveFeedback;
         _config = config;
         _session = session;
-        _compactor = compactor ?? new Compactor(llm, config.Llm.ContextSize);
+        _compactor = compactor ?? new Compactor(
+            llm,
+            config.Llm.ContextSize,
+            DecisionBackendFactory.Create(DecisionOptions.FromSettings(config.Decision)));
         _checkpointer = checkpointer ?? new Checkpointer(llm, config.Llm.ContextSize);
         _memoryStore = memoryStore;
         _hookRunner = hookRunner ?? new HookRunner(config, msg => _output.WriteWarning(msg));
@@ -998,7 +1002,7 @@ public sealed class ConversationLoop : IDisposable
         try
         {
             SessionState compacted;
-            (compacted, report) = await _compactor.CompactAsync(_session, customInstructions, ct);
+            (compacted, report) = await _compactor.CompactWithVerbatimFirstAsync(_session, customInstructions, ct);
             report = report with { Reason = reason };
 
             _session.Messages.Clear();
