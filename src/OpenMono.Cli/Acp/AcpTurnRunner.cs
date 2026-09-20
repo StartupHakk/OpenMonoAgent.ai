@@ -273,7 +273,8 @@ public sealed class AcpTurnRunner : IAcpEventSink
         // Uses shared session state; modifications are persisted automatically.
         var sessionState = _acpSession.State;
         sessionState.Meta.TokenTracker ??= new TokenTracker();
-        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction);
+        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction,
+            dequeuePendingUserInput: () => _acpSession.DequeuePendingMessage());
         try
         {
             try
@@ -409,7 +410,8 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
         var sessionState = _acpSession.State;
         sessionState.Meta.TokenTracker ??= new TokenTracker();
-        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction);
+        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction,
+            dequeuePendingUserInput: () => _acpSession.DequeuePendingMessage());
         try
         {
             await loop.ResolvePendingToolCallsAsync(true, ct);
@@ -468,7 +470,8 @@ public sealed class AcpTurnRunner : IAcpEventSink
         // pause icon → cog → check.
         var sessionState = _acpSession.State;
         sessionState.Meta.TokenTracker ??= new TokenTracker();
-        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction);
+        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction,
+            dequeuePendingUserInput: () => _acpSession.DequeuePendingMessage());
         try
         {
             try
@@ -510,7 +513,8 @@ public sealed class AcpTurnRunner : IAcpEventSink
         var sessionState = _acpSession.State;
         sessionState.Meta.TokenTracker ??= new TokenTracker();
 
-        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction);
+        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction,
+            dequeuePendingUserInput: () => _acpSession.DequeuePendingMessage());
 
         try
         {

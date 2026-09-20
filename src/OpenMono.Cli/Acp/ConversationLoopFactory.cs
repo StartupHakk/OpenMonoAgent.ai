@@ -7,12 +7,6 @@ using OpenMono.Tools;
 
 namespace OpenMono.Acp;
 
-
-
-
-
-
-
 public sealed class ConversationLoopFactory
 {
     private readonly ILlmClient _llm;
@@ -53,7 +47,12 @@ public sealed class ConversationLoopFactory
 
 
 
-    public ConversationLoop Create(SessionState session, IAcpEventSink sink, IAcpUserInteraction interaction)
+    public ConversationLoop Create(
+        SessionState session,
+        IAcpEventSink sink,
+        IAcpUserInteraction interaction,
+        Func<string?>? dequeuePendingUserInput = null,
+        Action<string>? onPendingUserInputInjected = null)
     {
         var placeholderPermissions = new PermissionEngine(_config, _output, _input);
         return new ConversationLoop(
@@ -66,6 +65,8 @@ public sealed class ConversationLoopFactory
             _config,
             session,
             sink: sink,
-            interaction: interaction);
+            interaction: interaction,
+            dequeuePendingUserInput: dequeuePendingUserInput,
+            onPendingUserInputInjected: onPendingUserInputInjected);
     }
 }
