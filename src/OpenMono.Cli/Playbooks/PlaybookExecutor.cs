@@ -662,7 +662,11 @@ public sealed class PlaybookExecutor : IDisposable
                 var allowedIdx = 0;
                 foreach (var call in allowedCalls)
                 {
-                    resultMap[call.Id] = allowedResults[allowedIdx++];
+                    resultMap[call.Id] = allowedIdx < allowedResults.Length
+                        ? allowedResults[allowedIdx++]
+                        : allowedResults.Length > 0
+                            ? allowedResults[0]
+                            : ToolResult.Error("Tool execution produced no result.");
                 }
 
                 for (var i = 0; i < pendingToolCalls.Count; i++)
@@ -685,7 +689,14 @@ public sealed class PlaybookExecutor : IDisposable
                 for (var i = 0; i < pendingToolCalls.Count; i++)
                 {
                     var call = pendingToolCalls[i];
-                    var toolResult = toolResults[i];
+                    // Defensive: the dispatcher contract is one result per call, but never let
+                    // a short array throw IndexOutOfRange — fall back to the first result
+                    // (doom-loop guards historically returned a single shared result).
+                    var toolResult = i < toolResults.Length
+                        ? toolResults[i]
+                        : toolResults.Length > 0
+                            ? toolResults[0]
+                            : ToolResult.Error("Tool execution produced no result.");
 
                     messages.Add(new Message
                     {

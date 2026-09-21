@@ -140,21 +140,27 @@ public sealed class ToolDispatcher : IDisposable
             {
                 case DoomLoopTier.Nudge:
                     _renderer.WriteWarning($"Doom loop detected — {names} repeated (hit {DoomLoop.ConsecutiveHits}/5); nudging the agent to vary its approach. Pattern: {pattern}");
-                    return [ToolResult.InvalidInput(
-                        DoomLoopPrompts.NudgeWithPattern(names, tier, pattern, DoomLoop.ConsecutiveHits),
-                        "Vary the call: change an argument, try a different tool, or inspect prior output before proceeding.")];
+                    return toolCalls
+                        .Select(_ => ToolResult.InvalidInput(
+                            DoomLoopPrompts.NudgeWithPattern(names, tier, pattern, DoomLoop.ConsecutiveHits),
+                            "Vary the call: change an argument, try a different tool, or inspect prior output before proceeding."))
+                        .ToArray();
 
                 case DoomLoopTier.StrongNudge:
                     _renderer.WriteWarning($"Doom loop detected — {names} repeated (hit {DoomLoop.ConsecutiveHits}/5); escalating the nudge. Pattern: {pattern}");
-                    return [ToolResult.InvalidInput(
-                        DoomLoopPrompts.NudgeWithPattern(names, tier, pattern, DoomLoop.ConsecutiveHits),
-                        "Stop repeating. Explain what you are trying to do and what you learned, then change your approach structurally.")];
+                    return toolCalls
+                        .Select(_ => ToolResult.InvalidInput(
+                            DoomLoopPrompts.NudgeWithPattern(names, tier, pattern, DoomLoop.ConsecutiveHits),
+                            "Stop repeating. Explain what you are trying to do and what you learned, then change your approach structurally."))
+                        .ToArray();
 
                 default: // DoomLoopTier.Escalate
                     _renderer.WriteWarning($"Doom loop detected — {names} repeated (hit {DoomLoop.ConsecutiveHits}/5); escalating to the user and ending the turn. Pattern: {pattern}");
-                    return [ToolResult.InvalidInput(
-                        DoomLoopPrompts.MaxWithPattern(names, pattern, DoomLoop.ConsecutiveHits),
-                        "Escalated to the user — the step will be re-run or the user will be asked for direction.").WithEscalation()];
+                    return toolCalls
+                        .Select(_ => ToolResult.InvalidInput(
+                            DoomLoopPrompts.MaxWithPattern(names, pattern, DoomLoop.ConsecutiveHits),
+                            "Escalated to the user — the step will be re-run or the user will be asked for direction.").WithEscalation())
+                        .ToArray();
             }
         }
 
