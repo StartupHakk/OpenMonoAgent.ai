@@ -139,68 +139,88 @@ public static class AcpEndpoints
             return;
         }
 
-
-
-        if (!await session.TurnLock.WaitAsync(0, ctx.RequestAborted))
+        // Parse the body before taking the turn lock: an abort must cancel the
+        // in-flight turn without needing the lock (the lock is held by the turn
+        // it is trying to stop, so requiring it would deadlock into 409).
+        JsonDocument body;
+        try
         {
-            ctx.Response.StatusCode = StatusCodes.Status409Conflict;
-            await ctx.Response.WriteAsJsonAsync(new { error = "session_busy" }, ctx.RequestAborted);
+            body = await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ctx.RequestAborted);
+        }
+        catch (JsonException ex)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await ctx.Response.WriteAsJsonAsync(new { error = "invalid_json", detail = ex.Message }, ctx.RequestAborted);
             return;
         }
 
-        try
+        using (body)
         {
-            JsonDocument body;
-            try
+            var root = body.RootElement;
+
+            if (root.TryGetProperty("abort", out var abortEl) && abortEl.GetBoolean())
             {
-                body = await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ctx.RequestAborted);
-            }
-            catch (JsonException ex)
-            {
-                ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
-                await ctx.Response.WriteAsJsonAsync(new { error = "invalid_json", detail = ex.Message }, ctx.RequestAborted);
+                // Reusable turn-wide stop: cancels the registered turn CTS (LLM
+                // stream + tool execution) and drops pending pauses. Works even
+                // while a turn holds TurnLock.
+                session.CancelTurn();
+                ctx.Response.StatusCode = StatusCodes.Status204NoContent;
+                session.LastActivityAt = DateTime.UtcNow;
+                store.Save(session);
                 return;
             }
 
-            using (body)
+            if (!await session.TurnLock.WaitAsync(0, ctx.RequestAborted))
             {
-                var root = body.RootElement;
+                ctx.Response.StatusCode = StatusCodes.Status409Conflict;
+                await ctx.Response.WriteAsJsonAsync(new { error = "session_busy" }, ctx.RequestAborted);
+                return;
+            }
 
+            // Turn-wide CTS: linked to the SSE disconnect so a dropped connection
+            // aborts the turn, and registered on the session so abort:true /
+            // session delete can cancel it from outside the lock.
+            using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted);
+            session.RegisterTurn(turnCts);
+            var ct = turnCts.Token;
+
+            try
+            {
                 if (root.TryGetProperty("message", out var msgEl))
                 {
                     StartSseResponse(ctx);
                     var runner = runners.Create(session, new SseWriter(ctx.Response.Body, ctx.RequestAborted));
-                    await runner.RunUserMessageAsync(msgEl.GetString() ?? "", ctx.RequestAborted);
+                    await runner.RunUserMessageAsync(msgEl.GetString() ?? "", ct);
                 }
                 else if (root.TryGetProperty("permission", out var permEl))
                 {
                     StartSseResponse(ctx);
                     var runner = runners.Create(session, new SseWriter(ctx.Response.Body, ctx.RequestAborted));
-                    await runner.ResumeWithPermissionAsync(permEl, ctx.RequestAborted);
+                    await runner.ResumeWithPermissionAsync(permEl, ct);
                 }
                 else if (root.TryGetProperty("user_input", out var uinEl))
                 {
                     StartSseResponse(ctx);
                     var runner = runners.Create(session, new SseWriter(ctx.Response.Body, ctx.RequestAborted));
-                    await runner.ResumeWithUserInputAsync(uinEl, ctx.RequestAborted);
+                    await runner.ResumeWithUserInputAsync(uinEl, ct);
                 }
                 else if (root.TryGetProperty("playbookPermission", out var pbkEl))
                 {
                     StartSseResponse(ctx);
                     var runner = runners.Create(session, new SseWriter(ctx.Response.Body, ctx.RequestAborted));
-                    await runner.ResumeWithPlaybookApprovalAsync(pbkEl, ctx.RequestAborted);
+                    await runner.ResumeWithPlaybookApprovalAsync(pbkEl, ct);
                 }
                 else if (root.TryGetProperty("plan_decision", out var pdEl))
                 {
                     StartSseResponse(ctx);
                     var runner = runners.Create(session, new SseWriter(ctx.Response.Body, ctx.RequestAborted));
-                    await runner.ResumeWithPlanDecisionAsync(pdEl.GetString() ?? "keep", ctx.RequestAborted);
+                    await runner.ResumeWithPlanDecisionAsync(pdEl.GetString() ?? "keep", ct);
                 }
                 else if (root.TryGetProperty("toggle_mode", out var tmEl))
                 {
                     StartSseResponse(ctx);
                     var runner = runners.Create(session, new SseWriter(ctx.Response.Body, ctx.RequestAborted));
-                    await runner.ResumeWithToggleModeAsync(tmEl, ctx.RequestAborted);
+                    await runner.ResumeWithToggleModeAsync(tmEl, ct);
                 }
                 else if (root.TryGetProperty("mode", out var modeEl))
                 {
@@ -220,14 +240,6 @@ public static class AcpEndpoints
                     ctx.Response.StatusCode = StatusCodes.Status200OK;
                     await ctx.Response.WriteAsJsonAsync(new { mode = isPlanMode ? "plan" : "build" }, ctx.RequestAborted);
                 }
-                else if (root.TryGetProperty("abort", out var abortEl) && abortEl.GetBoolean())
-                {
-
-
-
-                    session.CancelAllPending();
-                    ctx.Response.StatusCode = StatusCodes.Status204NoContent;
-                }
                 else
                 {
                     ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
@@ -240,29 +252,26 @@ public static class AcpEndpoints
                         ctx.RequestAborted);
                 }
             }
-        }
-        catch (InvalidOperationException ex)
-        {
-
-
-
-
-            if (ctx.Response.HasStarted)
+            catch (InvalidOperationException ex)
             {
-                var writer = new SseWriter(ctx.Response.Body, ctx.RequestAborted);
-                await writer.WriteEventAsync("error", new { message = ex.Message });
+                if (ctx.Response.HasStarted)
+                {
+                    var writer = new SseWriter(ctx.Response.Body, ctx.RequestAborted);
+                    await writer.WriteEventAsync("error", new { message = ex.Message });
+                }
+                else
+                {
+                    ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+                    await ctx.Response.WriteAsJsonAsync(new { error = "resume_error", detail = ex.Message }, ctx.RequestAborted);
+                }
             }
-            else
+            finally
             {
-                ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
-                await ctx.Response.WriteAsJsonAsync(new { error = "resume_error", detail = ex.Message }, ctx.RequestAborted);
+                session.ClearTurn();
+                session.LastActivityAt = DateTime.UtcNow;
+                store.Save(session);
+                session.TurnLock.Release();
             }
-        }
-        finally
-        {
-            session.LastActivityAt = DateTime.UtcNow;
-            store.Save(session);
-            session.TurnLock.Release();
         }
     }
 
@@ -272,7 +281,7 @@ public static class AcpEndpoints
     {
         var session = store.TryGet(id);
         if (session is null) return Results.NoContent();
-        session.CancelAllPending();
+        session.CancelTurn();
         store.Delete(id);
         return Results.NoContent();
     }

@@ -170,6 +170,56 @@ public class PlaybookLoaderTests : IDisposable
         loader.LoadAll().Should().BeEmpty();
     }
 
+    [Fact]
+    public void LoadAll_RetryKeys_Parsed()
+    {
+        var playbookDir = Path.Combine(_tempDir, "flaky");
+        Directory.CreateDirectory(playbookDir);
+        File.WriteAllText(Path.Combine(playbookDir, "PLAYBOOK.md"), """
+            ---
+            name: flaky
+            description: Retries doom aborts
+            allowed-tools:
+              - Bash
+            retry-on-abort: true
+            retry-attempt-limit: 3
+            ---
+
+            You are a flaky playbook.
+            """);
+
+        var loader = new PlaybookLoader([_tempDir]);
+        var playbooks = loader.LoadAll();
+
+        playbooks.Should().HaveCount(1);
+        playbooks[0].RetryOnAbort.Should().BeTrue();
+        playbooks[0].RetryAttemptLimit.Should().Be(3);
+    }
+
+    [Fact]
+    public void LoadAll_WithoutRetryKeys_DefaultsOff()
+    {
+        var playbookDir = Path.Combine(_tempDir, "stable");
+        Directory.CreateDirectory(playbookDir);
+        File.WriteAllText(Path.Combine(playbookDir, "PLAYBOOK.md"), """
+            ---
+            name: stable
+            description: Never retries
+            allowed-tools:
+              - Bash
+            ---
+
+            You are a stable playbook.
+            """);
+
+        var loader = new PlaybookLoader([_tempDir]);
+        var playbooks = loader.LoadAll();
+
+        playbooks.Should().HaveCount(1);
+        playbooks[0].RetryOnAbort.Should().BeFalse("retry-on-abort defaults off so existing playbooks are unaffected");
+        playbooks[0].RetryAttemptLimit.Should().Be(2);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempDir))

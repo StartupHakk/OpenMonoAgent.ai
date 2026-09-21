@@ -347,7 +347,7 @@ public sealed class AcpEventSinkTests
         public List<string> TextDeltas { get; } = new();
         public List<string> ThinkingDeltas { get; } = new();
         public List<(string callId, string name, string summary)> ToolStarts { get; } = new();
-        public List<(string callId, string name, bool ok, double durationMs)> ToolEnds { get; } = new();
+        public List<(string callId, string name, bool ok, double durationMs, string? reason, string? errorCode)> ToolEnds { get; } = new();
         public List<(string callId, string preview, string? artifactId)> ToolPreviews { get; } = new();
         public List<(int input, int output, int total, int contextTokens, int contextWindow)> UsageEvents { get; } = new();
         public List<(int messagesCompressed, double durationSeconds, int checkpointIndex, string? reason, int messagesBefore, int messagesAfter, int tokensBefore, int tokensAfter)> Compactions { get; } = new();
@@ -367,8 +367,8 @@ public sealed class AcpEventSinkTests
         { ToolStarts.Add((callId, name, summary)); return Task.CompletedTask; }
         public Task OnToolStatusAsync(string callId, string status)
         { ToolStatuses.Add((callId, status)); return Task.CompletedTask; }
-        public Task OnToolEndAsync(string callId, string name, bool ok, double durationMs)
-        { ToolEnds.Add((callId, name, ok, durationMs)); return Task.CompletedTask; }
+        public Task OnToolEndAsync(string callId, string name, bool ok, double durationMs, string? reason = null, string? errorCode = null)
+        { ToolEnds.Add((callId, name, ok, durationMs, reason, errorCode)); return Task.CompletedTask; }
         public Task OnCompactionStartedAsync(string reason, int promptTokens)
         { CompactionStarted.Add((reason, promptTokens)); return Task.CompletedTask; }
         public Task OnCompactionAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null, string? reason = null, int messagesBefore = 0, int messagesAfter = 0, int tokensBefore = 0, int tokensAfter = 0)
@@ -380,6 +380,7 @@ public sealed class AcpEventSinkTests
         public Task OnUsageAsync(int i, int o, int t, int ctx, int win, double genTps, double avgTps) { UsageEvents.Add((i, o, t, ctx, win)); return Task.CompletedTask; }
         public Task OnToolResultPreviewAsync(string callId, string preview, string? artifactId)
         { ToolPreviews.Add((callId, preview, artifactId)); return Task.CompletedTask; }
+        public Task OnThinkingChangedAsync(string level, bool enabled, string[] levels, string description) => Task.CompletedTask;
         public Task OnSubAgentLogAsync(string line) => Task.CompletedTask;
         public List<string> OutputTruncated { get; } = new();
         public Task OnOutputTruncatedAsync(string toolName) { OutputTruncated.Add(toolName); return Task.CompletedTask; }

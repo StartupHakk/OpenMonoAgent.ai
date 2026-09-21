@@ -21,4 +21,11 @@ public sealed class SessionMetadata
     public string? LastPlanContent { get; set; }
     /// <summary>Workspace-relative path of the most recent plan file written by CreatePlan (where it's saved).</summary>
     public string? LastPlanPath { get; set; }
+    /// <summary>
+    /// True after a playbook abort / doom-loop escalation appended a User-role stop
+    /// barrier. Cleared by the next fresh user message (<c>RunTurnAsync</c>), which
+    /// counts as acknowledgement. Lets harnesses block auto-continue until the user
+    /// has seen the escalation.
+    /// </summary>
+    public bool AwaitingEscalationAck { get; set; }
 }

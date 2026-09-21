@@ -84,6 +84,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
         "- `/mode` — toggle Plan / Build\n" +
         "- `/think` — toggle / set thinking (no arg cycles; `/think [level]` sets a level)\n" +
         "- `/compact [focus]` — summarize history to free context space\n" +
+        "- `/playbook <name> [--resume] [--key=value...]` — run a playbook directly (no LLM narration)\n" +
         "- `/help` — show this list\n\n" +
         "Also available: `/clear`, `/sessions`, `/undo`, `/redo`, `/stop`.";
 
@@ -183,6 +184,10 @@ public sealed class AcpTurnRunner : IAcpEventSink
                 }
                 return true;
 
+            case "/playbook":
+                await RunPlaybookDirectAsync(args, ct);
+                return true;
+
             default:
                 return false;
         }
@@ -190,6 +195,9 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
     private async Task SubmitUserMessageAsync(string userText, CancellationToken ct)
     {
+        // A fresh user message is genuine new direction: it acknowledges any pending
+        // escalation barrier (same rule as interactive RunTurnAsync).
+        _acpSession.State.Meta.AwaitingEscalationAck = false;
         // Ensure system prompt is set on first message
         if (_acpSession.Messages.Count == 0 || _acpSession.Messages[0].Role != MessageRole.System)
         {
@@ -225,6 +233,68 @@ public sealed class AcpTurnRunner : IAcpEventSink
         Log.Info($"[OMA_TURN] Session {_acpSession.Id} turn {_acpSession.TurnCount}: Processing message with {_acpSession.Messages.Count} total messages (first is System: {_acpSession.Messages[0].Role == MessageRole.System})");
         await DriveLoopAsync(ct);
     }
+
+    /// <summary>
+    /// Deterministic <c>/playbook &lt;name&gt; [args]</c> execution: runs the
+    /// Playbook tool directly without involving the outer LLM loop (the model still
+    /// runs inside the playbook's own steps). Emits <c>tool_start/tool_end</c> via
+    /// the normal executor path, then <c>done</c>. Permission / missing-param
+    /// pauses surface as SSE pause events and resume through the standard
+    /// <c>playbookPermission</c> / <c>user_input</c> flow.
+    /// </summary>
+    private async Task RunPlaybookDirectAsync(string args, CancellationToken ct)
+    {
+        // Explicit invocation is new direction: clear any pending escalation barrier so the
+        // fresh run's own tool calls flow. (Model-driven continuations never pass through
+        // here — only typed slash commands — so this cannot lift the block for freelancing.)
+        _acpSession.State.Meta.AwaitingEscalationAck = false;
+        var (name, playbookArgs, resume) = PlaybookArgParser.SplitCommandTail(args);
+        if (string.IsNullOrEmpty(name))
+        {
+            var available = _playbookRegistry is { All.Count: > 0 }
+                ? string.Join(", ", _playbookRegistry.All.Select(p => p.Name))
+                : "(no playbooks registered)";
+            await OnTextDeltaAsync($"Usage: `/playbook <name> [--resume] [--key=value...]`\nAvailable: {available}");
+            await _writer.WriteEventAsync("done", new { });
+            return;
+        }
+
+        if (_playbookRegistry?.Resolve(name) is null)
+        {
+            var available = _playbookRegistry is { All.Count: > 0 }
+                ? string.Join(", ", _playbookRegistry.All.Select(p => p.Name))
+                : "(no playbooks registered)";
+            await OnTextDeltaAsync($"Playbook '{name}' not found. Available: {available}");
+            await _writer.WriteEventAsync("done", new { });
+            return;
+        }
+
+        var sessionState = _acpSession.State;
+        sessionState.Meta.TokenTracker ??= new TokenTracker();
+        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction);
+        try
+        {
+            var result = await loop.ExecutePlaybookDirectAsync(name, playbookArgs, resume, ct);
+            await OnTextDeltaAsync(result.IsError
+                ? $"Playbook '{name}' failed: {TruncateForUi(result.ContentForModel, 2000)}"
+                : TruncateForUi(result.ContentForModel, 4000));
+            await _writer.WriteEventAsync("done", new { });
+        }
+        catch (PendingUserResponseException)
+        {
+            // Permission / input pause emitted its SSE event; stream stays open.
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+        }
+        catch (Exception e)
+        {
+            await _writer.WriteEventAsync("error", new { message = e.Message });
+        }
+    }
+
+    private static string TruncateForUi(string s, int max) =>
+        string.IsNullOrEmpty(s) || s.Length <= max ? s ?? "" : s[..max] + "...";
 
     public async Task ResumeWithPermissionAsync(JsonElement payload, CancellationToken ct)
     {
@@ -350,6 +420,8 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
         AppendSyntheticToolMessages(resolvedValue);
 
+        // A user_input answer is genuine user direction.
+        _acpSession.State.Meta.AwaitingEscalationAck = false;
         await DriveLoopAsync(ct);
     }
 
@@ -602,8 +674,8 @@ public sealed class AcpTurnRunner : IAcpEventSink
     public Task OnToolStatusAsync(string callId, string status)
         => _writer.WriteEventAsync("tool_status", new { id = callId, status });
 
-    public Task OnToolEndAsync(string callId, string name, bool ok, double durationMs)
-        => _writer.WriteEventAsync("tool_end", new { id = callId, name, ok, duration_ms = durationMs });
+    public Task OnToolEndAsync(string callId, string name, bool ok, double durationMs, string? reason = null, string? errorCode = null)
+        => _writer.WriteEventAsync("tool_end", new { id = callId, name, ok, duration_ms = durationMs, reason, error_code = errorCode });
 
     public Task OnToolResultPreviewAsync(string callId, string preview, string? artifactId)
         => _writer.WriteEventAsync("tool_result_preview", new
@@ -722,4 +794,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
     public Task OnOutputTruncatedAsync(string toolName)
         => _writer.WriteEventAsync("output_truncated", new { tool_name = toolName });
+
+    public Task OnEscalatedAsync(string kind, string scope, string? errorCode = null)
+        => _writer.WriteEventAsync("escalated", new { kind, scope, error_code = errorCode });
 }

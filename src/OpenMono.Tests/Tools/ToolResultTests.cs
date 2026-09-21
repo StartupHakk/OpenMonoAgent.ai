@@ -111,6 +111,16 @@ public class ToolResultTests
     }
 
     [Fact]
+    public void ContentForModel_AppendsRetryHintSoTheModelSeesIt()
+    {
+        var withHint = ToolResult.InvalidInput("preview", "try differently");
+        withHint.ContentForModel.Should().Contain("preview");
+        withHint.ContentForModel.Should().Contain("try differently");
+
+        ToolResult.Success("ok").ContentForModel.Should().Be("ok");
+    }
+
+    [Fact]
     public void SuccessWithPayload_SeparatesModelViewFromMachineData()
     {
         var payload = new { matches = new[] { "file1.cs", "file2.cs" }, total = 2 };

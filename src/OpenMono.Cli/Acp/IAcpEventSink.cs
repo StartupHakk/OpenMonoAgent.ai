@@ -12,7 +12,7 @@ public interface IAcpEventSink
 
     Task OnToolStatusAsync(string callId, string status);
 
-    Task OnToolEndAsync(string callId, string name, bool ok, double durationMs);
+    Task OnToolEndAsync(string callId, string name, bool ok, double durationMs, string? reason = null, string? errorCode = null);
 
     Task OnToolResultPreviewAsync(string callId, string preview, string? artifactId);
 
@@ -50,4 +50,9 @@ public interface IAcpEventSink
     // were dropped. The toolName identifies which call was truncated (or "unknown" if
     // no call survived). Lets the frontend show a warning banner.
     Task OnOutputTruncatedAsync(string toolName);
+
+    // Emitted when a playbook abort / doom-loop escalation ends the turn with a
+    // User-role stop barrier. Harness must surface to the user and wait for
+    // direction before sending the next turn (see SessionMetadata.AwaitingEscalationAck).
+    Task OnEscalatedAsync(string kind, string scope, string? errorCode = null) => Task.CompletedTask;
 }

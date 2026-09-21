@@ -9,7 +9,24 @@ internal sealed class DoomLoopDetector
     private const int MaxPeriod  = 4;
     private const int MaxHistory = 12;
 
-    public void Reset() => _signatures.Clear();
+    /// <summary>Signature of the most recent batch (truncated in logs by callers).</summary>
+    public string LastSignature { get; private set; } = "";
+
+    /// <summary>Number of batches currently in the window.</summary>
+    public int HistoryCount => _signatures.Count;
+
+    /// <summary>Period of the most recent detected loop, if <see cref="Check"/> fired.</summary>
+    public int? LastPeriod { get; private set; }
+
+    /// <summary>Recent signatures (oldest → newest), for diagnostics and nudge messages.</summary>
+    public IReadOnlyList<string> RecentSignatures => _signatures.AsReadOnly();
+
+    public void Reset()
+    {
+        _signatures.Clear();
+        LastSignature = "";
+        LastPeriod = null;
+    }
 
     /// <summary>Builds the canonical signature for a batch of tool calls (normalized args, stable order).</summary>
     public static string SignatureFor(List<ToolCall> calls) =>
@@ -18,6 +35,8 @@ internal sealed class DoomLoopDetector
     public bool Check(List<ToolCall> calls)
     {
         var sig = SignatureFor(calls);
+        LastSignature = sig;
+        LastPeriod = null;
         _signatures.Add(sig);
 
         if (_signatures.Count > MaxHistory)
@@ -39,7 +58,11 @@ internal sealed class DoomLoopDetector
             var isLoop = true;
             for (var i = 0; i < needed; i++)
                 if (window[i] != window[i % period]) { isLoop = false; break; }
-            if (isLoop) return true;
+            if (isLoop)
+            {
+                LastPeriod = period;
+                return true;
+            }
         }
         return false;
     }

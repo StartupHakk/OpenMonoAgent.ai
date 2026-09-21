@@ -35,6 +35,47 @@ public sealed class AcpSession
 
     public SemaphoreSlim TurnLock { get; } = new(1, 1);
 
+    private CancellationTokenSource? _turnCts;
+    private readonly object _turnCtsGate = new();
+
+    /// <summary>
+    /// Registers the <see cref="CancellationTokenSource"/> driving the active turn so
+    /// any caller (ACP <c>abort:true</c>, session delete, SSE disconnect) can cancel
+    /// it via <see cref="CancelTurn"/>. Reusable turn-wide stop: cancelling flows
+    /// through the linked LLM-stream + tool-execution tokens. Call
+    /// <see cref="ClearTurn"/> in the turn's finally block.
+    /// </summary>
+    public void RegisterTurn(CancellationTokenSource cts)
+    {
+        lock (_turnCtsGate)
+        {
+            _turnCts?.Dispose();
+            _turnCts = cts;
+        }
+    }
+
+    public void ClearTurn()
+    {
+        lock (_turnCtsGate)
+        {
+            _turnCts?.Dispose();
+            _turnCts = null;
+        }
+    }
+
+    /// <summary>
+    /// Turn-wide cancel: aborts the in-flight LLM stream + tool calls and drops any
+    /// pending permission/user-input pauses. Safe to call when no turn is active.
+    /// </summary>
+    public void CancelTurn()
+    {
+        lock (_turnCtsGate)
+        {
+            try { _turnCts?.Cancel(); } catch (ObjectDisposedException) { }
+        }
+        CancelAllPending();
+    }
+
     private readonly ConcurrentDictionary<string, PendingPause> _pending = new();
     // Permission cache: (Allow: bool, Scope: "once"|"session")
     // "once" scope = temporary grant for this tool call, forgotten after execution

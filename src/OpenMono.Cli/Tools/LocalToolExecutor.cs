@@ -365,15 +365,22 @@ public sealed class LocalToolExecutor : IToolExecutor
         stopwatch.Stop();
         if (_sink is not null)
         {
-            // Send status before tool_end
+            // Send status before tool_end. Failures carry the machine-readable
+            // error code plus a truncated reason so ACP consumers (SHS worker)
+            // can react without parsing tool output text.
             await _sink.OnToolStatusAsync(call.Id, result.IsError ? "failed" : "success");
-            await _sink.OnToolEndAsync(call.Id, call.Name, ok: !result.IsError, durationMs: stopwatch.Elapsed.TotalMilliseconds);
+            await _sink.OnToolEndAsync(call.Id, call.Name, ok: !result.IsError, durationMs: stopwatch.Elapsed.TotalMilliseconds,
+                reason: result.IsError ? TruncateReason(result.ErrorMessage) : null,
+                errorCode: result.ErrorCode);
         }
 
         await EmitLiveContextUsageAsync(force: true);
 
         return result;
     }
+
+    private static string? TruncateReason(string? message, int max = 500) =>
+        message is null ? null : (message.Length <= max ? message : message[..max] + "…");
 
     /// <summary>
     /// Emit a context-usage update for the client's context ring while tools are running.

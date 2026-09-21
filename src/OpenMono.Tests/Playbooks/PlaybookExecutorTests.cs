@@ -410,6 +410,249 @@ public class PlaybookExecutorTests : IDisposable
         public void Dispose() { }
     }
 
+    [Fact]
+    public async Task RetryOnAbort_RetriesDoomAbortInternally_ThenHardAborts()
+    {
+        // The fake model repeats the identical tool call forever; the dispatcher's doom guard
+        // escalates on the 7th identical batch (2 execute + 5 blocked: N,N,SN,SN,Escalate).
+        // With retry-on-abort + limit 2 the executor must run 3 attempts back-to-back with no
+        // model recovery turn in between, record 2 abort entries, then hard-abort.
+        const string sessionId = "sess-retry-loop";
+        var playbook = new PlaybookDefinition
+        {
+            Name = "loopy",
+            Description = "doom-loops every attempt",
+            AllowedTools = ["LoopTool"],
+            RetryOnAbort = true,
+            RetryAttemptLimit = 2,
+            Steps = [new StepDefinition { Id = "loop", InlinePrompt = "repeat the call" }],
+        };
+
+        var config = new AppConfig { WorkingDirectory = _tempDir, DataDirectory = _tempDir };
+        var renderer = new TerminalRenderer();
+        var permissions = new PermissionEngine(config, renderer, renderer);
+        var registry = new ToolRegistry();
+        registry.Register(new LoopTool());
+        var llm = new LoopLlmClient();
+        using var executor = new PlaybookExecutor(llm, registry, renderer, config, permissions);
+
+        var result = await executor.ExecuteDetailedAsync(
+            playbook, new Dictionary<string, object>(), resumeFrom: null, sessionId, CancellationToken.None);
+
+        result.Abort.Should().NotBeNull();
+        result.Abort!.ErrorCode.Should().Be(PlaybookExecutor.PlaybookAbortCodes.DoomLoopEscalated);
+        result.Abort.StepId.Should().Be("loop");
+        result.Output.Should().Contain("retry-on-abort: 2/2");
+        // 7 identical batches per attempt (escalation on the 7th), 3 attempts, and NO extra
+        // model call between abort and re-run — the retry is internal, not a recovery turn.
+        llm.Invocations.Should().Be(21);
+
+        var loaded = await PlaybookState.LoadAsync(
+            config.DataDirectory, playbook.Name, sessionId, CancellationToken.None);
+        loaded.Should().NotBeNull();
+        loaded!.Aborts.Should().HaveCount(2, "each retried attempt is recorded; the final hard abort travels in the result, not the state file");
+        loaded.Aborts[0].Attempt.Should().Be(1);
+        loaded.Aborts[1].Attempt.Should().Be(2);
+        loaded.Aborts.Should().OnlyContain(a => a.MaxAttempts == 2);
+        loaded.Aborts.Should().OnlyContain(a => a.Step == "loop");
+        loaded.Aborts.Should().OnlyContain(a => a.Code == PlaybookExecutor.PlaybookAbortCodes.DoomLoopEscalated, "the abort code threads through so harnesses can label rows correctly");
+        loaded.Aborts.Should().OnlyContain(a => !string.IsNullOrWhiteSpace(a.Pattern), "the repeating-pattern signature must travel with the abort");
+        loaded.Aborts.Should().OnlyContain(a => !string.IsNullOrWhiteSpace(a.At));
+    }
+
+    [Fact]
+    public async Task RetryOnAbort_Disabled_HardAbortsImmediately()
+    {
+        const string sessionId = "sess-no-retry";
+        var playbook = new PlaybookDefinition
+        {
+            Name = "loopy-once",
+            Description = "doom-loops, no retry configured",
+            AllowedTools = ["LoopTool"],
+            Steps = [new StepDefinition { Id = "loop", InlinePrompt = "repeat the call" }],
+        };
+
+        var config = new AppConfig { WorkingDirectory = _tempDir, DataDirectory = _tempDir };
+        var renderer = new TerminalRenderer();
+        var permissions = new PermissionEngine(config, renderer, renderer);
+        var registry = new ToolRegistry();
+        registry.Register(new LoopTool());
+        var llm = new LoopLlmClient();
+        using var executor = new PlaybookExecutor(llm, registry, renderer, config, permissions);
+
+        var result = await executor.ExecuteDetailedAsync(
+            playbook, new Dictionary<string, object>(), resumeFrom: null, sessionId, CancellationToken.None);
+
+        result.Abort.Should().NotBeNull();
+        result.Abort!.ErrorCode.Should().Be(PlaybookExecutor.PlaybookAbortCodes.DoomLoopEscalated);
+        result.Output.Should().NotContain("retry-on-abort");
+        llm.Invocations.Should().Be(7, "a single attempt escalates on the 7th identical batch with no re-run");
+    }
+
+    [Fact]
+    public async Task NonDoomAbort_NeverRetries()
+    {
+        const string sessionId = "sess-no-doom";
+        var playbook = new PlaybookDefinition
+        {
+            Name = "missing-dep",
+            Description = "fails on a missing dependency",
+            AllowedTools = ["LoopTool"],
+            RetryOnAbort = true,
+            RetryAttemptLimit = 2,
+            Steps = [new StepDefinition { Id = "step1", InlinePrompt = "do it", Requires = ["nope"] }],
+        };
+
+        var config = new AppConfig { WorkingDirectory = _tempDir, DataDirectory = _tempDir };
+        var renderer = new TerminalRenderer();
+        var permissions = new PermissionEngine(config, renderer, renderer);
+        var registry = new ToolRegistry();
+        registry.Register(new LoopTool());
+        var llm = new LoopLlmClient();
+        using var executor = new PlaybookExecutor(llm, registry, renderer, config, permissions);
+
+        var result = await executor.ExecuteDetailedAsync(
+            playbook, new Dictionary<string, object>(), resumeFrom: null, sessionId, CancellationToken.None);
+
+        result.Abort.Should().NotBeNull();
+        result.Abort!.ErrorCode.Should().Be(PlaybookExecutor.PlaybookAbortCodes.DependencyMissing);
+        llm.Invocations.Should().Be(0, "a non-doom abort never triggers the retry loop");
+    }
+
+    // A model that makes progress (a unique call every round) but never finishes: the step
+    // burns max-tool-loops each attempt, retries within budget like a doom abort, then
+    // hard-aborts with the distinct tool_loop_exhausted code.
+    [Fact]
+    public async Task ToolLoopExhausted_RetriesWithinBudget_ThenHardAborts()
+    {
+        const string sessionId = "sess-tool-loop";
+        var playbook = new PlaybookDefinition
+        {
+            Name = "busywork",
+            Description = "never finishes a step",
+            AllowedTools = ["LoopTool"],
+            MaxToolLoops = 3,
+            RetryOnAbort = true,
+            RetryAttemptLimit = 2,
+            Steps = [new StepDefinition { Id = "step1", InlinePrompt = "keep working" }],
+        };
+
+        var config = new AppConfig { WorkingDirectory = _tempDir, DataDirectory = _tempDir };
+        var renderer = new TerminalRenderer();
+        var permissions = new PermissionEngine(config, renderer, renderer);
+        var registry = new ToolRegistry();
+        registry.Register(new LoopTool());
+        var llm = new VaryingLlmClient();
+        using var executor = new PlaybookExecutor(llm, registry, renderer, config, permissions);
+
+        var result = await executor.ExecuteDetailedAsync(
+            playbook, new Dictionary<string, object>(), resumeFrom: null, sessionId, CancellationToken.None);
+
+        result.Abort.Should().NotBeNull();
+        result.Abort!.ErrorCode.Should().Be(PlaybookExecutor.PlaybookAbortCodes.ToolLoopExhausted);
+        result.Abort.StepId.Should().Be("step1");
+        result.Output.Should().Contain(PlaybookExecutor.ToolLoopExhaustedMarker);
+        result.Output.Should().Contain("retry-on-abort: 2/2");
+        llm.Invocations.Should().Be(9, "3 tool-loop rounds per attempt × 3 attempts (initial + 2 re-runs), then escalate");
+
+        var loaded = await PlaybookState.LoadAsync(
+            config.DataDirectory, playbook.Name, sessionId, CancellationToken.None);
+        loaded.Should().NotBeNull();
+        loaded!.Aborts.Should().HaveCount(2, "each retried attempt is recorded");
+        loaded.Aborts.Should().OnlyContain(a => a.Code == PlaybookExecutor.PlaybookAbortCodes.ToolLoopExhausted);
+    }
+
+    [Fact]
+    public async Task ToolLoopExhausted_Disabled_HardAbortsImmediately()
+    {
+        const string sessionId = "sess-tool-loop-once";
+        var playbook = new PlaybookDefinition
+        {
+            Name = "busywork-once",
+            Description = "never finishes a step, no retry configured",
+            AllowedTools = ["LoopTool"],
+            MaxToolLoops = 3,
+            Steps = [new StepDefinition { Id = "step1", InlinePrompt = "keep working" }],
+        };
+
+        var config = new AppConfig { WorkingDirectory = _tempDir, DataDirectory = _tempDir };
+        var renderer = new TerminalRenderer();
+        var permissions = new PermissionEngine(config, renderer, renderer);
+        var registry = new ToolRegistry();
+        registry.Register(new LoopTool());
+        var llm = new VaryingLlmClient();
+        using var executor = new PlaybookExecutor(llm, registry, renderer, config, permissions);
+
+        var result = await executor.ExecuteDetailedAsync(
+            playbook, new Dictionary<string, object>(), resumeFrom: null, sessionId, CancellationToken.None);
+
+        result.Abort.Should().NotBeNull();
+        result.Abort!.ErrorCode.Should().Be(PlaybookExecutor.PlaybookAbortCodes.ToolLoopExhausted);
+        result.Output.Should().NotContain("retry-on-abort");
+        llm.Invocations.Should().Be(3, "a single attempt burns the budget with no re-run");
+    }
+
+    // Emits a unique tool call every round so the doom-loop guard never fires — isolates the
+    // tool-loop budget from the doom-loop budget.
+    private sealed class VaryingLlmClient : ILlmClient
+    {
+        public int Invocations { get; private set; }
+
+        public async IAsyncEnumerable<StreamChunk> StreamChatAsync(
+            IReadOnlyList<Message> messages,
+            JsonElement? tools,
+            LlmOptions options,
+            [EnumeratorCancellation] CancellationToken ct)
+        {
+            Invocations++;
+            yield return new StreamChunk
+            {
+                ToolCallDelta = new ToolCall { Id = $"t{Invocations}", Name = "LoopTool", Arguments = $"{{\"n\":{Invocations}}}" },
+                IsComplete = true,
+            };
+            await Task.CompletedTask;
+        }
+
+        public void Dispose() { }
+    }
+
+    // Always emits the identical tool call so the dispatcher's doom-loop guard escalates.
+    private sealed class LoopLlmClient : ILlmClient
+    {
+        public int Invocations { get; private set; }
+
+        public async IAsyncEnumerable<StreamChunk> StreamChatAsync(
+            IReadOnlyList<Message> messages,
+            JsonElement? tools,
+            LlmOptions options,
+            [EnumeratorCancellation] CancellationToken ct)
+        {
+            Invocations++;
+            yield return new StreamChunk
+            {
+                ToolCallDelta = new ToolCall { Id = "t1", Name = "LoopTool", Arguments = "{}" },
+                IsComplete = true,
+            };
+            await Task.CompletedTask;
+        }
+
+        public void Dispose() { }
+    }
+
+    private sealed class LoopTool : ToolBase
+    {
+        public override string Name => "LoopTool";
+        public override string Description => "test";
+        public override bool IsReadOnly => true;
+        public override bool IsConcurrencySafe => true;
+        public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;
+
+        protected override SchemaBuilder DefineSchema() => new();
+
+        protected override Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct) =>
+            Task.FromResult(ToolResult.Success("ran"));
+    }
+
     private sealed class ImmediateLlmClient : ILlmClient
     {
         public async IAsyncEnumerable<StreamChunk> StreamChatAsync(
