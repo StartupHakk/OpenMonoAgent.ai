@@ -107,6 +107,11 @@ services:
       - ${HOME}/.openmono:/home/agent/.openmono
       - ${HOME}/.code-review-graph:/home/agent/.code-review-graph
       - ../ref:/ref:ro
+      # Server ops (optional): to let the agent run `docker` / `docker compose`
+      # against the host daemon (deploy + troubleshoot containerized backends),
+      # `openmono agent` bind-mounts /var/run/docker.sock automatically when it
+      # exists. If you invoke compose directly, add it yourself:
+      #   - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - HOME=/home/agent
       - OPENMONO_ENDPOINT=${OPENMONO_ENDPOINT:-http://llama-server:7474}

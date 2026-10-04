@@ -715,9 +715,19 @@ public sealed class ConversationLoop : IDisposable
                     continue;
                 }
             }
-            else
+            else if (assistantMsg.Content is not null || assistantMsg.ToolCalls is { Count: > 0 })
             {
                 _session.AddMessage(assistantMsg);
+            }
+            else
+            {
+                // Never store an assistant message with neither text nor tool
+                // calls: providers reject it with a 400 on the NEXT request
+                // ("must contain either content or tool_calls"), which surfaces
+                // as a mysterious turn error one turn later. The per-request
+                // sanitizer drops any already stored, so old sessions heal too.
+                Log.Warn("[OMA_LLM] Skipping empty assistant message (no text, no tool calls) — " +
+                    $"not storing it (thinking chars held: {thinkingBuffer.Length}).");
             }
 
             if (toolCalls.Count == 0)

@@ -1,0 +1,6 @@
+{
+  "llm": {
+    "endpoint": "http://<INFERENCE_HOST>:7474",
+    "api_key": "<LLAMA_API_KEY>"
+  }
+}

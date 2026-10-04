@@ -256,6 +256,10 @@ The full agent loop in your editor sidebar — streaming responses, live Markdow
     <td style="padding:9px 16px;border-bottom:1px solid #1A1A1A;"><sub style="color:#C8C8C0;">Daily commands, TUI vs classic, flags</sub></td>
   </tr>
   <tr>
+    <td style="padding:9px 16px;border-bottom:1px solid #1A1A1A;border-right:1px solid #232323;"><a href="docs/DEPLOYMENT-MODES.md"><code style="font-size:12px;">Deployment modes</code></a></td>
+    <td style="padding:9px 16px;border-bottom:1px solid #1A1A1A;"><sub style="color:#C8C8C0;">Single-box vs split-box, server-ops runbook</sub></td>
+  </tr>
+  <tr>
     <td style="padding:9px 16px;border-bottom:1px solid #1A1A1A;border-right:1px solid #232323;"><a href="docs/ARCHITECTURE.md"><code style="font-size:12px;">Architecture</code></a></td>
     <td style="padding:9px 16px;border-bottom:1px solid #1A1A1A;"><sub style="color:#C8C8C0;">.NET CLI + llama.cpp + Docker, full diagram</sub></td>
   </tr>

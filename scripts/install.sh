@@ -784,6 +784,50 @@ if [ "$OPENMONO_ROLE" != "inference" ]; then
     if ! run docker compose build agent; then
         die "agent build failed"
     fi
+
+    # Optional add-on (agent roles only — never inference): the bare-metal host
+    # sub-agent. It drives this box's in-container agent over ACP and executes
+    # host commands (pull, build, install, redeploy, troubleshoot). Default is
+    # No so a normal coding install is unchanged. Deliberately outside the
+    # step counter so TOTAL_STEPS stays valid for every role.
+    case "$OPENMONO_ROLE" in
+        full|agent)
+            _bridge_answer="${OPENMONO_HOST_BRIDGE:-}"
+            if [[ -z "$_bridge_answer" ]]; then
+                if [[ ! -t 0 ]]; then
+                    info "Skipping host sub-agent (non-interactive). Add it later with:"
+                    info "  OPENMONO_HOST_BRIDGE=1 bash scripts/install.sh  # or: bash scripts/install-host-bridge.sh"
+                else
+                    echo ""
+                    echo "  ── Optional: bare-metal server sub-agent ─────────────────"
+                    echo "  A .NET helper that talks to this box's in-container agent over"
+                    echo "  ACP and runs host commands (pull, build, install, redeploy,"
+                    echo "  troubleshoot). For server boxes; coding installs don't need it."
+                    echo "  (Its installer then asks which user to run as and whether"
+                    echo "  sudo is allowed — sudo stays off unless you say yes.)"
+                    echo ""
+                    printf "  Install the host sub-agent? [y/N] "
+                    read -r _bridge_answer || _bridge_answer=""
+                    echo ""
+                fi
+            fi
+            case "${_bridge_answer:-}" in
+                1|[Yy]|[Yy]es)
+                    info "Installing host sub-agent..."
+                    if bash "$SCRIPT_DIR/install-host-bridge.sh"; then
+                        ok "Host sub-agent installed"
+                        export OPENMONO_HOST_BRIDGE=1
+                    else
+                        warn "Host sub-agent install failed — container agent still works; retry: bash scripts/install-host-bridge.sh"
+                        export OPENMONO_HOST_BRIDGE=0
+                    fi
+                    ;;
+                *)
+                    export OPENMONO_HOST_BRIDGE=0
+                    ;;
+            esac
+            ;;
+    esac
 fi
 
 ok "Docker images built"
@@ -879,6 +923,7 @@ export INSTALL_DIR="$INSTALL_DIR"
 export LLAMA_PORT="${LLAMA_PORT:-7474}"
 export GPU_MODE="${GPU_MODE:-0}"
 export OPENMONO_ROLE="$OPENMONO_ROLE"
+export OPENMONO_HOST_BRIDGE="${OPENMONO_HOST_BRIDGE:-0}"
 export MODEL_NAME="${MODEL_NAME:-}"
 export MODEL_ACCURACY="${MODEL_ACCURACY:-standard}"
 ENVEOF
