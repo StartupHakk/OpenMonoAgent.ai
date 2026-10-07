@@ -10,6 +10,7 @@ public sealed class ProviderRegistry
     {
 
         Register(new LocalLlamaProvider());
+        Register(new StrataProvider());
         Register(new OpenAiProvider());
         Register(new AnthropicProvider());
         Register(new OllamaProvider());
@@ -65,6 +66,33 @@ internal sealed class LocalLlamaProvider : IProvider
         {
             Endpoint = config.Endpoint ?? "http://localhost:7474",
             Model = config.Model ?? "",
+        }) { ApiKey = config.ApiKey };
+
+    public bool ValidateConfig(ProviderConfig config, out string? error)
+    {
+        error = null;
+        return true;
+    }
+}
+
+/// <summary>
+/// Strata backend (Linux): Qwen3.8-Flash-Next served host-native by upstream
+/// Strata (https://github.com/Niko1221/Strata, MIT) at :8080/v1. Strata
+/// accepts any API key (unless --api-key was set at its setup) and any model
+/// name. Managed via scripts/strata.sh; see docs/STRATA.md.
+/// </summary>
+internal sealed class StrataProvider : IProvider
+{
+    public const string DefaultEndpoint = "http://localhost:8080/v1";
+
+    public string Name => "strata";
+    public string[] SupportedModels => ["Qwen3.8-Flash-Next"];
+
+    public ILlmClient CreateClient(ProviderConfig config) =>
+        new OpenAiCompatClient(new LlmConfig
+        {
+            Endpoint = config.Endpoint ?? DefaultEndpoint,
+            Model = config.Model ?? "Qwen3.8-Flash-Next",
         }) { ApiKey = config.ApiKey };
 
     public bool ValidateConfig(ProviderConfig config, out string? error)

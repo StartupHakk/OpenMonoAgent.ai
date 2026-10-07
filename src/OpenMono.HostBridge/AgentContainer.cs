@@ -240,12 +240,29 @@ public sealed class AgentContainer
         args.Append("-e GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes\" ");
     }
 
-    internal static string MapEndpoint(string endpoint) =>
-        endpoint.StartsWith("http://localhost:", StringComparison.OrdinalIgnoreCase) ||
-        endpoint.StartsWith("http://127.0.0.1:", StringComparison.OrdinalIgnoreCase) ||
-        endpoint.StartsWith("http://host.docker.internal:", StringComparison.OrdinalIgnoreCase)
-            ? "http://llama-server:7474"
-            : endpoint;
+    internal static string MapEndpoint(string endpoint)
+    {
+        // Strata-style endpoints carry the OpenAI base path (/v1) and serve
+        // host-native (Linux default, see docs/STRATA.md). Inside the agent
+        // container, loopback must become the host gateway — preserving the
+        // port and path so :8080/v1 (or a custom --port) keeps working.
+        if (Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) &&
+            (uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+             uri.Host.Equals("127.0.0.1", StringComparison.Ordinal) ||
+             uri.Host.Equals("host.docker.internal", StringComparison.OrdinalIgnoreCase)) &&
+            uri.AbsolutePath.StartsWith("/v1", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"http://host.docker.internal:{(uri.Port == -1 ? 80 : uri.Port)}{uri.PathAndQuery}";
+        }
+
+        // Legacy llama.cpp Docker path (no base path): the container reaches
+        // the llama-server service directly.
+        return endpoint.StartsWith("http://localhost:", StringComparison.OrdinalIgnoreCase) ||
+            endpoint.StartsWith("http://127.0.0.1:", StringComparison.OrdinalIgnoreCase) ||
+            endpoint.StartsWith("http://host.docker.internal:", StringComparison.OrdinalIgnoreCase)
+                ? "http://llama-server:7474"
+                : endpoint;
+    }
 
     internal static string MapGateway(string gateway) =>
         string.IsNullOrWhiteSpace(gateway)

@@ -526,6 +526,21 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
             body["chat_template_kwargs"] = kwargs;
         }
 
+        // Strata (Qwen3.8-Flash-Next, see docs/STRATA.md) honors a top-level
+        // "reasoning_effort" (none|low|medium|high) instead of
+        // chat_template_kwargs. llama.cpp ignores unknown top-level fields, so
+        // sending both keeps one client working on either backend.
+        if (options.EnableThinking.HasValue || options.ReasoningEffort is { Length: > 0 })
+        {
+            var effort = !string.IsNullOrEmpty(options.ReasoningEffort)
+                ? options.ReasoningEffort
+                : options.EnableThinking.Value ? "medium" : "none";
+            // Strata has no xhigh level — clamp to its documented max.
+            if (string.Equals(effort, "xhigh", StringComparison.OrdinalIgnoreCase))
+                effort = "high";
+            body["reasoning_effort"] = effort;
+        }
+
         if (tools.HasValue && tools.Value.ValueKind == JsonValueKind.Array &&
             tools.Value.GetArrayLength() > 0)
         {
