@@ -43,10 +43,16 @@ services:
       start_period: 30s
 
   # ── Inference-side web services (optional, opt-in per service) ──────────────
-  # Caddy is the single front door tunneled by frpc. It path-routes to llama
-  # (pass-through), SearXNG (/search) and Scrapling (/scrape), enforcing the
-  # shared LLAMA_API_KEY bearer on the two services that have no auth of their
-  # own. It starts whenever either the `search` or `scraper` profile is active.
+  # Caddy is the single front door tunneled by frpc. It path-routes to the
+  # inference backend (pass-through), SearXNG (/search) and Scrapling (/scrape),
+  # enforcing the shared LLAMA_API_KEY bearer on the two services that have no
+  # auth of their own. It starts whenever either the `search` or `scraper`
+  # profile is active.
+  #
+  # Strata backend (Linux default, see docs/STRATA.md): Strata serves
+  # host-native on 127.0.0.1:8080, so apply docker-compose.strata.yml to
+  # repoint LLAMA_UPSTREAM at host.docker.internal:8080. No llama-server
+  # container is started in that mode.
   caddy:
     image: caddy:2-alpine
     container_name: openmono-gateway

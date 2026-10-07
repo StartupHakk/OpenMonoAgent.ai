@@ -8,9 +8,26 @@ NC='\033[0m'
 echo "OpenMono.ai Health Check"
 echo "========================"
 
-# Check llama-server
-echo -n "llama-server (localhost:7474): "
-if curl -sf http://localhost:7474/health &>/dev/null; then
+# Backend-aware endpoints: Strata serves host-native :8080/v1 (Linux default),
+# the legacy llama.cpp path serves :7474. Marker lives in docker/.env.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/../docker/.env"
+BACKEND="$(grep '^INFERENCE_BACKEND=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true)"
+if [[ "$BACKEND" == "strata" ]] || [[ -z "$BACKEND" && -f "$HOME/.openmono/strata.env" ]]; then
+    BACKEND="strata"
+    PORT="$(grep '^STRATA_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true)"
+    PORT="${PORT:-8080}"
+    LABEL="strata"
+else
+    BACKEND="llama"
+    PORT="$(grep '^LLAMA_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true)"
+    PORT="${PORT:-7474}"
+    LABEL="llama-server"
+fi
+
+# Check inference backend
+echo -n "$LABEL (localhost:$PORT): "
+if curl -sf "http://localhost:$PORT/health" &>/dev/null; then
     echo -e "${GREEN}HEALTHY${NC}"
 else
     echo -e "${RED}UNREACHABLE${NC}"
@@ -24,18 +41,23 @@ docker compose -f "$(dirname "$0")/../docker/docker-compose.yml" ps 2>/dev/null 
 # Check model actually loaded in the running server
 echo ""
 echo -n "Model loaded: "
-PROPS=$(curl -sf http://localhost:7474/props 2>/dev/null)
-if [ -n "$PROPS" ]; then
-    # Prefer model_alias (set by --alias flag), fall back to model_path basename
-    MODEL_NAME=$(echo "$PROPS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('model_alias') or d.get('model_path','').split('/')[-1].replace('.gguf','') or '')" 2>/dev/null)
-    if [ -n "$MODEL_NAME" ]; then
-        echo -e "${GREEN}${MODEL_NAME}${NC}"
+if [[ "$BACKEND" == "llama" ]]; then
+    PROPS=$(curl -sf "http://localhost:$PORT/props" 2>/dev/null)
+    if [ -n "$PROPS" ]; then
+        # Prefer model_alias (set by --alias flag), fall back to model_path basename
+        MODEL_NAME=$(echo "$PROPS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('model_alias') or d.get('model_path','').split('/')[-1].replace('.gguf','') or '')" 2>/dev/null)
+        if [ -n "$MODEL_NAME" ]; then
+            echo -e "${GREEN}${MODEL_NAME}${NC}"
+        else
+            echo -e "${GREEN}Loaded${NC} (model name not in /props response)"
+        fi
     else
-        echo -e "${GREEN}Loaded${NC} (model name not in /props response)"
+        MODELS=""
     fi
-else
-    # Fallback: OpenAI-compatible /v1/models endpoint (local only)
-    MODELS=$(curl -sf http://localhost:7474/v1/models 2>/dev/null)
+fi
+if [[ "$BACKEND" == "strata" ]] || [[ -z "${MODEL_NAME:-}" && -z "${PROPS:-}" ]]; then
+    # OpenAI-compatible /v1/models endpoint (both backends serve it)
+    MODELS=$(curl -sf "http://localhost:$PORT/v1/models" 2>/dev/null || true)
     if [ -n "$MODELS" ]; then
         MODEL_NAME=$(echo "$MODELS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['data'][0]['id'] if d.get('data') else '')" 2>/dev/null)
         if [ -n "$MODEL_NAME" ]; then

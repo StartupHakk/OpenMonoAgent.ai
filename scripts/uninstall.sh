@@ -391,6 +391,7 @@ printf "  ${BOLD}Will remove:${NC}\n"
 printf "    • /usr/local/bin/openmono symlink (if writable)\n"
 printf "    • frp tunnel — frpc service, binary/package, and config (from 'openmono tunnel setup')\n"
 printf "    • \$HOME/.openmono/ (prefs, graph-db, logs, env)\n"
+printf "    • Running Strata server is stopped (its ~/strata clone + model data stay — remove manually)\n"
 printf "    • Power profile reset to 'balanced' (if powerprofilesctl is present)\n"
 printf "    • .NET PATH/DOTNET_ROOT block from your shell rc files\n"
 if [ "$DEEP" = "1" ]; then
@@ -568,6 +569,18 @@ else
 fi
 
 # ── Step 7: Remove $HOME/.openmono/ ──────────────────────────────────────────
+
+# Strata backend: stop the host-native server first (it runs outside Docker),
+# then remove OpenMono's Strata state (strata.env/pid/log). The upstream clone
+# (~/strata) and its model data are left in place — removal is a manual,
+# explicit `rm -rf` so a ~70 GB re-download is never a surprise.
+if [ -f "$INSTALL_DIR/scripts/strata.sh" ]; then
+    STRATA_PORT="$(grep '^STRATA_PORT=' "$INSTALL_DIR/docker/.env" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true)"
+    if curl -sf "http://127.0.0.1:${STRATA_PORT:-8080}/health" &>/dev/null; then
+        info "Stopping Strata inference server..."
+        bash "$INSTALL_DIR/scripts/strata.sh" stop || warn "Strata stop hit an issue — stop it manually (see docs/STRATA.md)"
+    fi
+fi
 
 next_step "Removing $HOME/.openmono/ state"
 
