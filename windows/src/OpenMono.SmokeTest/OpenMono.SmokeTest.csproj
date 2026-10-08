@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>OpenMono.Windows.SmokeTest</RootNamespace>
+    <AssemblyName>OpenMono.Windows.SmokeTest</AssemblyName>
+    <Description>Headless CI smoke test: supervisor health gating against a stub OpenAI-compatible server.</Description>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenMono.Supervisor\OpenMono.Supervisor.csproj" />
+    <ProjectReference Include="..\OpenMono.Models\OpenMono.Models.csproj" />
+    <ProjectReference Include="..\OpenMono.Hardware\OpenMono.Hardware.csproj" />
+  </ItemGroup>
+
+</Project>

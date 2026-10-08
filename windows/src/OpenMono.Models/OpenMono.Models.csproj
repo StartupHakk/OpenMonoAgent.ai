@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>OpenMono.Windows.Models</RootNamespace>
+    <AssemblyName>OpenMono.Windows.Models</AssemblyName>
+    <Description>Model registry and resumable GGUF downloader for OpenMono on Windows.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="models.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

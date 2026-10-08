@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>OpenMono.Windows.AgentHost</RootNamespace>
+    <AssemblyName>OpenMono.Windows.AgentHost</AssemblyName>
+    <Description>In-process agent host with Windows tool overrides for OpenMono on Windows.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\OpenMono.Cli\OpenMono.Cli.csproj" />
+    <ProjectReference Include="..\OpenMono.Hardware\OpenMono.Hardware.csproj" />
+    <ProjectReference Include="..\OpenMono.Models\OpenMono.Models.csproj" />
+    <ProjectReference Include="..\OpenMono.Supervisor\OpenMono.Supervisor.csproj" />
+  </ItemGroup>
+
+</Project>

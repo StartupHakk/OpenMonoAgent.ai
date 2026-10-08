@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>OpenMono.Windows.Supervisor</RootNamespace>
+    <AssemblyName>OpenMono.Windows.Supervisor</AssemblyName>
+    <Description>Native process supervisor for llama-server and the Docker services stack on Windows.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenMono.Hardware\OpenMono.Hardware.csproj" />
+    <ProjectReference Include="..\OpenMono.Models\OpenMono.Models.csproj" />
+  </ItemGroup>
+
+</Project>

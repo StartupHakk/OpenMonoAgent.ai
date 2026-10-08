@@ -1,0 +1,25 @@
+<Page
+    x:Class="OpenMono.Windows.Desktop.Views.WizardPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <ScrollViewer>
+        <StackPanel Padding="24" Spacing="10" MaxWidth="720">
+            <TextBlock Text="Welcome to OpenMono" FontSize="28" FontWeight="SemiBold"/>
+            <TextBlock x:Name="Intro" TextWrapping="Wrap"
+                Text="Local, private, zero token cost after setup. This wizard checks hardware, picks a model, downloads it, and starts OpenMono."/>
+            <TextBlock Text="1. Hardware" FontSize="18" FontWeight="SemiBold"/>
+            <TextBlock x:Name="HardwareText" TextWrapping="Wrap" Text="Checking..."/>
+            <TextBlock Text="2. Recommended model" FontSize="18" FontWeight="SemiBold"/>
+            <TextBlock x:Name="ModelText" TextWrapping="Wrap"/>
+            <TextBlock Text="3. Docker web services (optional, skippable)" FontSize="18" FontWeight="SemiBold"/>
+            <TextBlock x:Name="DockerText" TextWrapping="Wrap" Text="Checking Docker Desktop..."/>
+            <TextBlock Text="Without Docker, web search falls back to built in DuckDuckGo and web fetch uses direct HTTP. You can enable Docker later in Settings." TextWrapping="Wrap" Opacity="0.7"/>
+            <ProgressBar x:Name="Progress" Minimum="0" Maximum="100"/>
+            <TextBlock x:Name="ProgressText" TextWrapping="Wrap"/>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Content="Download and start" Click="Start_Click"/>
+                <Button Content="Skip Docker" Click="SkipDocker_Click"/>
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>OpenMono.Windows.Desktop</RootNamespace>
+    <AssemblyName>OpenMono</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <UseWinUI>true</UseWinUI>
+    <!-- Unpackaged classic installer app (Inno Setup ships the exe). Not MSIX. -->
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <Description>OpenMono for Windows: local agent desktop with bundled inference.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.7.250606001" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenMono.Hardware\OpenMono.Hardware.csproj" />
+    <ProjectReference Include="..\OpenMono.Models\OpenMono.Models.csproj" />
+    <ProjectReference Include="..\OpenMono.Supervisor\OpenMono.Supervisor.csproj" />
+    <ProjectReference Include="..\OpenMono.AgentHost\OpenMono.AgentHost.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>OpenMono.Windows.Hardware</RootNamespace>
+    <AssemblyName>OpenMono.Windows.Hardware</AssemblyName>
+    <Description>Hardware detection (GPU, RAM, disk) and inference tier selection for OpenMono on Windows.</Description>
+  </PropertyGroup>
+
+</Project>

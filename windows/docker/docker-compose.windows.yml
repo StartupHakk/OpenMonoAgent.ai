@@ -1,0 +1,27 @@
+# Windows specific compose override. Used TOGETHER with the existing
+# docker/docker-compose.yml by reference (never edited). On Windows:
+# - llama-server runs NATIVE (official llama.cpp Windows builds) for direct GPU
+#   access on 127.0.0.1:7474, so the containerized llama-server must not start.
+# - The containerized agent must not start either (the agent is in process).
+# - Caddy upstream points at the native server via host.docker.internal.
+# Start with: docker compose -f docker/docker-compose.yml
+#   -f windows/docker/docker-compose.windows.yml --profile full up -d caddy searxng scrapling
+
+services:
+  llama-server:
+    profiles: ["never-start-on-windows"]
+    restart: "no"
+
+  agent:
+    profiles: ["never-start-on-windows"]
+    restart: "no"
+
+  caddy:
+    environment:
+      - LLAMA_UPSTREAM=host.docker.internal:${LLAMA_PORT:-7474}
+      - SEARXNG_UPSTREAM=searxng:8080
+      - SCRAPLING_UPSTREAM=scrapling:5000
+      - WEB_SEARCH_ENABLED=${WEB_SEARCH_ENABLED:-true}
+      - WEB_SCRAPE_ENABLED=${WEB_SCRAPE_ENABLED:-true}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

@@ -1,0 +1,22 @@
+<Page
+    x:Class="OpenMono.Windows.Desktop.Views.ModelsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <StackPanel Padding="16" Spacing="8">
+        <TextBlock Text="Models" FontSize="24" FontWeight="SemiBold"/>
+        <TextBlock x:Name="Recommendation" TextWrapping="Wrap"/>
+        <ListView x:Name="TierList" SelectionMode="Single" SelectionChanged="TierList_SelectionChanged">
+            <ListView.ItemTemplate>
+                <DataTemplate>
+                    <TextBlock Text="{Binding}" TextWrapping="Wrap"/>
+                </DataTemplate>
+            </ListView.ItemTemplate>
+        </ListView>
+        <ProgressBar x:Name="Progress" Minimum="0" Maximum="100" />
+        <TextBlock x:Name="ProgressText" TextWrapping="Wrap"/>
+        <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button Content="Download selected" Click="Download_Click"/>
+            <Button Content="Use custom .gguf" Click="Custom_Click"/>
+        </StackPanel>
+    </StackPanel>
+</Page>

@@ -1,0 +1,19 @@
+<Page
+    x:Class="OpenMono.Windows.Desktop.Views.ServerPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <StackPanel Padding="16" Spacing="8">
+        <TextBlock Text="Server" FontSize="24" FontWeight="SemiBold"/>
+        <TextBlock x:Name="StatusLine" Text="Stopped." TextWrapping="Wrap"/>
+        <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button Content="Start" Click="Start_Click"/>
+            <Button Content="Stop" Click="Stop_Click"/>
+            <Button Content="Restart" Click="Restart_Click"/>
+            <Button Content="Copy diagnostics" Click="Diag_Click"/>
+        </StackPanel>
+        <TextBlock Text="Logs" FontWeight="SemiBold"/>
+        <ScrollViewer Height="320">
+            <TextBlock x:Name="Logs" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>
+        </ScrollViewer>
+    </StackPanel>
+</Page>

@@ -1,0 +1,93 @@
+{
+  "$comment": "Inference tiers mirrored exactly from scripts/install.sh select_model. Do not reinterpret tiers here; update both files together.",
+  "ctx": {
+    "ctx_24g": 196608,
+    "ctx_16g": 180224,
+    "ctx_12g": 196608,
+    "ctx_cpu": 196608,
+    "ctx_vision": 172032,
+    "ctx_vision_16g": 98304
+  },
+  "kvCache": {
+    "tier24": { "k": "q8_0", "v": "q8_0" },
+    "tier16": { "k": "q4_0", "v": "q4_0" },
+    "tier12": { "k": "q4_0", "v": "q4_0" },
+    "cpu": { "k": "q8_0", "v": "q8_0" }
+  },
+  "tiers": [
+    {
+      "tier": 24,
+      "label": "Qwen3.8-27B-UD-Q4_K_M (~15GB) [GPU 24GB+, full accuracy]",
+      "modelName": "Qwen3.8-27B-UD-Q4_K_M.gguf",
+      "modelUrl": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf",
+      "modelBytes": 16106127360,
+      "accuracy": "full",
+      "mmproj": "mmproj-qwen3.8-27B-F16.gguf",
+      "mmprojUrl": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf",
+      "mmprojBytes": 943718400,
+      "ctxSize": 196608,
+      "ctxSizeVision": 172032,
+      "sha256": "",
+      "mmprojSha256": ""
+    },
+    {
+      "tier": 16,
+      "label": "Qwen3.8-27B-UD-IQ3_XXS (~12GB) [GPU 16GB, lower accuracy]",
+      "modelName": "Qwen3.8-27B-UD-IQ3_XXS.gguf",
+      "modelUrl": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-IQ3_XXS.gguf",
+      "modelBytes": 12884901888,
+      "accuracy": "lower",
+      "mmproj": "mmproj-qwen3.8-27B-F16.gguf",
+      "mmprojUrl": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf",
+      "mmprojBytes": 943718400,
+      "ctxSize": 180224,
+      "ctxSizeVision": 98304,
+      "sha256": "",
+      "mmprojSha256": ""
+    },
+    {
+      "tier": 12,
+      "label": "Qwen3.5-9B-UD-Q4_K_XL (~5GB) [GPU 12GB, lower accuracy]",
+      "modelName": "Qwen3.5-9B-UD-Q4_K_XL.gguf",
+      "modelUrl": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q4_K_XL.gguf",
+      "modelBytes": 5368709120,
+      "accuracy": "lower",
+      "mmproj": "mmproj-qwen3.5-9B-F16.gguf",
+      "mmprojUrl": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/mmproj-F16.gguf",
+      "mmprojBytes": 943718400,
+      "ctxSize": 196608,
+      "ctxSizeVision": 98304,
+      "sha256": "",
+      "mmprojSha256": ""
+    },
+    {
+      "tier": 0,
+      "label": "Qwen3.6-35B-A3B (~17.6GB) [CPU]",
+      "modelName": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+      "modelUrl": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+      "modelBytes": 18897856102,
+      "accuracy": "standard",
+      "mmproj": "mmproj-qwen3.6-35B-A3B-F16.gguf",
+      "mmprojUrl": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/mmproj-F16.gguf",
+      "mmprojBytes": 943718400,
+      "ctxSize": 196608,
+      "ctxSizeVision": 172032,
+      "sha256": "",
+      "mmprojSha256": ""
+    }
+  ],
+  "llamaServer": {
+    "version": "b9070",
+    "cudaUrl": "https://github.com/ggml-org/llama.cpp/releases/download/b9070/llama-b9070-bin-win-cuda-12.4-x64.zip",
+    "vulkanUrl": "https://github.com/ggml-org/llama.cpp/releases/download/b9070/llama-b9070-bin-win-vulkan-x64.zip",
+    "cpuUrl": "https://github.com/ggml-org/llama.cpp/releases/download/b9070/llama-b9070-bin-win-avx2-x64.zip",
+    "cudaSha256": "",
+    "vulkanSha256": "",
+    "cpuSha256": ""
+  },
+  "ripgrep": {
+    "version": "14.1.1",
+    "url": "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-pc-windows-msvc.zip",
+    "sha256": ""
+  }
+}
