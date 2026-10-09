@@ -1,6 +1,4 @@
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Formats.Jpeg;
-using SixLabors.ImageSharp.Processing;
+using SkiaSharp;
 
 namespace OpenMono.Utils;
 
@@ -19,18 +17,30 @@ public static class ImageUtils
 
     public static (byte[] bytes, string mime) SmartResize(byte[] raw, string origMime)
     {
-        using var img = Image.Load(raw);
-        long pixels = (long)img.Width * img.Height;
+        SKBitmap? src;
+        try
+        {
+            src = SKBitmap.Decode(raw);
+        }
+        catch
+        {
+            // Undecodable bytes (corrupt/unsupported): pass through untouched,
+            // mirroring the old ImageSharp behaviour where Image.Load returned null.
+            return (raw, origMime);
+        }
+        if (src == null)
+            return (raw, origMime);
+
+        long pixels = (long)src.Width * src.Height;
         if (pixels <= MaxPixels)
             return (raw, origMime);
 
         double scale = Math.Sqrt((double)MaxPixels / pixels);
-        int newW = Math.Max(32, (int)(Math.Round(img.Width  * scale / 32.0) * 32));
-        int newH = Math.Max(32, (int)(Math.Round(img.Height * scale / 32.0) * 32));
+        int newW = Math.Max(32, (int)(Math.Round(src.Width  * scale / 32.0) * 32));
+        int newH = Math.Max(32, (int)(Math.Round(src.Height * scale / 32.0) * 32));
 
-        img.Mutate(x => x.Resize(newW, newH));
-        using var ms = new MemoryStream();
-        img.SaveAsJpeg(ms, new JpegEncoder { Quality = 90 });
-        return (ms.ToArray(), "image/jpeg");
+        using var resized = src.Resize(new SKImageInfo(newW, newH), new SKSamplingOptions(SKFilterMode.Linear));
+        using var data = resized.Encode(SKEncodedImageFormat.Jpeg, 90);
+        return (data.ToArray(), "image/jpeg");
     }
 }
