@@ -133,7 +133,7 @@ No project links OMA source files with `<Compile Include>`. Types that are publi
 
 ## 3. Ordered work breakdown
 
-Estimates are focused engineering days for one person who already knows the repo. They are sizing, not a calendar. Dependencies are listed on each task. A task starts when its dependencies are merged to `Windows`.
+Estimates are focused engineering days for one person who already knows the repo. They are sizing, not a calendar. Dependencies are listed on each task. A task starts when its dependencies are merged to `Windows`. Do not compress runs 11 through 15 against the hardware matrix: WinUI polish, Vulkan variance across AMD and Intel, and matrix fallout (M3.5) are the likely overruns.
 
 ### M1. Installable app that can chat against native llama-server
 
@@ -164,7 +164,7 @@ Work: delete the reflection scan. Register tools in the same order as `Program.c
 
 Build the system prompt in `WindowsPromptBuilder` because `OpenMono.Utils.SystemPrompt` is internal. Compose, in this order: a snapshot of the base prompt text (copied once into `windows/src/OpenMono.AgentHost/PromptSnapshot.txt` and embedded), `WindowsSystemPromptOverlay.Build()`, `StackDetector.BuildPromptSection`, `ProjectConfig.Load` (`OPENMONO.md`), `MemoryStore.LoadIndex`, `GitHelper.GetContextAsync`, and the environment block (working directory, OS, date, model). Insert one `Message` with `MessageRole.System` on the session before the first turn. If `%USERPROFILE%\.openmono\system-prompt.md` or the workspace `.openmono/system-prompt.md` exists, `PromptOverrides.LoadSystemPrompt` replaces the snapshot, and the overlay is still appended so Windows rules survive a custom prompt.
 
-Acceptance: a unit test builds a session with a fake workspace, and the first message is a system message that contains the overlay line "Prefer PowerShell syntax" and the workspace path. `ToolRegistry.Resolve("Bash")` returns `WindowsShellTool`. `Resolve("Grep")` returns `GrepTool`. `Resolve("Memory")` or whatever `MemorySaveTool.Name` is returns a live instance.
+Acceptance: a unit test builds a session with a fake workspace, and the first message is a system message that contains the overlay line "Prefer PowerShell syntax" and the workspace path. `ToolRegistry.Resolve("Bash")` returns `WindowsShellTool`. `Resolve("Grep")` returns `GrepTool`. `Resolve("Memory")` or whatever `MemorySaveTool.Name` is returns a live instance. Assert the full registered tool-name set exactly (fail on any unexpected addition), so a future upstream tool with all-default-value constructor parameters cannot silently slip in through the old reflection path or an incomplete explicit list.
 
 Effort: 3 days. Depends on M1.1.
 
@@ -210,7 +210,7 @@ Effort: 3 days. Depends on M1.1. Can proceed in parallel with M1.2.
 
 Files: `ModelDownloader.cs`, `WizardPage`, new `FlavorInstaller.cs` in Models or Supervisor, `fetch-llama.ps1`, `models.json`, `pin-checksums.ps1`.
 
-Work is specified in section 5. The wizard calls the same downloader for the GGUF, the mmproj, and the llama.cpp zip. CPU flavor can also be fetched at build time into the publish tree so a machine with no network can still be offered the CPU server if the model was pre-staged. Checksums get real SHA256 values. Empty hash remains a dev-only skip, and Release builds treat an empty hash as a failed pin.
+Work is specified in section 5. The wizard calls the same downloader for the GGUF, the mmproj, and the llama.cpp zip. CPU flavor can also be fetched at build time into the publish tree so a machine with no network can still be offered the CPU server if the model was pre-staged. Checksums get real SHA256 values. Empty hash remains a dev-only skip, and Release builds treat an empty hash as a failed pin: gate this on an MSBuild `DefineConstants` symbol (e.g. `WINDOWS_STRICT_CHECKSUMS` in Release), checked by `ChecksumVerifier`, so tests can exercise both paths without a Release-only build.
 
 Acceptance: cancel mid-download, start again, and the `.part` file resumes (the existing test already covers Range). A mismatched checksum deletes the partial and fails after one retry. Free space under model plus mmproj plus 10 percent blocks the download and offers another folder.
 
@@ -231,6 +231,13 @@ Effort: 4 days. Depends on M1.3, M1.5, and M1.6.
 Files: `DockerComposeManager.cs`, `DockerDetector.cs`, new `stage-docker.ps1`, `WizardPage`, `ServerPage` or Settings.
 
 Work is specified in section 6. Detection and the skip path ship in M1. A failed Docker start must not block chat. Gateway URL is applied to `AppConfig.Web.Gateway` only after Caddy `/health` succeeds.
+Remove the eager assignment in `AgentHostFactory.CreateConfig` (which sets `Web.Gateway`
+whenever `DockerServicesEnabled` is true) so a session created before Docker is healthy
+never points WebSearch at the llama-server port: leave `Web.Gateway` null until the
+health check passes, then set it plus explicit `Web.SearchEnabled`/`Web.ScrapeEnabled`
+(this also bypasses the `GatewayCapabilities` static probe cache, which has no
+invalidation). Until then, `ResolveGateway` falls back to the LLM endpoint and the
+tools use DuckDuckGo and direct fetch.
 
 Acceptance: with Docker absent, the wizard can skip, chat works, and WebSearch does not call port 47480. With Docker present, `docker compose` is invoked with the two `-f` files from the install directory, and llama-server and agent containers stay stopped.
 
@@ -242,7 +249,9 @@ Files: `build.ps1`, `openmono.iss`, `app.manifest` (already long-path aware).
 
 Work is specified in section 7. Self-contained publish, VC++ check, CPU `llama-server.exe` and `rg.exe` inside the installer, GPU zips and GGUF files outside it, uninstall process kill, keep-data default. Signing step remains the existing skip.
 
-Acceptance: `windows-latest` uploads `OpenMonoSetup.exe`. Installing it on a clean user account does not elevate. The Start Menu shortcut launches `OpenMono.exe`. Uninstall removes the exe and leaves models unless the user checks delete.
+Acceptance: `windows-latest` uploads `windows/dist/OpenMonoSetup.exe` (see the path-unification
+note in section 7 — the workflow, the iss `OutputDir`, and the `build.ps1` sign path must
+all agree). Installing it on a clean user account does not elevate. The Start Menu shortcut launches `OpenMono.exe`. Uninstall removes the exe and leaves models unless the user checks delete.
 
 Effort: 3 days. Depends on M1.4 (rg staging) and M1.6 (CPU binary staging). Can land before the wizard is pretty.
 
@@ -258,7 +267,7 @@ Files: new `WindowsToolExecutor.cs`, `HookShellSelector.cs`, `AgentHostFactory.c
 
 Work is specified in section 4. Pass this executor into `ConversationLoop` so `HookRunner` is not the process that runs user hooks.
 
-Acceptance: a pre-tool hook whose command is `exit 2` in PowerShell blocks the tool and the chat shows the hook stderr. A post-tool hook appends a line. No test process is started with `FileName` `/bin/bash`. Sub-agent limitation in section 4 is covered by a test that child config hooks are empty.
+Acceptance: a pre-tool hook whose command is `exit 2` in PowerShell blocks the tool and the chat shows the hook stderr. A post-tool hook appends a line. No test process is started with `FileName` `/bin/bash`. Read `AgentTool`'s child-`ConversationLoop` construction path and verify in code review that the child loop cannot receive our executor (the sub-agent hook limitation in section 4 rests on this). Sub-agent limitation in section 4 is covered by a test that child config hooks are empty.
 
 Effort: 3 days. Depends on M1.2.
 
@@ -505,7 +514,7 @@ ACP uses the same helper with preferred 7475 and fallbacks `7476` through `7480`
 `ModelTierSelector.Select` is the policy. Feed it GPUs from this order:
 
 1. `nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits`. Dedicated bytes are MiB times 1024 squared. CUDA is available when `nvidia-smi` exits 0. Record the driver version for the diagnostics bundle.
-2. If that returns nothing, DXGI adapters (a small helper in `GpuDetector`, P/Invoke `CreateDXGIFactory1` and `EnumAdapters1`, dedicated and shared video memory). This splits AMD and Intel dedicated VRAM from shared memory better than WMI `AdapterRAM`, which often reports a bogus 4GB cap. Map vendor ids `0x10DE` NVIDIA, `0x1002` AMD, `0x8086` Intel.
+2. If that returns nothing, DXGI adapters (a small helper in `GpuDetector`, P/Invoke `CreateDXGIFactory1` and `EnumAdapters1`, dedicated and shared video memory). Keep adapter parsing as a pure function over a record the detector fills, so the Linux unit tests cover vendor mapping and dedicated-versus-shared splitting without P/Invoke. This splits AMD and Intel dedicated VRAM from shared memory better than WMI `AdapterRAM`, which often reports a bogus 4GB cap. Map vendor ids `0x10DE` NVIDIA, `0x1002` AMD, `0x8086` Intel.
 3. WMI `Win32_VideoController` remains the last resort, which the scaffold already has.
 
 Flavor:
@@ -646,7 +655,14 @@ On a Windows machine or `windows-latest`:
 6. Copy `models.json` and `VERSION.windows`.
 7. Download `VC_redist.x64.exe` into `windows/installer/deps` if it is not there. The Inno script already installs it only when the registry key `HKLM\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64` is missing.
 8. If `WINDOWS_CERT_PATH` points at a PFX, `signtool` every exe and dll and then the setup exe, with an RFC 3161 timestamp. If the variable is empty, print the skip line and continue. That is the current script, and it stays that way until a certificate exists.
-9. `ISCC.exe windows/installer/inno/openmono.iss`, output `dist/OpenMonoSetup.exe`.
+9. `ISCC.exe windows/installer/inno/openmono.iss`, output `windows/dist/OpenMonoSetup.exe`.
+Path unification (fix before run 9): the iss `OutputDir` (`..\..\dist` relative to
+`windows/installer/inno/`) already resolves to `windows/dist/`, but
+`.github/workflows/windows-desktop.yml` uploads `dist/OpenMonoSetup.exe` (repo root)
+and `build.ps1` signs `root/dist/OpenMonoSetup.exe`. Those three must agree on
+`windows/dist/OpenMonoSetup.exe`: update the workflow upload path and the `build.ps1`
+sign path to `windows/dist/`, and keep the iss file as the source of truth.
+CI is red on this until the paths match.
 
 Per-user directory is `%LOCALAPPDATA%\Programs\OpenMono`. No elevation. Start Menu shortcut. Desktop shortcut is an unchecked task. The wizard offers launch on finish.
 
@@ -715,7 +731,7 @@ Add to that job, without requiring a GPU:
 - The smoke test remains the stub HTTP server. Extend it to call `OmaSettingsWriter` and `WindowsPromptBuilder` if those stay out of the WinUI project.
 - A step that runs `fetch-rg.ps1` only when the workflow should prove the script. Cache the zip. Do not download the 15GB model.
 - Confirm `publish/win-x64/OpenMono.exe` exists and `models.json` sits beside it.
-- Confirm the installer artifact exists. A silent install on the runner (`OpenMonoSetup.exe /VERYSILENT /NORESTART`) is worth doing once the iss file supports `/VERYSILENT`, then launching `OpenMono.exe` is not, because WinUI on a GitHub-hosted session has no interactive desktop we can trust. Stop at "setup exe produced and, if silent install is added, files land in the runner's LocalAppData."
+- Confirm the installer artifact exists at `windows/dist/OpenMonoSetup.exe` (not repo-root `dist/`). A silent install on the runner (`OpenMonoSetup.exe /VERYSILENT /NORESTART`) is worth doing once the iss file supports `/VERYSILENT`, then launching `OpenMono.exe` is not, because WinUI on a GitHub-hosted session has no interactive desktop we can trust. Stop at "setup exe produced and, if silent install is added, files land in the runner's LocalAppData."
 
 The workflow triggers on pushes and pull requests to `Windows` when `windows/**` changes. Do not add a trigger on `main`.
 
@@ -756,7 +772,7 @@ Record driver version, Windows build, and the diagnostics bundle for any failure
 
 These do not block M1. Defaults are the approved decisions.
 
-1. Telemetry stays off. Confirm that crash dumps are also opt-in. The plan assumes no automatic upload.
+1. Telemetry stays off. Confirm that crash dumps are also opt-in, explicitly including Windows Error Reporting (WER) local dumps and any upload consent path — the OS-level exfil path a reviewer will ask about. The plan assumes no automatic upload.
 2. ACP loopback ships as a settings toggle, default off. An editor extension that speaks ACP is not part of M1 to M3.
 3. Remote endpoint in Settings is the dual-box client. Tunnel, frpc, and hosting for other machines are out of the product.
 4. Docker Desktop's paid subscription for larger companies is a legal choice, not a code choice. The app works with Docker skipped.
@@ -782,8 +798,8 @@ Each run stays on `Windows`, pushes to `Windows`, and leaves the tree compiling.
 6. **Wizard flow to a healthy stub.** `FirstRunState`, disk preflight, step UI, start supervisor against a stub server in a dev hook, navigate to Chat. Real GGUF download stays behind the existing downloader and is not required for the automated check.
 7. **Ripgrep, single instance, HTTP failure copy.** Stage `rg.exe`, PATH prepend, mutex, chat error text that does not mention docker compose for llama recovery.
 8. **Docker asset staging and gateway flag.** `stage-docker.ps1`, install-directory compose paths, skip path, set `Web.Gateway` only after port 47480 health. Use a stub listener on 47480 in tests. Do not require Docker Desktop on the runner.
-9. **Installer contents.** CPU llama-server and `rg.exe` and docker resources inside the publish tree, Inno silent-install switches, VC++ redist download in `build.ps1`, uninstall keep-data verified by reading the iss script in review. CI uploads `OpenMonoSetup.exe`.
-10. **Hook executor.** `WindowsToolExecutor`, cleared `HookConfig`, PowerShell pre and post hooks, tests for exit code 2. Sub-agent hook limitation documented in a code comment and covered by a test that the config passed to the loop has empty hooks.
+9. **Installer contents.** CPU llama-server and `rg.exe` and docker resources inside the publish tree, Inno silent-install switches, VC++ redist download in `build.ps1`, uninstall keep-data verified by reading the iss script in review. Unify the three installer paths on `windows/dist/OpenMonoSetup.exe` (iss `OutputDir`, workflow upload path, `build.ps1` sign path) as specified in section 7. CI uploads the unified artifact.
+10. **Hook executor.** `WindowsToolExecutor`, cleared `HookConfig`, PowerShell pre and post hooks, tests for exit code 2. Read `AgentTool` child-loop wiring to confirm the executor cannot leak into sub-agents. Sub-agent hook limitation documented in a code comment and covered by a test that the config passed to the loop has empty hooks.
 11. **Chat UI.** Streaming bubble, thinking collapse, tool cards, four permission buttons, Stop, tok/s line. Verify on a Windows session with the stub server if the runner cannot show UI. State in the run summary what was not visually verified.
 12. **Clipboard, LSP client, MCP rewrite.** WinUI clipboard delegates, `WindowsLspClient` using `LspPathMapper`, factory passes resolved MCP configs, Node path probe. TypeScript server download is part of this run if `fetch-node.ps1` is small enough. Otherwise split Node into the next run.
 13. **Model switch, tray, diagnostics.** Restart server on switch, custom GGUF list, tray status, diagnostics bundle includes Docker and hardware.
