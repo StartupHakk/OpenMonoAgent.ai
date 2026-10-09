@@ -399,7 +399,7 @@ Read src/assets/logo.png and describe it
 
 A single image at the default budget uses ~1024–1280 tokens. If you're sending multiple images per message, reduce `--image-max-tokens` to keep context usage predictable.
 
-**Image compression** — handled client-side by [SixLabors.ImageSharp](https://sixlabors.com/products/imagesharp/) before the image reaches the model:
+**Image compression** — handled client-side by [SkiaSharp](https://skiasharp.net/) before the image reaches the model:
 
 - Images above ~1.3 MP (≈ 1280×1024) are resized down, keeping aspect ratio
 - Re-encoded as JPEG at 90% quality
