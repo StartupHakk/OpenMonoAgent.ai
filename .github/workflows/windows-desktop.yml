@@ -53,7 +53,12 @@ jobs:
           dotnet-version: "10.0.100"
 
       - name: Restore Windows solution
-        run: dotnet restore windows/OpenMono.Windows.sln -p:WarningsNotAsErrors="NU1902%3BNU1903"
+        # -r win-x64 restores the win-x64 assets graph for every project in
+        # the solution, including src/OpenMono.Cli (referenced by Desktop).
+        # Without it, msbuild /t:Publish /p:RuntimeIdentifier=win-x64 fails
+        # with NETSDK1047 on the referenced project. Declaring
+        # RuntimeIdentifiers on Desktop alone is not enough.
+        run: dotnet restore windows/OpenMono.Windows.sln -r win-x64 -p:WarningsNotAsErrors="NU1902%3BNU1903"
 
       - name: Add VS msbuild to PATH
         # PRI packaging tasks (ExpandPriContent) ship only with Visual Studio
