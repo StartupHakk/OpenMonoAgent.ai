@@ -27,9 +27,10 @@ DOCKER_ARGS=(
   -e "OPENMONO_IN_CONTAINER=1"
 )
 
-# Docker socket: lets the agent spawn child containers for tool-specific runtimes.
-# Skip if the socket doesn't exist (CI, rootless Docker, etc.)
-if [[ -S /var/run/docker.sock ]]; then
+# Docker socket is opt-in only: the default agent must NOT get the host daemon.
+# Set OPENMONO_DOCKER_SOCK=1 when the task actually needs docker against the
+# host. OPENMONO_NO_DOCKER_SOCK=1 remains supported as an explicit veto.
+if [[ "${OPENMONO_DOCKER_SOCK:-0}" == "1" && "${OPENMONO_NO_DOCKER_SOCK:-0}" != "1" && -S /var/run/docker.sock ]]; then
   DOCKER_ARGS+=(-v /var/run/docker.sock:/var/run/docker.sock)
 fi
 

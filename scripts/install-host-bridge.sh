@@ -66,6 +66,12 @@ fi
 # Host-exec policy (never silent): OPENMONO_HOST_EXEC_DEFAULT=allow|ask selects
 # the default. Anything but an explicit "allow" stays "ask" (fail closed).
 # install.sh prompts for this; direct script runs default to ask.
+# Re-runs preserve an existing config: host_exec.default (and everything else)
+# is only written for a fresh config, unless the user explicitly set
+# OPENMONO_HOST_EXEC_DEFAULT to change it.
+_HOST_BRIDGE_CONFIG="${OPENMONO_HOST_BRIDGE_CONFIG:-$HOME/.openmono/host-bridge.json}"
+_HOST_BRIDGE_PREEXISTED=0
+[[ -f "$_HOST_BRIDGE_CONFIG" ]] && _HOST_BRIDGE_PREEXISTED=1
 case "${OPENMONO_HOST_SUDO:-}" in
     1|[Yy]|[Yy]es)
         "$BIN_DIR/host-bridge" --init --allow-sudo --non-interactive
@@ -85,14 +91,18 @@ esac
 
 echo "[host-bridge] OK — run it with: openmono agent --host"
 
-# Apply the explicit host-exec default (ask unless OPENMONO_HOST_EXEC_DEFAULT=allow).
-# The sample config ships "ask"; only flip to "allow" on explicit opt-in.
+# Apply the host-exec default. Fresh configs get a default (ask unless
+# OPENMONO_HOST_EXEC_DEFAULT=allow). Existing configs are preserved as-is
+# unless the user explicitly set OPENMONO_HOST_EXEC_DEFAULT to change them.
 _HOST_EXEC_DEFAULT="ask"
+_HOST_EXEC_EXPLICIT=0
 case "${OPENMONO_HOST_EXEC_DEFAULT:-}" in
-    [Aa]llow) _HOST_EXEC_DEFAULT="allow" ;;
+    [Aa]llow) _HOST_EXEC_DEFAULT="allow"; _HOST_EXEC_EXPLICIT=1 ;;
+    [Aa]sk) _HOST_EXEC_DEFAULT="ask"; _HOST_EXEC_EXPLICIT=1 ;;
 esac
-_HOST_BRIDGE_CONFIG="${OPENMONO_HOST_BRIDGE_CONFIG:-$HOME/.openmono/host-bridge.json}"
-if [[ -f "$_HOST_BRIDGE_CONFIG" ]] && command -v python3 &>/dev/null; then
+if [[ "$_HOST_BRIDGE_PREEXISTED" == "1" && "$_HOST_EXEC_EXPLICIT" != "1" ]]; then
+    echo "[host-bridge] preserving existing config $_HOST_BRIDGE_CONFIG (set OPENMONO_HOST_EXEC_DEFAULT=allow|ask to change host_exec.default)."
+elif [[ -f "$_HOST_BRIDGE_CONFIG" ]] && command -v python3 &>/dev/null; then
     _HOST_EXEC_DEFAULT="$_HOST_EXEC_DEFAULT" _HOST_BRIDGE_CONFIG="$_HOST_BRIDGE_CONFIG" python3 - <<'PYEOF' || echo "[host-bridge] WARNING: could not set host_exec.default; edit $_HOST_BRIDGE_CONFIG manually." >&2
 import json, os
 cfg_path = os.environ["_HOST_BRIDGE_CONFIG"]

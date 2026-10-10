@@ -1031,12 +1031,13 @@ cmd_agent_sandbox() {
     fi
 
 
-    # Docker socket: lets the agent run `docker` / `docker compose` against the
-    # host daemon (deploy + troubleshoot containerized backends on a server box).
-    # Mounted only when the socket exists — mirrors docker/openmono-wrapper.sh.
-    # Opt out with OPENMONO_NO_DOCKER_SOCK=1.
+    # Docker socket is opt-in only: the default sandbox must NOT get the host
+    # daemon. Set OPENMONO_DOCKER_SOCK=1 when the task actually needs docker
+    # against the host (deploy + troubleshoot containerized backends).
+    # OPENMONO_NO_DOCKER_SOCK=1 remains supported as an explicit veto (and as
+    # a harmless no-op for existing configs that set it).
     local docker_sock_args=()
-    if [[ "${OPENMONO_NO_DOCKER_SOCK:-0}" != "1" && -S /var/run/docker.sock ]]; then
+    if [[ "${OPENMONO_DOCKER_SOCK:-0}" == "1" && "${OPENMONO_NO_DOCKER_SOCK:-0}" != "1" && -S /var/run/docker.sock ]]; then
         docker_sock_args+=(-v /var/run/docker.sock:/var/run/docker.sock)
     fi
 
