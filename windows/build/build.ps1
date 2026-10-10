@@ -54,6 +54,11 @@ if (-not $SkipTests) {
 }
 
 $publishDir = Join-Path $windows "publish\$Runtime"
+# Restore with the publish RID so the whole closure (including upstream
+# OpenMono.Cli, which declares no RIDs) has win-x64 assets. Otherwise
+# msbuild /t:Publish fails with NETSDK1047.
+& dotnet restore (Join-Path $windows "OpenMono.Windows.sln") -r $Runtime -p:WarningsNotAsErrors="NU1902%3BNU1903"
+if ($LASTEXITCODE -ne 0) { exit 1 }
 & $msbuild (Join-Path $windows "src\OpenMono.Desktop\OpenMono.Desktop.csproj") /t:Publish /p:Configuration=$Configuration /p:Platform=x64 /p:RuntimeIdentifier=$Runtime /p:SelfContained=true /p:Version=$version /p:PublishDir="$publishDir\" /p:WarningsNotAsErrors="NU1902%3BNU1903"
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
