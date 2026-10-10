@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using OpenMono.Windows.Desktop.Services;
+using OpenMono.Windows.Supervisor;
 
 namespace OpenMono.Windows.Desktop;
 
@@ -11,6 +12,9 @@ public partial class App : Application
 
     public App()
     {
+        // Restore persisted supervisor fields (ports, folders, LAN serving,
+        // API key). Missing or malformed app.json yields defaults.
+        State.Supervisor = SupervisorStore.Load();
         InitializeComponent();
     }
 

@@ -58,6 +58,9 @@ windows/
    is provided.
 5. Scope is M1 through M3. Open questions use the plan recommendations
    (WinUI 3, no telemetry by default, loopback ACP toggle, per-user install).
+6. LAN inference serving is in: Settings can bind llama-server to all
+   interfaces with a required API key and shows LAN URLs. Single-box
+   localhost remains the default. WAN exposure (tunnel/VPN) is DIY.
 
 ## Build on Windows
 

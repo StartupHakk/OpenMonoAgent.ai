@@ -16,21 +16,70 @@ public sealed partial class SettingsPage : Page
         VisionBox.IsChecked = s.VisionEnabled;
         WorkspaceBox.Text = App.State.Workspace;
         ModelsBox.Text = s.ModelsDirectory;
+        LanBox.IsOn = s.AllowLanConnections;
+        ApiKeyBox.Password = s.ApiKey ?? string.Empty;
+        RefreshLanUrls();
+    }
+
+    private void RefreshLanUrls()
+    {
+        var s = App.State.Supervisor;
+        if (!s.AllowLanConnections)
+        {
+            LanUrlText.Text = "LAN serving is off. Inference listens on localhost only.";
+            return;
+        }
+
+        var urls = s.LanAdvertisedUrls();
+        LanUrlText.Text = urls.Count > 0
+            ? $"LAN clients connect to: {string.Join(", ", urls)}"
+            : "LAN serving is on but no LAN IPv4 address was found. Check the network connection.";
+    }
+
+    private void GenerateKey_Click(object sender, RoutedEventArgs e)
+    {
+        ApiKeyBox.Password = SupervisorConfig.GenerateApiKey();
+        Note.Text = "New API key generated. Click Save to apply it.";
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {
         var s = App.State.Supervisor;
         var endpoint = EndpointBox.Text.Trim();
-        App.State.Supervisor = s with
+        var key = ApiKeyBox.Password.Trim();
+        var lan = LanBox.IsOn;
+        if (lan && string.IsNullOrWhiteSpace(key))
+        {
+            key = SupervisorConfig.GenerateApiKey();
+            ApiKeyBox.Password = key;
+        }
+
+        var updated = s with
         {
             RemoteEndpointOverride = string.IsNullOrWhiteSpace(endpoint) ? null : endpoint,
             VisionEnabled = VisionBox.IsChecked == true,
             ModelsDirectory = string.IsNullOrWhiteSpace(ModelsBox.Text) ? s.ModelsDirectory : ModelsBox.Text,
+            AllowLanConnections = lan,
+            ApiKey = string.IsNullOrWhiteSpace(key) ? null : key,
         };
+        try
+        {
+            updated.ValidateLan();
+        }
+        catch (Exception ex)
+        {
+            Note.Text = ex.Message;
+            return;
+        }
+
+        App.State.Supervisor = updated;
+        SupervisorStore.Save(updated);
         App.State.DockerWanted = DockerBox.IsChecked == true;
         App.State.Workspace = string.IsNullOrWhiteSpace(WorkspaceBox.Text) ? App.State.Workspace : WorkspaceBox.Text;
-        Note.Text = "Saved. Restart inference on the Server page to apply endpoint and vision changes.";
+        RefreshLanUrls();
+        Note.Text = lan
+            ? $"Saved. Restart inference on the Server page to apply. LAN clients: {string.Join(", ", updated.LanAdvertisedUrls())}."
+            : "Saved. Restart inference on the Server page to apply endpoint and vision changes.";
     }
 
     private async void Update_Click(object sender, RoutedEventArgs e)

@@ -564,6 +564,23 @@ Models page lists every `.gguf` in the models directory that is not an mmproj, p
 
 Deleting a model requires a confirm dialog and refuses to delete the file that is loaded.
 
+### LAN serving (this box as inference for other machines)
+
+Settings has an "Allow LAN connections" toggle plus an API key box. When on,
+`SupervisorConfig.BindHost` is `0.0.0.0` (llama-server `--host`) and the
+Settings page lists `http://{lan-ip}:{port}` URLs from
+`LanNetwork.GetLanIPv4Addresses`. Health probes, the in-process agent,
+diagnostics, and `settings.json` keep using the loopback endpoint, and
+`LlamaServerSupervisor.StartAsync` refuses to start a LAN bind without a key
+of at least 16 chars (`ValidateLan`, auto-generated on Save when empty).
+Supervisor fields (ports, folders, LAN flag, key, remote override) persist in
+`%LOCALAPPDATA%\OpenMono\app.json` under a `supervisor` section via
+`SupervisorStore`, which preserves unknown sections for the M1.7 first-run
+state. LAN clients send the key as a Bearer token. Firewall rules are not
+created programmatically (per-user app, no elevation): the Settings page tells
+the user to allow OpenMono on private networks. WAN exposure stays DIY
+(tunnel/VPN); only LAN URLs are ever advertised.
+
 ## 6. Docker stack management
 
 Docker Desktop with the WSL2 backend runs three services. Native llama-server stays on the host so CUDA and Vulkan see the GPU. The containerized `llama-server` and `agent` services are moved to profile `never-start-on-windows` by `windows/docker/docker-compose.windows.yml` and are not named on the `up` command.
@@ -696,7 +713,7 @@ If the user closes the app during download, the next launch returns to step 6 an
 
 ### Daily UI after the wizard
 
-Chat is the home page. Models lists installed files, size, context, switch, add custom GGUF, and delete. Server shows a status dot, port, model from `/props`, tok/s, Start, Stop, Restart, log tail, and Copy diagnostics. Settings edits endpoint (a remote URL turns off local llama-server and becomes dual-box client mode), API key, context override, permission lists, a read-only hooks viewer with a PowerShell note, MCP server toggles, Docker start and stop, and the data directory path.
+Chat is the home page. Models lists installed files, size, context, switch, add custom GGUF, and delete. Server shows a status dot, port, model from `/props`, tok/s, Start, Stop, Restart, log tail, and Copy diagnostics. Settings edits endpoint (a remote URL turns off local llama-server and becomes dual-box client mode), API key, LAN serving toggle with advertised URLs, context override, permission lists, a read-only hooks viewer with a PowerShell note, MCP server toggles, Docker start and stop, and the data directory path. Supervisor settings persist to `app.json` on Save and on Server start.
 
 ## 8. Testing strategy
 
@@ -775,7 +792,7 @@ These do not block M1. Defaults are the approved decisions.
 
 1. Telemetry stays off. Confirm that crash dumps are also opt-in, explicitly including Windows Error Reporting (WER) local dumps and any upload consent path — the OS-level exfil path a reviewer will ask about. The plan assumes no automatic upload.
 2. ACP loopback ships as a settings toggle, default off. An editor extension that speaks ACP is not part of M1 to M3.
-3. Remote endpoint in Settings is the dual-box client. Tunnel, frpc, and hosting for other machines are out of the product.
+3. Remote endpoint in Settings is the dual-box client. LAN serving (bind `0.0.0.0` plus required API key) is in. Tunnel, frpc, and hosting for other machines stay out of the product; WAN exposure is DIY.
 4. Docker Desktop's paid subscription for larger companies is a legal choice, not a code choice. The app works with Docker skipped.
 5. Whether to re-sync model URLs automatically when `install.sh` changes, or only by a deliberate `models.json` edit. The plan says deliberate edit.
 

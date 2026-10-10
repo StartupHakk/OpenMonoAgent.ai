@@ -14,6 +14,12 @@
             <TextBox x:Name="WorkspaceBox"/>
             <TextBlock Text="Models folder"/>
             <TextBox x:Name="ModelsBox"/>
+            <TextBlock Text="LAN inference (serve this machine's model to other machines)" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            <ToggleSwitch x:Name="LanBox" Header="Allow LAN connections" OffContent="Localhost only" OnContent="Serve on LAN"/>
+            <PasswordBox x:Name="ApiKeyBox" Header="LAN API key (required when serving on LAN)" PlaceholderText="Auto-generated when you enable LAN"/>
+            <Button Content="Generate new API key" Click="GenerateKey_Click"/>
+            <TextBlock x:Name="LanUrlText" TextWrapping="Wrap"/>
+            <TextBlock Text="LAN clients connect to one of the URLs above and send the API key as a Bearer token. When Windows Firewall prompts, allow OpenMono on private networks. Never expose this port to the internet without a tunnel." TextWrapping="Wrap" Opacity="0.7"/>
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <Button Content="Save" Click="Save_Click"/>
                 <Button Content="Check for updates" Click="Update_Click"/>

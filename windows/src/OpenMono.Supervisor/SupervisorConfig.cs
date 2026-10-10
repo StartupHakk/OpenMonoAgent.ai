@@ -29,8 +29,70 @@ public sealed record SupervisorConfig
     public bool VisionEnabled { get; init; } = true;
     public bool DockerServicesEnabled { get; init; } = true;
 
+    /// <summary>
+    /// When true, llama-server binds 0.0.0.0 so other machines on the LAN can
+    /// use this box as inference. Default false: localhost only. An API key
+    /// is required in LAN mode (see <see cref="ValidateLan"/>).
+    /// </summary>
+    public bool AllowLanConnections { get; set; } = false;
+
+    /// <summary>Minimum API key length accepted for LAN serving.</summary>
+    public const int MinLanApiKeyLength = 16;
+
     public string LlamaEndpoint => $"http://{Host}:{LlamaPort}";
     public string GatewayEndpoint => $"http://{Host}:{GatewayPort}";
+
+    /// <summary>
+    /// Address llama-server binds. LAN mode binds 0.0.0.0; otherwise the
+    /// configured <see cref="Host"/> (localhost by default).
+    /// </summary>
+    public string BindHost => AllowLanConnections ? "0.0.0.0" : Host;
+
+    /// <summary>
+    /// Loopback URL used by health probes, the in-process agent, diagnostics,
+    /// and settings. Always loopback, even in LAN mode: connecting to
+    /// 0.0.0.0 does not route, and the agent runs on this machine.
+    /// </summary>
+    public string LoopbackEndpoint => $"http://127.0.0.1:{LlamaPort}";
+
+    /// <summary>
+    /// URLs to show LAN clients, one per local IPv4 address. Empty when no
+    /// LAN address is assigned.
+    /// </summary>
+    public IReadOnlyList<string> LanAdvertisedUrls() =>
+        LanNetwork.GetLanIPv4Addresses().Select(ip => $"http://{ip}:{LlamaPort}").ToList();
+
+    /// <summary>
+    /// Throws when LAN serving is on without a strong API key. Called before
+    /// the server process starts so a keyless LAN bind can never happen.
+    /// </summary>
+    public void ValidateLan()
+    {
+        if (!AllowLanConnections)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(ApiKey))
+        {
+            throw new InvalidOperationException(
+                "LAN serving is on but no API key is set. Set one on the Settings page before starting inference.");
+        }
+
+        if (ApiKey.Length < MinLanApiKeyLength)
+        {
+            throw new InvalidOperationException(
+                $"LAN API key is too short ({ApiKey.Length} chars, minimum {MinLanApiKeyLength}). Generate a new one on the Settings page.");
+        }
+    }
+
+    /// <summary>Generates a 64-char hex API key from 32 cryptographic random bytes.</summary>
+    public static string GenerateApiKey()
+    {
+        Span<byte> bytes = stackalloc byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(bytes);
+        return Convert.ToHexString(bytes);
+    }
 
     public static string DefaultModelsDirectory() =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OpenMono", "models");
@@ -64,7 +126,7 @@ public sealed record SupervisorConfig
         {
             "--model", Path.Combine(ModelsDirectory, tier.ModelName),
             "--alias", tier.Alias,
-            "--host", Host,
+            "--host", BindHost,
             "--port", LlamaPort.ToString(),
             "--ctx-size", ctx.ToString(),
             "--threads", threads.ToString(),

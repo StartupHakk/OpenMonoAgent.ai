@@ -18,6 +18,10 @@ public static class DiagnosticsService
         sb.AppendLine($"OpenMono for Windows diagnostics {DateTime.UtcNow:O}");
         sb.AppendLine($"App version: {ReadAppVersion()}");
         sb.AppendLine($"Endpoint: {state.Supervisor.LlamaEndpoint}");
+        if (state.Supervisor.AllowLanConnections)
+        {
+            sb.AppendLine($"LAN serving: on ({string.Join(", ", state.Supervisor.LanAdvertisedUrls())})");
+        }
         sb.AppendLine($"Models dir: {state.Supervisor.ModelsDirectory}");
         sb.AppendLine($"Workspace: {state.Workspace}");
         if (state.Hardware is { } hw)

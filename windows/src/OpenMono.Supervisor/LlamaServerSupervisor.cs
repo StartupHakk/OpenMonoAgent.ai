@@ -35,6 +35,10 @@ public sealed class LlamaServerSupervisor : IAsyncDisposable
             throw new InvalidOperationException("llama-server is already running.");
         }
 
+        // Fail fast before spawning the process: a LAN bind without a strong
+        // API key must never happen, including from a hand-edited app.json.
+        _config.ValidateLan();
+
         if (!File.Exists(spec.Binary))
         {
             throw new FileNotFoundException($"llama-server binary not found: {spec.Binary}. Run the first run wizard to download the GPU flavor.", spec.Binary);

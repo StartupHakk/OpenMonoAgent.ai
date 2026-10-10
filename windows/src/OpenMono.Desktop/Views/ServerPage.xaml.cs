@@ -36,6 +36,7 @@ public sealed partial class ServerPage : Page
                 : Environment.ProcessorCount;
             var spec = state.Supervisor.BuildLlamaCommand(tier, threads, selection.Flavor);
             state.Supervisor.LlamaPort = PortAllocator.Allocate(state.Supervisor.LlamaPort);
+            SupervisorStore.Save(state.Supervisor);
             state.Llama = new LlamaServerSupervisor(state.Supervisor);
             StatusLine.Text = "Starting inference, waiting for health (up to 180s).";
             var progress = new Progress<string>(m => DispatcherQueue.TryEnqueue(() => StatusLine.Text = m));
