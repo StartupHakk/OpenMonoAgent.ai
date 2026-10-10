@@ -47,7 +47,7 @@ if (Test-Path $iscc) {
   & $iscc (Join-Path $windows "installer\inno\openmono.iss")
   if ($LASTEXITCODE -ne 0) { exit 1 }
   if ($env:WINDOWS_CERT_PATH -and (Test-Path $env:WINDOWS_CERT_PATH)) {
-    & signtool sign /fd SHA256 /f $env:WINDOWS_CERT_PATH /p $env:WINDOWS_CERT_PASSWORD /tr http://timestamp.digicert.com /td SHA256 (Join-Path $root "dist\OpenMonoSetup.exe")
+    & signtool sign /fd SHA256 /f $env:WINDOWS_CERT_PATH /p $env:WINDOWS_CERT_PASSWORD /tr http://timestamp.digicert.com /td SHA256 (Join-Path $windows "dist\OpenMonoSetup.exe")
   }
 } else {
   Write-Host "Inno Setup 6 (ISCC.exe) not found, skipping setup.exe compile."

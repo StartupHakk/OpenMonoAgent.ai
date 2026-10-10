@@ -106,9 +106,12 @@ public sealed class SupervisorTests : IDisposable
     [Fact]
     public void Lsp_Mapper_Round_Trips_File_Uris()
     {
-        var uri = LspPathMapper.ToFileUri("/tmp/repo/file.cs");
+        // Platform-native absolute path: the mapper resolves via GetFullPath,
+        // so a Unix literal would gain a drive letter on Windows.
+        var expected = Path.GetFullPath(Path.Combine("repo", "file.cs"));
+        var uri = LspPathMapper.ToFileUri(expected);
         Assert.StartsWith("file://", uri, StringComparison.Ordinal);
-        Assert.Equal("/tmp/repo/file.cs", LspPathMapper.FromFileUri(uri));
+        Assert.Equal(expected, LspPathMapper.FromFileUri(uri));
     }
 
     [Fact]
@@ -125,11 +128,15 @@ public sealed class SupervisorTests : IDisposable
         var config = new SupervisorConfig { LlamaPort = 7474 };
         var tier = new Models.ModelTier(24, "label", "model.gguf", "http://x/model.gguf", 1, "full", "mmproj.gguf", "http://x/mmproj.gguf", 1, 196608, 172032, string.Empty, string.Empty);
         var spec = config.BuildLlamaCommand(tier, 8, Hardware.ModelTierSelector.ServerFlavor.Cuda);
+        // SupervisorConfig enables vision by default, so tier 24 resolves to
+        // the vision context (172032), not the base 196608.
+        var expectedCtx = tier.EffectiveCtx(config.VisionEnabled).ToString();
+        Assert.Equal(tier.EffectiveCtx(true), spec.CtxSize);
         Assert.Contains("--n-gpu-layers", spec.Args);
         Assert.Contains("--flash-attn", spec.Args);
         Assert.Contains("--mmproj", spec.Args);
         Assert.Contains("--metrics", spec.Args);
-        Assert.Contains("196608", spec.Args);
+        Assert.Contains(expectedCtx, spec.Args);
     }
 
     private async Task ServeAsync()

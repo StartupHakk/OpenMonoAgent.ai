@@ -62,7 +62,9 @@ public sealed class TierSelectionTests
     [Fact]
     public void Parses_NvidiaSmi_Csv()
     {
-        var gpus = GpuDetector.ParseNvidiaSmi("NVIDIA GeForce RTX 4090, 24564, 560.94\n");
+        // 25000 MiB is unambiguously above 24 GiB (a real 4090 reports 24564
+        // MiB, which is 23.98 GiB and must NOT satisfy a strict 24 GiB check).
+        var gpus = GpuDetector.ParseNvidiaSmi("NVIDIA GeForce RTX 4090, 25000, 560.94\n");
         var gpu = Assert.Single(gpus);
         Assert.Equal(GpuVendor.Nvidia, gpu.Vendor);
         Assert.True(gpu.DedicatedBytes > 24 * ModelTierSelector.Gb);
@@ -89,7 +91,9 @@ public sealed class TierSelectionTests
     {
         long model = 16L * 1024 * 1024 * 1024;
         long mmproj = 1L * 1024 * 1024 * 1024;
-        Assert.True(DiskDetector.HasRoom((long)((model + mmproj) * 1.10), model, mmproj));
+        long required = DiskDetector.RequiredBytes(model, mmproj);
+        Assert.True(DiskDetector.HasRoom(required, model, mmproj));
+        Assert.False(DiskDetector.HasRoom(required - 1, model, mmproj));
         Assert.False(DiskDetector.HasRoom((long)((model + mmproj) * 1.09), model, mmproj));
     }
 }

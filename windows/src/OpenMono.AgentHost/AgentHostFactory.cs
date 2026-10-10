@@ -1,5 +1,4 @@
 using System.Reflection;
-using System.Text.Json;
 using OpenMono.Config;
 using OpenMono.Llm;
 using OpenMono.Permissions;
@@ -173,8 +172,10 @@ public static class AgentHostFactory
 
     /// <summary>
     /// Writes the standard OMA settings.json surface from the first run wizard
-    /// so behavior matches Linux and macOS. Includes the OS overlay note as a
-    /// comment-friendly extra field the agent ignores.
+    /// so behavior matches Linux and macOS. Delegates to <see cref="OmaSettingsWriter"/>,
+    /// which serializes snake_case via <c>OpenMono.Config.JsonOptions</c> and
+    /// preserves user-managed sections. Kept here so existing callers
+    /// (ServerPage, wizard) do not change.
     /// </summary>
     public static void WriteSettings(
         string dataDirectory,
@@ -183,37 +184,9 @@ public static class AgentHostFactory
         int ctxSize,
         bool visionEnabled,
         int acpPort,
-        bool acpEnabled)
+        bool acpEnabled,
+        string? apiKey = null)
     {
-        Directory.CreateDirectory(dataDirectory);
-        var path = Path.Combine(dataDirectory, "settings.json");
-        JsonDocument? existing = null;
-        if (File.Exists(path))
-        {
-            try
-            {
-                existing = JsonDocument.Parse(File.ReadAllText(path));
-            }
-            catch
-            {
-            }
-        }
-
-        using (existing)
-        {
-            var tools = existing?.RootElement.TryGetProperty("permissions", out var perms) == true
-                && perms.TryGetProperty("tools", out var t)
-                    ? t.GetRawText()
-                    : JsonSerializer.Serialize(WindowsPermissionDefaults.Defaults());
-
-            var json = "{\n"
-                + $"  \"llm\": {{ \"endpoint\": {JsonSerializer.Serialize(endpoint)}, \"model\": {JsonSerializer.Serialize(modelAlias)} }},\n"
-                + $"  \"inference\": {{ \"ctxSize\": {ctxSize} }},\n"
-                + $"  \"vision_enabled\": {(visionEnabled ? "true" : "false")},\n"
-                + $"  \"acpServer\": {{ \"enabled\": {(acpEnabled ? "true" : "false")}, \"port\": {acpPort} }},\n"
-                + $"  \"permissions\": {{ \"tools\": {tools} }}\n"
-                + "}\n";
-            File.WriteAllText(path, json);
-        }
+        OmaSettingsWriter.Write(dataDirectory, endpoint, modelAlias, ctxSize, visionEnabled, acpPort, acpEnabled, apiKey);
     }
 }

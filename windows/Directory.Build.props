@@ -6,6 +6,10 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- NU1902/NU1903 (vulnerable-package advisories) stay warnings: they fire
+      on upstream-owned dependencies (e.g. ImageSharp via src/OpenMono.Cli),
+      which this branch may not edit. Compiler warnings remain errors. -->
+    <WarningsNotAsErrors>NU1902;NU1903</WarningsNotAsErrors>
     <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
     <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
   </PropertyGroup>

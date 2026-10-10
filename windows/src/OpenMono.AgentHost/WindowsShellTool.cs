@@ -239,9 +239,10 @@ public sealed class WindowsShellTool : ToolBase
     }
 
     /// <summary>
-    /// Builds the foreground ProcessStartInfo. Internal for unit tests.
+    /// Builds the foreground ProcessStartInfo. Public so the Windows test
+    /// project can pin shell selection without process launches.
     /// </summary>
-    internal static ProcessStartInfo BuildProcess(HookShellSelector.ShellKind shell, string command, string workingDirectory)
+    public static ProcessStartInfo BuildProcess(HookShellSelector.ShellKind shell, string command, string workingDirectory)
     {
         if (shell == HookShellSelector.ShellKind.Cmd)
         {

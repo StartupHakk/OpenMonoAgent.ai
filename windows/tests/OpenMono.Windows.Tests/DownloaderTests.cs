@@ -129,7 +129,7 @@ public sealed class DownloaderTests : IDisposable
                 if (range is not null && range.StartsWith("bytes=", StringComparison.Ordinal))
                 {
                     var from = long.Parse(range["bytes:".Length..].Split('-')[0]);
-                    var rest = _payload[from..];
+                    var rest = _payload[(int)from..];
                     ctx.Response.StatusCode = 206;
                     ctx.Response.AddHeader("Content-Range", $"bytes {from}-{_payload.Length - 1}/{_payload.Length}");
                     ctx.Response.ContentLength64 = rest.Length;

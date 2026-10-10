@@ -10,6 +10,33 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Portable net10.0 libraries + tests run on Linux so Windows UI work cannot
+  # silently change ports, tiers, or the shell tool. WinUI (Desktop) stays on
+  # the windows-latest job below.
+  build-test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.100"
+
+      - name: Build portable libraries (no WinUI)
+        # WarningsNotAsErrors flows as a global MSBuild property so the
+        # upstream-owned NuGet audit advisories (NU1902/1903 on ImageSharp via
+        # src/OpenMono.Cli, which this branch may not edit) do not fail
+        # restore under TreatWarningsAsErrors. Compiler warnings stay errors.
+        run: |
+          dotnet build windows/src/OpenMono.Hardware/OpenMono.Hardware.csproj -c Release -p:WarningsNotAsErrors="NU1902;NU1903"
+          dotnet build windows/src/OpenMono.Models/OpenMono.Models.csproj -c Release -p:WarningsNotAsErrors="NU1902;NU1903"
+          dotnet build windows/src/OpenMono.Supervisor/OpenMono.Supervisor.csproj -c Release -p:WarningsNotAsErrors="NU1902;NU1903"
+          dotnet build windows/src/OpenMono.AgentHost/OpenMono.AgentHost.csproj -c Release -p:WarningsNotAsErrors="NU1902;NU1903"
+
+      - name: Unit tests
+        run: dotnet test windows/tests/OpenMono.Windows.Tests/OpenMono.Windows.Tests.csproj -c Release --logger "console;verbosity=normal" -p:WarningsNotAsErrors="NU1902;NU1903"
+
   build-test:
     runs-on: windows-latest
     defaults:
@@ -24,12 +51,13 @@ jobs:
           dotnet-version: "10.0.100"
 
       - name: Restore Windows solution
-        run: dotnet restore windows/OpenMono.Windows.sln
+        run: dotnet restore windows/OpenMono.Windows.sln -p:WarningsNotAsErrors="NU1902;NU1903"
 
       - name: Build libraries and tests
         run: >
           dotnet build windows/OpenMono.Windows.sln -c Release --no-restore
           --exclude-design-time-facets
+          -p:WarningsNotAsErrors="NU1902;NU1903"
 
       - name: Unit tests
         run: dotnet test windows/tests/OpenMono.Windows.Tests/OpenMono.Windows.Tests.csproj -c Release --no-build --logger "console;verbosity=normal"
@@ -39,6 +67,7 @@ jobs:
           dotnet publish windows/src/OpenMono.Desktop/OpenMono.Desktop.csproj
           -c Release -r win-x64 --self-contained true
           -o windows/publish/win-x64 /p:Version=$((Get-Content windows/VERSION.windows).Trim())
+          -p:WarningsNotAsErrors="NU1902;NU1903"
 
       - name: Stage models.json and version
         run: |
@@ -72,4 +101,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: OpenMonoSetup
-          path: dist/OpenMonoSetup.exe
+          path: windows/dist/OpenMonoSetup.exe
