@@ -61,6 +61,10 @@ windows/
 
 ## Build on Windows
 
+Build host must be AMD/Intel (x64). ARM64 hosts are not supported:
+`build.ps1` fails fast there. Use the `windows-desktop` CI workflow
+(`windows-latest`) as the build gate.
+
 ```powershell
 cd windows
 .\build\build.ps1 -Configuration Release

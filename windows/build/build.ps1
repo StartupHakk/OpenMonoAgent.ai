@@ -7,6 +7,15 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $windows = Join-Path $root "windows"
+
+# AMD/Intel (x64) hosts only. The WinUI packaging toolchain (self-contained
+# Windows App SDK, XAML PRI generation) does not run on ARM64, so fail fast
+# with a clear message instead of misleading compiler errors. Build gates are
+# CI (windows-desktop workflow on windows-latest) and the Linux portable job.
+$hostArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+if ($hostArch -ne [System.Runtime.InteropServices.Architecture]::X64) {
+  throw "OpenMono for Windows requires an AMD/Intel (x64) build host. Current host: $hostArch. Push to the Windows branch and use the windows-desktop CI workflow instead."
+}
 $version = (Get-Content (Join-Path $windows "VERSION.windows")).Trim()
 $env:OPENMONO_VERSION = $version
 
