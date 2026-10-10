@@ -182,7 +182,7 @@ public sealed class HostExecPolicy
 {
     /// <summary>Allow patterns shipped in the sample config.</summary>
     public static readonly IReadOnlyList<string> SampleAllow =
-        ["git *", "docker *", "systemctl status *", "journalctl *", "curl *"];
+        ["git *", "systemctl status *", "journalctl *"];
 
     /// <summary>Deny patterns shipped in the sample config.</summary>
     public static readonly IReadOnlyList<string> SampleDeny =

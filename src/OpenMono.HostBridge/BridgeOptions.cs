@@ -99,6 +99,9 @@ public sealed class BridgeOptions
             options.TaskText = string.Join(' ', positional);
         if (options.RunAs is not null && string.IsNullOrWhiteSpace(options.RunAs))
             throw new InvalidOperationException("--run-as needs a username (see --help)");
+        if (options.RunAs is not null && !string.IsNullOrWhiteSpace(options.RunAs) &&
+            !HostIdentity.IsValidUsername(options.RunAs.Trim()))
+            throw new InvalidOperationException("--run-as needs a valid username ^[a-z_][a-z0-9_-]*[$]?$ (see --help)");
         if (options.PasswordFile is not null && string.IsNullOrWhiteSpace(options.PasswordFile))
             throw new InvalidOperationException("--password-file needs a path (see --help)");
         return options;

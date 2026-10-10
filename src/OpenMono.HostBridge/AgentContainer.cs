@@ -89,8 +89,15 @@ public sealed class AgentContainer
         args.Append("-e HOME=/home/agent ");
         args.Append($"-e WORKSPACE=\"{_workDir}\" ");
         args.Append($"-e OPENMONO_ENDPOINT={endpoint} ");
+        string? apiKeyValue = null;
         if (!string.IsNullOrWhiteSpace(settings.ApiKey))
-            args.Append($"-e OPENMONO_API_KEY={settings.ApiKey} ");
+        {
+            // Pass the key via the child process environment (-e NAME with the
+            // value in process env), never on the docker command line where
+            // it would be visible in ps output.
+            args.Append("-e OPENMONO_API_KEY ");
+            apiKeyValue = settings.ApiKey;
+        }
         if (!string.IsNullOrWhiteSpace(gateway))
             args.Append($"-e OPENMONO_WEB_GATEWAY={gateway} ");
         if (!string.IsNullOrWhiteSpace(settings.Search))
@@ -102,7 +109,7 @@ public sealed class AgentContainer
         args.Append("agent --acp-only --acp-port 7475");
 
         _log.WriteLine("[bridge] starting ACP agent container...");
-        var rc = await RunDockerAsync(args.ToString(), ct);
+        var rc = await RunDockerAsync(args.ToString(), ct, apiKeyValue);
         if (rc != 0)
             throw new InvalidOperationException("docker compose run failed — is the Docker daemon running?");
         return $"http://127.0.0.1:{hostPort}";
@@ -170,7 +177,7 @@ public sealed class AgentContainer
         }
     }
 
-    private async Task<int> RunDockerAsync(string args, CancellationToken ct)
+    private async Task<int> RunDockerAsync(string args, CancellationToken ct, string? apiKeyValue = null)
     {
         var psi = new ProcessStartInfo("docker", args)
         {
@@ -180,6 +187,8 @@ public sealed class AgentContainer
             CreateNoWindow = true,
             WorkingDirectory = _workDir,
         };
+        if (!string.IsNullOrEmpty(apiKeyValue))
+            psi.Environment["OPENMONO_API_KEY"] = apiKeyValue;
         using var process = Process.Start(psi)
             ?? throw new InvalidOperationException("failed to start docker");
         var stdout = await process.StandardOutput.ReadToEndAsync(ct);

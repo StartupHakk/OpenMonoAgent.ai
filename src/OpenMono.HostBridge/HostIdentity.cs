@@ -27,6 +27,17 @@ public sealed class HostIdentity : IDisposable
 
     public static string CurrentUser => Environment.UserName;
 
+    private static readonly System.Text.RegularExpressions.Regex ValidUsername =
+        new(@"^[a-z_][a-z0-9_-]*[$]?$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
+    /// Validates a run-as username before it is interpolated into
+    /// <c>sudo -u</c>. Rejects shell metacharacters and paths so a hostile or
+    /// mistyped config value can never escape the username position.
+    /// </summary>
+    public static bool IsValidUsername(string? username) =>
+        !string.IsNullOrWhiteSpace(username) && ValidUsername.IsMatch(username);
+
     /// <summary>
     /// Reads a password from a file without ever echoing it. The file must be
     /// owner-read/write-only; when this process runs as root the file must

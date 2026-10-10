@@ -60,6 +60,11 @@ if (options.Init || allowSudo is null)
             if (!string.IsNullOrWhiteSpace(typed))
                 runAs = typed.Trim();
         }
+        if (!string.IsNullOrWhiteSpace(runAs) && !HostIdentity.IsValidUsername(runAs))
+        {
+            Console.Error.WriteLine($"[bridge] ERROR: invalid username '{runAs}' (expected ^[a-z_][a-z0-9_-]*[$]?$).");
+            return 1;
+        }
         if (!sudoExplicit)
         {
             Console.Error.Write("Allow this sub-agent to use sudo for host commands that need root? [y/N] ");
@@ -105,6 +110,13 @@ else if (options.Init)
 
 using HostIdentity identity = new(runAs, allowSudo ?? false, password);
 password = null; // owned by identity now (zeroed on dispose)
+
+if (!string.IsNullOrWhiteSpace(runAs) && !HostIdentity.IsValidUsername(runAs))
+{
+    Console.Error.WriteLine(
+        $"[bridge] ERROR: invalid run_as username '{runAs}' (expected ^[a-z_][a-z0-9_-]*[$]?$).");
+    return 1;
+}
 
 // Fail fast on the wrong-user trap: HOST_EXEC as another user needs sudo,
 // and without it every host command would fail one by one mid-session.
