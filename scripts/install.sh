@@ -795,25 +795,48 @@ if [ "$OPENMONO_ROLE" != "inference" ]; then
             _bridge_answer="${OPENMONO_HOST_BRIDGE:-}"
             if [[ -z "$_bridge_answer" ]]; then
                 if [[ ! -t 0 ]]; then
-                    info "Skipping host sub-agent (non-interactive). Add it later with:"
+                    info "Skipping host sub-agent (non-interactive, default No). Add it later with:"
                     info "  OPENMONO_HOST_BRIDGE=1 bash scripts/install.sh  # or: bash scripts/install-host-bridge.sh"
                 else
                     echo ""
-                    echo "  ── Optional: bare-metal server sub-agent ─────────────────"
-                    echo "  A .NET helper that talks to this box's in-container agent over"
-                    echo "  ACP and runs host commands (pull, build, install, redeploy,"
-                    echo "  troubleshoot). For server boxes; coding installs don't need it."
-                    echo "  (Its installer then asks which user to run as and whether"
-                    echo "  sudo is allowed — sudo stays off unless you say yes.)"
+                    echo "  ── OPTIONAL: bare-metal host operator (DEFAULT: No) ──"
+                    echo "  This BREAKS the container sandbox. If installed, the agent can"
+                    echo "  run HOST commands directly on THIS HOST as your user (pull, build,"
+                    echo "  install, docker, systemctl, redeploy, troubleshoot). Every command"
+                    echo "  is audit-logged, sudo stays OFF unless you separately opt in."
+                    echo "  Only install on a server box you operate. Coding laptops: say No."
+                    echo "  You can add it later with: bash scripts/install-host-bridge.sh"
                     echo ""
-                    printf "  Install the host sub-agent? [y/N] "
+                    printf "  Install the host sub-agent? Default No [y/N] (Enter=No): "
                     read -r _bridge_answer || _bridge_answer=""
                     echo ""
                 fi
             fi
             case "${_bridge_answer:-}" in
                 1|[Yy]|[Yy]es)
-                    info "Installing host sub-agent..."
+                    # Second explicit consent: "always" must be chosen, never assumed.
+                    # OPENMONO_HOST_EXEC_DEFAULT=ask|allow presets it non-interactively.
+                    _bridge_policy="${OPENMONO_HOST_EXEC_DEFAULT:-}"
+                    if [[ -z "$_bridge_policy" && -t 0 ]]; then
+                        echo "  Host commands run as your user. Choose how to confirm them:"
+                        echo "    1) Ask every time (recommended) — prompt [y/N] per host command"
+                        echo "    2) Allow routine without asking — git/docker/status run immediately"
+                        echo "       (deny list + sudo rules + audit log still apply)"
+                        echo ""
+                        printf "  Host command policy? [1/2] (Default 1=Ask): "
+                        read -r _bridge_policy_answer || _bridge_policy_answer=""
+                        echo ""
+                        case "${_bridge_policy_answer:-}" in
+                            2|[Aa]llow) _bridge_policy="allow" ;;
+                            *) _bridge_policy="ask" ;;
+                        esac
+                    fi
+                    # Fail closed: anything but an explicit "allow" becomes "ask".
+                    case "${_bridge_policy:-}" in
+                        [Aa]llow) export OPENMONO_HOST_EXEC_DEFAULT="allow" ;;
+                        *) export OPENMONO_HOST_EXEC_DEFAULT="ask" ;;
+                    esac
+                    info "Installing host sub-agent (host-exec default: $OPENMONO_HOST_EXEC_DEFAULT)..."
                     if bash "$SCRIPT_DIR/install-host-bridge.sh"; then
                         ok "Host sub-agent installed"
                         export OPENMONO_HOST_BRIDGE=1

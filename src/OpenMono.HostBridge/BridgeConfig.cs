@@ -95,14 +95,16 @@ public sealed class BridgeConfig
                 },
                 HostExec = new HostExecPolicy
                 {
-                    // allow-by-default: this sub-agent exists to manage the
-                    // server, so routine host commands run without a y/N each
-                    // time. The deny list still blocks destructive patterns,
-                    // sudo still needs its own opt-in, and every command is
-                    // audited. Set Default back to "ask" to confirm each one.
+                    // ask-by-default: every host command confirms with y/N
+                    // unless the operator explicitly chose "allow routine"
+                    // at install (OPENMONO_HOST_EXEC_DEFAULT=allow). The deny
+                    // list still blocks destructive patterns, sudo still needs
+                    // its own opt-in, and every command is audited. Install
+                    // flips this to "allow" only on explicit opt-in — never
+                    // silently.
                     Allow = [.. HostExecPolicy.SampleAllow],
                     Deny = [.. HostExecPolicy.SampleDeny],
-                    Default = "allow",
+                    Default = "ask",
                 },
             };
             File.WriteAllText(resolved,
@@ -128,23 +130,15 @@ public sealed class BridgeConfig
     }
 
     /// <summary>
-    /// One-time upgrade: configs that still carry the OLD shipped sample
-    /// (default ask, untouched) move to the allow default — the sub-agent
-    /// manages the server, so routine host commands must not ask y/N each
-    /// time. Deny list, sudo rules, and auditing are untouched, and any
-    /// operator-customized policy is never migrated. Returns true when it
-    /// changed and saved the file.
+    /// Legacy upgrade hook — now a no-op. We used to move untouched stock
+    /// "ask" samples to "allow"; that silent escalation is retired. "Always"
+    /// now requires explicit opt-in at install
+    /// (OPENMONO_HOST_EXEC_DEFAULT=allow). Existing configs are never
+    /// changed here. Returns false always (kept for call-site compat).
     /// </summary>
     public static bool MigrateStockAskToAllow(string? path, BridgeConfig config, TextWriter log)
     {
-        if (!config.HostExec.IsUncustomizedAskSample())
-            return false;
-        config.HostExec.Default = "allow";
-        Save(path, config);
-        log.WriteLine("[bridge] host-exec policy: untouched stock sample (default ask) → allow. " +
-            "Deny list + sudo rules unchanged; every command still audited. " +
-            "Set host_exec.default back to \"ask\" to confirm each command.");
-        return true;
+        return false;
     }
 
     /// <summary>

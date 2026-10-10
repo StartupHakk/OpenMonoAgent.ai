@@ -63,6 +63,9 @@ fi
 # Sudo opt-in (never silent): configure run-as identity + sudo choice now when
 # interactive; otherwise leave allow_sudo unasked so the bridge asks once on
 # first run. OPENMONO_HOST_SUDO=1/0 presets it for non-interactive installs.
+# Host-exec policy (never silent): OPENMONO_HOST_EXEC_DEFAULT=allow|ask selects
+# the default. Anything but an explicit "allow" stays "ask" (fail closed).
+# install.sh prompts for this; direct script runs default to ask.
 case "${OPENMONO_HOST_SUDO:-}" in
     1|[Yy]|[Yy]es)
         "$BIN_DIR/host-bridge" --init --allow-sudo --non-interactive
@@ -81,3 +84,31 @@ case "${OPENMONO_HOST_SUDO:-}" in
 esac
 
 echo "[host-bridge] OK — run it with: openmono agent --host"
+
+# Apply the explicit host-exec default (ask unless OPENMONO_HOST_EXEC_DEFAULT=allow).
+# The sample config ships "ask"; only flip to "allow" on explicit opt-in.
+_HOST_EXEC_DEFAULT="ask"
+case "${OPENMONO_HOST_EXEC_DEFAULT:-}" in
+    [Aa]llow) _HOST_EXEC_DEFAULT="allow" ;;
+esac
+_HOST_BRIDGE_CONFIG="${OPENMONO_HOST_BRIDGE_CONFIG:-$HOME/.openmono/host-bridge.json}"
+if [[ -f "$_HOST_BRIDGE_CONFIG" ]] && command -v python3 &>/dev/null; then
+    _HOST_EXEC_DEFAULT="$_HOST_EXEC_DEFAULT" _HOST_BRIDGE_CONFIG="$_HOST_BRIDGE_CONFIG" python3 - <<'PYEOF' || echo "[host-bridge] WARNING: could not set host_exec.default; edit $_HOST_BRIDGE_CONFIG manually." >&2
+import json, os
+cfg_path = os.environ["_HOST_BRIDGE_CONFIG"]
+want = os.environ["_HOST_EXEC_DEFAULT"]
+try:
+    with open(cfg_path) as f:
+        cfg = json.load(f)
+    cfg.setdefault("host_exec", {})["default"] = want
+    with open(cfg_path, "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+    print(f"[host-bridge] host-exec default: {want} ({cfg_path})")
+except Exception as ex:
+    print(f"[host-bridge] WARNING: {ex}")
+    raise SystemExit(1)
+PYEOF
+else
+    echo "[host-bridge] host-exec default: $_HOST_EXEC_DEFAULT (ask = confirm each command; allow = run routine without asking)"
+fi

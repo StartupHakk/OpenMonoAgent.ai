@@ -336,18 +336,21 @@ public class HostExecPolicyMigrationTests
     };
 
     [Fact]
-    public void UntouchedStockAsk_MigratesToAllow()
+    public void UntouchedStockAsk_NeverMigrated_StaysAsk()
     {
         var path = Path.Combine(Path.GetTempPath(), $"bridge-test-{Guid.NewGuid():N}.json");
         try
         {
             var migrated = BridgeConfig.MigrateStockAskToAllow(path, StockAskConfig(), new StringWriter());
-            migrated.Should().BeTrue();
-            BridgeConfig.Load(path, new StringWriter()).HostExec.Default.Should().Be("allow");
+            migrated.Should().BeFalse();
+            // No file is written and the in-memory policy is untouched:
+            // "always" requires explicit opt-in at install.
+            StockAskConfig().HostExec.Default.Should().Be("ask");
         }
         finally
         {
-            File.Delete(path);
+            if (File.Exists(path))
+                File.Delete(path);
         }
     }
 
