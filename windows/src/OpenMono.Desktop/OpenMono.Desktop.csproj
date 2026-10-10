@@ -14,13 +14,9 @@
     <UseWinUI>true</UseWinUI>
     <!-- Unpackaged classic installer app (Inno Setup ships the exe). Not MSIX. -->
     <WindowsPackageType>None</WindowsPackageType>
-    <!-- Single-project MSIX Packaging tasks (shipped in the WinAppSDK NuGet
-      package) generate the .pri via WinAppSdkGenerateProjectPriFile, which
-      runs under dotnet build. Without this, the build uses the VS-only
-      ExpandPriContent task (Microsoft.Build.Packaging.Pri.Tasks.dll) and
-      fails with MSB4062 on machines without VS Appx tooling, including CI.
-      The app itself stays unpackaged: WindowsPackageType=None, no .msix. -->
-    <EnableMsixTooling>true</EnableMsixTooling>
+    <!-- NOTE: build this project with Visual Studio MSBuild (windows/build/build.ps1,
+      windows-desktop workflow), NOT dotnet build: the PRI packaging tasks ship
+      only with VS and dotnet build fails with MSB4062 (ExpandPriContent). -->
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <EnableMsixTooling>false</EnableMsixTooling>
     <Description>OpenMono for Windows: local agent desktop with bundled inference.</Description>

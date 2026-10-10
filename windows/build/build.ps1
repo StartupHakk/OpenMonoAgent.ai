@@ -21,7 +21,31 @@ $env:OPENMONO_VERSION = $version
 
 Write-Host "OpenMono for Windows build $version ($Configuration, $Runtime)"
 
-& dotnet build (Join-Path $windows "OpenMono.Windows.sln") -c $Configuration
+# Visual Studio MSBuild is required for the Desktop project: the PRI
+# packaging tasks ship only with VS (dotnet build fails with MSB4062).
+# Everything else builds with dotnet, mirroring the CI workflow.
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$msbuild = $null
+if (Test-Path $vswhere) {
+  $msbuild = & $vswhere -latest -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" | Select-Object -First 1
+}
+if (-not $msbuild) {
+  throw "Visual Studio with MSBuild is required to build OpenMono.Desktop. Install VS 2022/2026 with .NET desktop development."
+}
+
+$libProjects = @(
+  "src\OpenMono.Hardware\OpenMono.Hardware.csproj",
+  "src\OpenMono.Models\OpenMono.Models.csproj",
+  "src\OpenMono.Supervisor\OpenMono.Supervisor.csproj",
+  "src\OpenMono.AgentHost\OpenMono.AgentHost.csproj",
+  "tests\OpenMono.Windows.Tests\OpenMono.Windows.Tests.csproj",
+  "src\OpenMono.SmokeTest\OpenMono.SmokeTest.csproj"
+)
+foreach ($project in $libProjects) {
+  & dotnet build (Join-Path $windows $project) -c $Configuration -p:WarningsNotAsErrors="NU1902%3BNU1903"
+  if ($LASTEXITCODE -ne 0) { exit 1 }
+}
+& $msbuild (Join-Path $windows "src\OpenMono.Desktop\OpenMono.Desktop.csproj") /p:Configuration=$Configuration /p:Platform=x64 /p:WarningsNotAsErrors="NU1902%3BNU1903" /m /v:minimal
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 if (-not $SkipTests) {
@@ -30,9 +54,7 @@ if (-not $SkipTests) {
 }
 
 $publishDir = Join-Path $windows "publish\$Runtime"
-& dotnet publish (Join-Path $windows "src\OpenMono.Desktop\OpenMono.Desktop.csproj") `
-  -c $Configuration -r $Runtime --self-contained true `
-  -o $publishDir /p:Version=$version
+& $msbuild (Join-Path $windows "src\OpenMono.Desktop\OpenMono.Desktop.csproj") /t:Publish /p:Configuration=$Configuration /p:Platform=x64 /p:RuntimeIdentifier=$Runtime /p:SelfContained=true /p:Version=$version /p:PublishDir="$publishDir\" /p:WarningsNotAsErrors="NU1902%3BNU1903"
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 Copy-Item (Join-Path $windows "src\OpenMono.Models\models.json") $publishDir -Force

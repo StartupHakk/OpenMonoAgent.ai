@@ -55,20 +55,35 @@ jobs:
       - name: Restore Windows solution
         run: dotnet restore windows/OpenMono.Windows.sln -p:WarningsNotAsErrors="NU1902%3BNU1903"
 
+      - name: Add VS msbuild to PATH
+        # PRI packaging tasks (ExpandPriContent) ship only with Visual Studio
+        # MSBuild, not the dotnet SDK: dotnet build of the WinUI project fails
+        # with MSB4062. The image carries VS2026 + UWP/MSIX workloads, so VS
+        # msbuild resolves them from the VS install. dotnet still builds and
+        # tests everything else; only Desktop uses VS msbuild.
+        uses: microsoft/setup-msbuild@v2
+
       - name: Build libraries and tests
-        run: >
-          dotnet build windows/OpenMono.Windows.sln -c Release --no-restore
-          -p:WarningsNotAsErrors="NU1902%3BNU1903"
+        run: |
+          dotnet build windows/src/OpenMono.Hardware/OpenMono.Hardware.csproj -c Release --no-restore -p:WarningsNotAsErrors="NU1902%3BNU1903"
+          dotnet build windows/src/OpenMono.Models/OpenMono.Models.csproj -c Release --no-restore -p:WarningsNotAsErrors="NU1902%3BNU1903"
+          dotnet build windows/src/OpenMono.Supervisor/OpenMono.Supervisor.csproj -c Release --no-restore -p:WarningsNotAsErrors="NU1902%3BNU1903"
+          dotnet build windows/src/OpenMono.AgentHost/OpenMono.AgentHost.csproj -c Release --no-restore -p:WarningsNotAsErrors="NU1902%3BNU1903"
+          dotnet build windows/tests/OpenMono.Windows.Tests/OpenMono.Windows.Tests.csproj -c Release --no-restore -p:WarningsNotAsErrors="NU1902%3BNU1903"
+          dotnet build windows/src/OpenMono.SmokeTest/OpenMono.SmokeTest.csproj -c Release --no-restore -p:WarningsNotAsErrors="NU1902%3BNU1903"
+          msbuild windows/src/OpenMono.Desktop/OpenMono.Desktop.csproj /p:Configuration=Release /p:Platform=x64 /p:WarningsNotAsErrors="NU1902%3BNU1903" /m /v:minimal
 
       - name: Unit tests
         run: dotnet test windows/tests/OpenMono.Windows.Tests/OpenMono.Windows.Tests.csproj -c Release --no-build --logger "console;verbosity=normal"
 
       - name: Publish desktop app (self-contained win-x64)
+        # VS msbuild for the same PRI reason as the build step above.
         run: >
-          dotnet publish windows/src/OpenMono.Desktop/OpenMono.Desktop.csproj
-          -c Release -r win-x64 --self-contained true
-          -o windows/publish/win-x64 /p:Version=$((Get-Content windows/VERSION.windows).Trim())
-          -p:WarningsNotAsErrors="NU1902%3BNU1903"
+          msbuild windows/src/OpenMono.Desktop/OpenMono.Desktop.csproj /t:Publish
+          /p:Configuration=Release /p:Platform=x64 /p:RuntimeIdentifier=win-x64
+          /p:SelfContained=true /p:Version=$((Get-Content windows/VERSION.windows).Trim())
+          /p:PublishDir="windows\publish\win-x64\"
+          /p:WarningsNotAsErrors="NU1902%3BNU1903"
 
       - name: Stage models.json and version
         run: |

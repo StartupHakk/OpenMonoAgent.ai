@@ -662,10 +662,11 @@ The agent must not be told to fix Docker by starting the containerized llama-ser
 
 ### Build and publish
 
-On a Windows machine or `windows-latest`:
+On a Windows machine or `windows-latest` (x64 host with Visual Studio; ARM64
+hosts are rejected by `build.ps1`):
 
 1. `dotnet test` the test project.
-2. `dotnet publish windows/src/OpenMono.Desktop/OpenMono.Desktop.csproj -c Release -r win-x64 --self-contained true` into `windows/publish/win-x64`. Self-contained means the machine does not need a separate .NET 10 install. Windows App SDK is self-contained (`WindowsAppSDKSelfContained`).
+2. `msbuild windows/src/OpenMono.Desktop/OpenMono.Desktop.csproj /t:Publish /p:Configuration=Release /p:Platform=x64 /p:RuntimeIdentifier=win-x64 /p:SelfContained=true` into `windows/publish/win-x64`. Desktop must build and publish with Visual Studio MSBuild, not `dotnet`: the PRI packaging tasks ship only with VS (`MSB4062` otherwise). Self-contained means the machine does not need a separate .NET 10 install. Windows App SDK is self-contained (`WindowsAppSDKSelfContained`).
 3. `fetch-rg.ps1` into `publish/win-x64/resources/rg`.
 4. `fetch-llama.ps1 -Flavor cpu` into `publish/win-x64/resources/llama-server/cpu` so the installer can boot a CPU server before any download. CUDA and Vulkan zips are not in the installer.
 5. `stage-docker.ps1` into `publish/win-x64/resources/docker`.
