@@ -4,6 +4,10 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <!-- x64 only (product decision). Declaring the RID makes restore include
+      the win-x64 assets graph so /p:RuntimeIdentifier=win-x64 publish works
+      (NETSDK1047 otherwise). -->
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <RootNamespace>OpenMono.Windows.Desktop</RootNamespace>
     <!-- Must differ (case-insensitively) from src/OpenMono.Cli's assembly
       'openmono': NuGet solution/project restore fails with 'Ambiguous project
