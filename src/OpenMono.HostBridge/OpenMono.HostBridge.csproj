@@ -9,5 +9,8 @@
   <ItemGroup>
     <ProjectReference Include="..\OpenMono.Cli\OpenMono.Cli.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="OpenMono.Tests" />
+  </ItemGroup>
 
 </Project>
