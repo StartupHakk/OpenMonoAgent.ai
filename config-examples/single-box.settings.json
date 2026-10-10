@@ -1,0 +1,6 @@
+{
+  "llm": {
+    "endpoint": "http://localhost:7474",
+    "api_key": ""
+  }
+}

@@ -336,9 +336,18 @@ cmd_help() {
     printf "  %-14s %s\n" "help"    "Show this help"
     echo ""
     echo "Agent box (run the coding agent):"
-    printf "  %-14s %s\n" "agent"    "Run the coding agent in the current directory"
+    printf "  %-14s %s\n" "agent"    "Run the coding agent in the current directory [--host|--sandbox]"
     printf "  %-14s %s\n" "graph"    "Build the code-review-graph for a project"
     printf "  %-14s %s\n" "graphify" "Build the graphify knowledge graph for a project"
+    echo ""
+    echo "Agent modes (pick one per run; default: sandbox):"
+    echo "  --sandbox  Container sandbox: project bind-mounted as /workspace."
+    echo "             Required for the VS Code / Cursor extension (--acp-only)."
+    echo "  --host     Server sub-agent (.NET, bare metal): drives this box's"
+    echo "             in-container agent over ACP and runs host commands"
+    echo "             (pull, build, install, redeploy, troubleshoot)."
+    echo "             Model loop stays in the container; inference is"
+    echo "             llm.endpoint (local or relay)."
     echo ""
     echo "Inference box (llama-server lifecycle):"
     printf "  %-14s %s\n" "start"   "Start llama-server in the background"
@@ -416,6 +425,15 @@ cmd_setup() {
                 echo ""
                 echo "Other:"
                 echo "  --verbose     Show detailed command output (default: step-level progress)"
+                echo ""
+                echo "Server sub-agent (opt-in add-on, full/agent only — never inference):"
+                echo "  Setup asks once (default No, breaks container sandbox when installed)."
+                echo "  On Yes it asks again: ask-every-time (default) vs allow-routine."
+                echo "  For non-interactive installs:"
+                echo "    OPENMONO_HOST_BRIDGE=1 OPENMONO_HOST_EXEC_DEFAULT=ask openmono setup --agent     # confirm each host cmd"
+                echo "    OPENMONO_HOST_BRIDGE=1 OPENMONO_HOST_EXEC_DEFAULT=allow openmono setup --agent   # routine runs without asking"
+                echo "    OPENMONO_HOST_BRIDGE=0 openmono setup --agent   # skip the prompt (default)"
+                echo "  Add it later any time with: bash scripts/install-host-bridge.sh"
                 echo ""
                 echo "A full log is written to ~/.openmono/logs/setup-<timestamp>.log"
                 echo ""
@@ -608,6 +626,16 @@ EOF
             ;;
     esac
 
+    if [[ "${OPENMONO_HOST_BRIDGE:-0}" == "1" ]]; then
+        echo "  Bare-metal server sub-agent installed (opt-in add-on)."
+        echo ""
+        echo "  It talks to this box's in-container agent over ACP and runs host"
+        echo "  commands (pull, build, install, redeploy, troubleshoot):"
+        echo ""
+        echo -e "    ${BOLD}cd /srv/my-backend && openmono agent --host${NC}"
+        echo ""
+    fi
+
     echo "  Troubleshooting:"
     echo "    If you exit before the shell reloads, reload it manually:"
     echo -e "      ${BOLD}exec -l \$SHELL${NC}    # Reload login shell (picks up new groups + PATH)"
@@ -621,7 +649,7 @@ EOF
 
     unset OPENMONO_GPU OPENMONO_CPU OPENMONO_ROLE OPENMONO_VERBOSE OPENMONO_LOG_DIR \
           OPENMONO_LOG_FILE OPENMONO_ENV_FILE GPU_MODE AMD_IGPU_MODE AMD_IGPU_REBOOT_PENDING \
-          INSTALL_DIR LLAMA_PORT OPENMONO_VERBOSE
+          INSTALL_DIR LLAMA_PORT OPENMONO_VERBOSE OPENMONO_HOST_BRIDGE
     export PATH="$INSTALL_DIR:$PATH"
     exec -l "$SHELL"
 }
@@ -793,7 +821,121 @@ _clipboard_bridge_stop() {
     CLIPBOARD_BRIDGE_PID=""
 }
 
+# ── Host sub-agent (bare-metal operator via ACP bridge) ────────────────────────
+# `--host` runs the .NET host-bridge on bare metal. The bridge drives this box's
+# in-container agent over ACP — the same HTTP/SSE API the VS Code extension and
+# the smoke test use — and executes host commands itself (shell, git, files,
+# installs). The model loop stays in the container: nothing here runs inference
+# or duplicates the agent. VS Code / extension use (--acp-only) stays
+# sandbox-only and is rejected with --host.
+
+cmd_agent_host_bin() {
+    if [[ -n "${OPENMONO_HOST_BRIDGE_BIN:-}" && -x "$OPENMONO_HOST_BRIDGE_BIN" ]]; then
+        printf '%s' "$OPENMONO_HOST_BRIDGE_BIN"
+        return 0
+    fi
+    if [[ -x "$HOME/.openmono/bin/host-bridge/host-bridge" ]]; then
+        printf '%s' "$HOME/.openmono/bin/host-bridge/host-bridge"
+        return 0
+    fi
+    return 1
+}
+
+cmd_agent_host_project() {
+    local proj="$REPO_DIR/src/OpenMono.HostBridge/OpenMono.HostBridge.csproj"
+    [[ -f "$proj" ]] || return 1
+    command -v dotnet &>/dev/null || return 1
+    printf '%s' "$proj"
+    return 0
+}
+
+cmd_agent_host() {
+    # VS Code / extension integration is sandbox-only by design.
+    local a
+    for a in ${1+"$@"}; do
+        if [[ "$a" == "--acp-only" ]]; then
+            err "--acp-only (VS Code / Cursor extension mode) is only supported in sandbox mode."
+            err "Run without --host: openmono agent --acp-only --acp-port 7475"
+            exit 1
+        fi
+    done
+
+    # Fail fast when no inference is configured (local or relay).
+    local settings="$HOME/.openmono/settings.json"
+    local cfg_endpoint=""
+    if [[ -f "$settings" ]] && command -v jq &>/dev/null; then
+        cfg_endpoint=$(jq -r '.llm.endpoint // empty' "$settings")
+    fi
+    if [[ -z "$cfg_endpoint" ]]; then
+        err "No LLM endpoint configured in ~/.openmono/settings.json"
+        err "Point at local inference or your relay:"
+        err "  openmono config set llm.endpoint http://localhost:7474"
+        err "  openmono config set llm.endpoint http://<relay-host>:<remotePort>"
+        err "  openmono config set llm.api_key <token>"
+        exit 1
+    fi
+
+    # Local inference still starts the familiar way; remote (relay/direct) needs nothing.
+    local is_local=false
+    case "$cfg_endpoint" in
+        http://localhost:*|http://127.0.0.1:*)
+            is_local=true
+            ;;
+    esac
+    if [[ "$is_local" == "true" ]] && ! curl -sf --max-time 3 "${cfg_endpoint%/}/health" &>/dev/null; then
+        if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+            info "Local inference is not responding — starting it now..."
+            cmd_start || exit 1
+        elif [[ "$NATIVE_INFERENCE" == "true" ]]; then
+            info "Local inference is not responding — starting it now..."
+            cmd_start || exit 1
+        else
+            err "Local inference endpoint $cfg_endpoint is not responding and Docker is unavailable."
+            err "Start inference with: openmono start"
+            err "Or point at your relay: openmono config set llm.endpoint http://<relay-host>:<remotePort>"
+            exit 1
+        fi
+    fi
+
+    export OPENMONO_REPO_DIR="$REPO_DIR"
+    local bin proj
+    if bin="$(cmd_agent_host_bin)"; then
+        info "Running host sub-agent: $bin"
+        exec "$bin" --workdir "$(pwd)" "$@"
+    elif proj="$(cmd_agent_host_project)"; then
+        info "Host sub-agent not published — running from source (publish with: bash scripts/install-host-bridge.sh)"
+        exec dotnet run --project "$proj" -- --workdir "$(pwd)" "$@"
+    else
+        err "Host sub-agent is not installed."
+        err "Install it with: bash $REPO_DIR/scripts/install-host-bridge.sh  (installs .NET 10 via the existing prereqs when missing)"
+        err "Or use the sandbox instead: openmono agent --sandbox"
+        exit 1
+    fi
+}
+
 cmd_agent() {
+    local mode="${OPENMONO_AGENT_MODE:-sandbox}"
+    local fwd=()
+    local a
+    for a in ${1+"$@"}; do
+        case "$a" in
+            --host) mode=host ;;
+            --sandbox) mode=sandbox ;;
+            *) fwd+=("$a") ;;
+        esac
+    done
+    set -- "${fwd[@]+"${fwd[@]}"}"
+    case "$mode" in
+        host) cmd_agent_host "$@" ;;
+        sandbox) cmd_agent_sandbox "$@" ;;
+        *)
+            err "Unknown agent mode: $mode (use --host, --sandbox, or OPENMONO_AGENT_MODE=host|sandbox)"
+            exit 1
+            ;;
+    esac
+}
+
+cmd_agent_sandbox() {
     _ensure_docker
     WORKSPACE="${WORKSPACE:-$(pwd)}"
     export WORKSPACE
@@ -889,6 +1031,16 @@ cmd_agent() {
     fi
 
 
+    # Docker socket is opt-in only: the default sandbox must NOT get the host
+    # daemon. Set OPENMONO_DOCKER_SOCK=1 when the task actually needs docker
+    # against the host (deploy + troubleshoot containerized backends).
+    # OPENMONO_NO_DOCKER_SOCK=1 remains supported as an explicit veto (and as
+    # a harmless no-op for existing configs that set it).
+    local docker_sock_args=()
+    if [[ "${OPENMONO_DOCKER_SOCK:-0}" == "1" && "${OPENMONO_NO_DOCKER_SOCK:-0}" != "1" && -S /var/run/docker.sock ]]; then
+        docker_sock_args+=(-v /var/run/docker.sock:/var/run/docker.sock)
+    fi
+
     local extra_env=()
     local _upd; _upd="$(_update_notice 2>/dev/null || true)"
     [[ -n "$_upd" ]] && extra_env+=(-e "OPENMONO_UPDATE_NOTICE=$_upd")
@@ -902,6 +1054,7 @@ cmd_agent() {
         -e HOME=/home/agent \
         -e WORKSPACE="$WORKSPACE" \
         "${git_args[@]+"${git_args[@]}"}" \
+        "${docker_sock_args[@]+"${docker_sock_args[@]}"}" \
         "${extra_env[@]+"${extra_env[@]}"}" \
         agent "$@" || _agent_rc=$?
 

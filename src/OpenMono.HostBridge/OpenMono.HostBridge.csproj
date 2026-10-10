@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>OpenMono.HostBridge</RootNamespace>
+    <AssemblyName>host-bridge</AssemblyName>
+    <Description>Bare-metal operator sub-agent: drives the in-container OpenMono agent over ACP and executes host work (shell, git, files, installs) on the server.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\OpenMono.Cli\OpenMono.Cli.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="OpenMono.Tests" />
+  </ItemGroup>
+
+</Project>

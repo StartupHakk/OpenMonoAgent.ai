@@ -730,14 +730,17 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
     {
         lock (_queueLock)
         {
-            if (_messageQueue.Count < 2)
+            // Deep enough that a pasted paragraph (one message per line when
+            // the terminal strips bracketed-paste markers) is never dropped;
+            // the bridge joins everything pending into a single turn.
+            if (_messageQueue.Count < 32)
             {
                 _messageQueue.Enqueue(text);
                 AddMessage(new Msg("sys", $"⏳ Queued: {text}"));
             }
             else
             {
-                AddMessage(new Msg("sys", "⚠ Queue full (max 2)"));
+                AddMessage(new Msg("sys", "⚠ Queue full (max 32)"));
             }
         }
         PaintConvThrottled(force: true);

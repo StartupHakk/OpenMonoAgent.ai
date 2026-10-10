@@ -259,6 +259,11 @@ Intel Macs have no Metal GPU and no unified memory, so native inference is unsup
 
 Run the model on a dedicated inference box and connect from your laptop over the internet. No port forwarding required — the tunnel is established outbound from the inference box.
 
+> On the same LAN/VPN, or running the agent on a server box? See
+> [DEPLOYMENT-MODES.md](DEPLOYMENT-MODES.md) — it covers single-box mode, the
+> direct-LAN split (no relay account), and the server-ops runbook (pull a repo,
+> deploy, troubleshoot a backend).
+
 ![Dual-box setup diagram](assets/dual-box-server.png)
 
 ### Step 1 — Install on the inference box (option 2)
