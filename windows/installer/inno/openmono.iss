@@ -10,7 +10,7 @@
 #endif
 #define MyAppPublisher "OpenMono"
 #define MyAppURL "https://openmono.ai"
-#define MyAppExeName "OpenMono.exe"
+#define MyAppExeName "OpenMono.Windows.Desktop.exe"
 
 [Setup]
 AppId={{3F2E1D4C-7A6B-4C9D-8E5F-0A1B2C3D4E5F}

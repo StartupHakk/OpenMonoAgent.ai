@@ -5,7 +5,11 @@
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
     <RootNamespace>OpenMono.Windows.Desktop</RootNamespace>
-    <AssemblyName>OpenMono</AssemblyName>
+    <!-- Must differ (case-insensitively) from src/OpenMono.Cli's assembly
+      'openmono': NuGet solution/project restore fails with 'Ambiguous project
+      name' when both are in one restore graph. Matches the other
+      OpenMono.Windows.* assembly names in this solution. -->
+    <AssemblyName>OpenMono.Windows.Desktop</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <UseWinUI>true</UseWinUI>
     <!-- Unpackaged classic installer app (Inno Setup ships the exe). Not MSIX. -->

@@ -251,7 +251,7 @@ Work is specified in section 7. Self-contained publish, VC++ check, CPU `llama-s
 
 Acceptance: `windows-latest` uploads `windows/dist/OpenMonoSetup.exe` (see the path-unification
 note in section 7 — the workflow, the iss `OutputDir`, and the `build.ps1` sign path must
-all agree). Installing it on a clean user account does not elevate. The Start Menu shortcut launches `OpenMono.exe`. Uninstall removes the exe and leaves models unless the user checks delete.
+all agree). Installing it on a clean user account does not elevate. The Start Menu shortcut launches `OpenMono.Windows.Desktop.exe`. Uninstall removes the exe and leaves models unless the user checks delete.
 
 Effort: 3 days. Depends on M1.4 (rg staging) and M1.6 (CPU binary staging). Can land before the wizard is pretty.
 
@@ -623,7 +623,7 @@ Stop:
 docker compose -f ... -f ... stop caddy searxng scrapling
 ```
 
-Do not `down -v` on ordinary stop. That would drop SearXNG state. Uninstall stop uses `stop`, then `taskkill` is only for `llama-server.exe` and `OpenMono.exe`. Offer "Remove web containers" in Settings, which runs `down` without `-v` unless the user also checks delete volumes.
+Do not `down -v` on ordinary stop. That would drop SearXNG state. Uninstall stop uses `stop`, then `taskkill` is only for `llama-server.exe` and `OpenMono.Windows.Desktop.exe`. Offer "Remove web containers" in Settings, which runs `down` without `-v` unless the user also checks delete volumes.
 
 App exit stops llama-server. It leaves Docker containers running so the next launch is fast, and the server page shows "web services running." A setting "Stop web services when OpenMono exits" defaults off.
 
@@ -662,13 +662,14 @@ Path unification (fix before run 9): the iss `OutputDir` (`..\..\dist` relative 
 and `build.ps1` signs `root/dist/OpenMonoSetup.exe`. Those three must agree on
 `windows/dist/OpenMonoSetup.exe`: update the workflow upload path and the `build.ps1`
 sign path to `windows/dist/`, and keep the iss file as the source of truth.
-CI is red on this until the paths match.
+CI is red on this until the paths match. (Done in Run 1: all three agree on
+`windows/dist/OpenMonoSetup.exe`.)
 
 Per-user directory is `%LOCALAPPDATA%\Programs\OpenMono`. No elevation. Start Menu shortcut. Desktop shortcut is an unchecked task. The wizard offers launch on finish.
 
 Uninstall, already sketched in the iss `[Code]` block and to be finished:
 
-1. `taskkill /F /IM OpenMono.exe` and `taskkill /F /IM llama-server.exe`.
+1. `taskkill /F /IM OpenMono.Windows.Desktop.exe` and `taskkill /F /IM llama-server.exe`.
 2. Ask, default unchecked: delete `%LOCALAPPDATA%\OpenMono\models`, delete `%USERPROFILE%\.openmono`.
 3. Also delete `%LOCALAPPDATA%\OpenMono\bin` and `logs` with the app, because those are not the user's models or sessions. The current script only deletes models and `.openmono` when checked, and relies on Inno to remove `{app}`.
 4. Do not edit the system PATH. The app only prepends `rg` for its own process.
@@ -730,7 +731,7 @@ Add to that job, without requiring a GPU:
 
 - The smoke test remains the stub HTTP server. Extend it to call `OmaSettingsWriter` and `WindowsPromptBuilder` if those stay out of the WinUI project.
 - A step that runs `fetch-rg.ps1` only when the workflow should prove the script. Cache the zip. Do not download the 15GB model.
-- Confirm `publish/win-x64/OpenMono.exe` exists and `models.json` sits beside it.
+- Confirm `publish/win-x64/OpenMono.Windows.Desktop.exe` exists and `models.json` sits beside it.
 - Confirm the installer artifact exists at `windows/dist/OpenMonoSetup.exe` (not repo-root `dist/`). A silent install on the runner (`OpenMonoSetup.exe /VERYSILENT /NORESTART`) is worth doing once the iss file supports `/VERYSILENT`, then launching `OpenMono.exe` is not, because WinUI on a GitHub-hosted session has no interactive desktop we can trust. Stop at "setup exe produced and, if silent install is added, files land in the runner's LocalAppData."
 
 The workflow triggers on pushes and pull requests to `Windows` when `windows/**` changes. Do not add a trigger on `main`.

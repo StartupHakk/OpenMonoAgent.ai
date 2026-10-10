@@ -8,7 +8,11 @@ namespace OpenMono.Windows.Desktop.Views;
 
 public sealed partial class WizardPage : Page
 {
-    private bool _dockerSkipped;
+    /// <summary>
+    /// Set by SkipDocker_Click. The Ready step (M1.7) reads it to skip the
+    /// Docker stack start and show the DuckDuckGo fallback note instead.
+    /// </summary>
+    public bool DockerSkipped { get; private set; }
 
     public WizardPage()
     {
@@ -44,7 +48,7 @@ public sealed partial class WizardPage : Page
 
     private void SkipDocker_Click(object sender, RoutedEventArgs e)
     {
-        _dockerSkipped = true;
+        DockerSkipped = true;
         App.State.DockerWanted = false;
         DockerText.Text = DockerDetector.SkippedExplanation();
     }
