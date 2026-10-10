@@ -46,7 +46,11 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "..\..\publish\win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\publish\win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "apphost.exe,openmono.deps.json,openmono.runtimeconfig.json"
+; The Excludes above drop the CLI app's own host files (referenced OpenMono.Cli
+; is an exe project, so its apphost/deps/runtimeconfig can land in publish
+; output). Only openmono.dll ships. Our own OpenMono.Windows.Desktop.* files
+; are unaffected.
 ; VC++ redist bootstrapper (downloaded by build.ps1 into installer\deps; optional at compile time)
 #if FileExists(SourcePath + "..\deps\VC_redist.x64.exe")
 Source: "..\deps\VC_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall; Check: NeedsVCRedist

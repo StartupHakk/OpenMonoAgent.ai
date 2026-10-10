@@ -42,14 +42,14 @@ $libProjects = @(
   "src\OpenMono.SmokeTest\OpenMono.SmokeTest.csproj"
 )
 foreach ($project in $libProjects) {
-  & dotnet build (Join-Path $windows $project) -c $Configuration -p:WarningsNotAsErrors="NU1902%3BNU1903"
+  & dotnet build (Join-Path $windows $project) -c $Configuration -r $Runtime -p:WarningsNotAsErrors="NU1902%3BNU1903"
   if ($LASTEXITCODE -ne 0) { exit 1 }
 }
-& $msbuild (Join-Path $windows "src\OpenMono.Desktop\OpenMono.Desktop.csproj") /p:Configuration=$Configuration /p:Platform=x64 /p:WarningsNotAsErrors="NU1902%3BNU1903" /m /v:minimal
+& $msbuild (Join-Path $windows "src\OpenMono.Desktop\OpenMono.Desktop.csproj") /p:Configuration=$Configuration /p:Platform=x64 /p:RuntimeIdentifier=$Runtime /p:WarningsNotAsErrors="NU1902%3BNU1903" /m /v:minimal
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 if (-not $SkipTests) {
-  & dotnet test (Join-Path $windows "tests\OpenMono.Windows.Tests\OpenMono.Windows.Tests.csproj") -c $Configuration --no-build
+  & dotnet test (Join-Path $windows "tests\OpenMono.Windows.Tests\OpenMono.Windows.Tests.csproj") -c $Configuration -r $Runtime -p:WarningsNotAsErrors="NU1902%3BNU1903"
   if ($LASTEXITCODE -ne 0) { exit 1 }
 }
 
