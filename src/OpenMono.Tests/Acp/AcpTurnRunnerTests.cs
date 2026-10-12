@@ -618,6 +618,46 @@ public sealed class AcpTurnRunnerTests
 
 
 
+    [Fact]
+    public async Task Mode_banner_is_ephemeral_and_never_persisted_into_the_session()
+    {
+        var tools = new ToolRegistry();
+        tools.Register(new NoopTool());
+
+        // Two LLM rounds in one turn: tool call, then final text — the banner is
+        // prepended per iteration and must not accumulate in the stored system message.
+        var (runner, session, _) = BuildHarness(
+            tools: tools,
+            llmRounds: new List<List<StreamChunk>>
+            {
+                new()
+                {
+                    new() { ToolCallDelta = new ToolCall { Id = "call_1", Name = "NoopTool", Arguments = "{}" }, IsComplete = false },
+                    new() { IsComplete = true },
+                },
+                new() { new() { TextDelta = "done.", IsComplete = false }, new() { IsComplete = true, Usage = new UsageInfo() } },
+            });
+
+        await runner.RunUserMessageAsync("go", CancellationToken.None);
+
+        var system = session.Messages.First(m => m.Role == MessageRole.System);
+        system.Content.Should().NotContain("ACTIVE MODE",
+            "the per-turn mode banner must stay ephemeral; persisting it stacks a copy per LLM call, " +
+            "growing the prompt and shifting its prefix so llama.cpp's KV cache never hits");
+    }
+
+    private sealed class NoopTool : ITool
+    {
+        public string Name => "NoopTool";
+        public string Description => "Executes without prompting";
+        public bool IsConcurrencySafe => false;
+        public bool IsReadOnly => true;
+        public JsonElement InputSchema { get; } = JsonDocument.Parse("""{"type":"object"}""").RootElement.Clone();
+        public PermissionLevel RequiredPermission(JsonElement input) => PermissionLevel.AutoAllow;
+        public Task<ToolResult> ExecuteAsync(JsonElement input, ToolContext ctx, CancellationToken ct)
+            => Task.FromResult(ToolResult.Success("ok"));
+    }
+
     private sealed class AskingTool : ITool
     {
         public string Name => "AskingTool";
