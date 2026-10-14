@@ -339,6 +339,10 @@ Stuck on setup, or want OpenMono on your own servers? We install and support pri
     <td style="padding:9px 16px;border-bottom:1px solid #1A1A1A;"><sub style="color:#C8C8C0;">Chat panel for VS Code 1.85+ · also works in Cursor · <a href="https://marketplace.visualstudio.com/items?itemName=StartupHakk.openmono-agent">Marketplace</a></sub></td>
   </tr>
   <tr>
+    <td style="padding:9px 16px;border-bottom:1px solid #1A1A1A;border-right:1px solid #232323;"><a href="docs/SECURITY.md"><code style="font-size:12px;">Dual-box security</code></a></td>
+    <td style="padding:9px 16px;border-bottom:1px solid #1A1A1A;"><sub style="color:#C8C8C0;">Tailscale, API keys, bind host, ACLs</sub></td>
+  </tr>
+  <tr>
     <td style="padding:9px 16px;border-right:1px solid #232323;"><a href="CONTRIBUTING.md"><code style="font-size:12px;">Contributing</code></a></td>
     <td style="padding:9px 16px;"><sub style="color:#C8C8C0;">How to contribute</sub></td>
   </tr>

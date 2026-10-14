@@ -47,6 +47,12 @@ if [[ "$NATIVE_INFERENCE" == "true" ]]; then
     source "$REPO_DIR/scripts/macos/tunnel.sh"
 fi
 
+# Tailscale helpers are used on Intel agent boxes too, not only Apple Silicon.
+# shellcheck source=scripts/lib/tailscale-cli.sh
+if [[ -f "$REPO_DIR/scripts/lib/tailscale-cli.sh" ]]; then
+    source "$REPO_DIR/scripts/lib/tailscale-cli.sh"
+fi
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -540,13 +546,15 @@ cmd_help() {
     printf "  %-14s %s\n" "setup search"   "Install SearXNG — private web search (backs WebSearch)"
     printf "  %-14s %s\n" "setup scraper"  "Install Scrapling — anti-bot web scraping (backs WebFetch)"
     echo ""
-    echo "Inference box (frpc tunnel to the relay — dual-box only):"
-    printf "  %-14s %s\n" "tunnel setup"      "Install frpc + systemd unit (prompts for relay signup values)"
+    echo "Inference box (dual-box tunnel — frp relay or Tailscale):"
+    printf "  %-14s %s\n" "tunnel setup"      "frp relay, or --tailscale for MagicDNS/100.x"
+    printf "  %-14s %s\n" "tunnel prepare"    "Dual-box readiness checklist (Mini + agent Mac)"
+    printf "  %-14s %s\n" "tunnel doctor"     "prepare + remote health and API-key probe"
     printf "  %-14s %s\n" "tunnel rotate-key" "Rotate LLAMA_API_KEY and restart backend"
     printf "  %-14s %s\n" "tunnel start"      "Start the frpc tunnel"
     printf "  %-14s %s\n" "tunnel stop"       "Stop the frpc tunnel"
     printf "  %-14s %s\n" "tunnel restart"    "Restart the frpc tunnel"
-    printf "  %-14s %s\n" "tunnel status"     "Show tunnel state + configured target"
+    printf "  %-14s %s\n" "tunnel status"     "Show frpc + Tailscale state"
     printf "  %-14s %s\n" "tunnel logs"       "Tail frpc logs"
     echo ""
     echo "Global flags:"
@@ -1711,6 +1719,20 @@ cmd_agent_sandbox() {
             ;;
     esac
 
+    if [[ "$is_local" != "true" ]]; then
+        local key_lc
+        key_lc="$(printf '%s' "${cfg_key:-}" | tr '[:upper:]' '[:lower:]')"
+        if [[ -z "${cfg_key:-}" ]] || \
+           [[ "$key_lc" == *"paste"* ]] || \
+           [[ "$key_lc" == *"your-api-key"* ]] || \
+           [[ "$key_lc" == *"changeme"* ]] || \
+           [[ "${cfg_key:-}" == "abc123def456" ]]; then
+            err "Remote llm.endpoint is set but llm.api_key is missing or a placeholder."
+            err "Inference must require a real LLAMA_API_KEY (see docs/SECURITY.md)."
+            exit 1
+        fi
+    fi
+
     if [[ "$is_local" == "true" ]]; then
         if [[ "$NATIVE_INFERENCE" == "true" ]]; then
             source "$REPO_DIR/scripts/macos/inference.sh" 2>/dev/null || true
@@ -2428,7 +2450,83 @@ cmd_config() {
     esac
 }
 
-# ── Tunnel (frpc) subcommands — run on the inference box ──────────────────────
+# ── Tunnel (frpc or Tailscale) subcommands — run on the inference box ─────────
+
+_tunnel_resolve_endpoint() {
+    local ts_cache="$HOME/.openmono/tailscale-tunnel.json"
+    local relay_cache="$HOME/.openmono/relay.json"
+    local endpoint=""
+
+    if [[ -f "$ts_cache" ]] && command -v jq &>/dev/null; then
+        endpoint="$(jq -r '.endpoint // empty' "$ts_cache" 2>/dev/null || true)"
+        if [[ -z "$endpoint" ]]; then
+            local host port
+            host="$(jq -r '.hostname // .ip // empty' "$ts_cache" 2>/dev/null || true)"
+            port="$(jq -r '.port // 7474' "$ts_cache" 2>/dev/null || true)"
+            [[ -n "$host" ]] && endpoint="http://${host}:${port}"
+        fi
+    fi
+
+    if [[ -z "$endpoint" && -f "$relay_cache" ]] && command -v jq &>/dev/null; then
+        local frps_addr remote_port
+        frps_addr="$(jq -r '.frpsAddress // empty' "$relay_cache" 2>/dev/null)"
+        remote_port="$(jq -r '.remotePort // empty' "$relay_cache" 2>/dev/null)"
+        [[ -n "$frps_addr" && -n "$remote_port" ]] && \
+            endpoint="http://${frps_addr}:${remote_port}"
+    fi
+
+    printf '%s' "$endpoint"
+}
+
+_tunnel_print_tailscale_status() {
+    local ts_cache="$HOME/.openmono/tailscale-tunnel.json"
+
+    echo ""
+    echo -e "${BLUE}── Tailscale (dual-box) ─────────────────────────────${NC}"
+
+    if ! declare -F resolve_tailscale_cli &>/dev/null || ! resolve_tailscale_cli; then
+        if [[ -f "$ts_cache" ]]; then
+            warn "tailscale CLI missing but cache exists: $ts_cache"
+        else
+            info "tailscale not installed (optional). Setup: openmono tunnel setup --tailscale"
+        fi
+        return 0
+    fi
+
+    local backend="" dns="" ip=""
+    backend="$(tailscale_backend_state 2>/dev/null || true)"
+    if [[ "$backend" == "Running" ]]; then
+        local st
+        st="$(tailscale_cmd status --json 2>/dev/null || true)"
+        dns="$(echo "$st" | jq -r '.Self.DNSName // empty' 2>/dev/null | sed 's/\.$//' || true)"
+        ip="$(tailscale_cmd ip -4 2>/dev/null | head -1 || true)"
+        ok "tailscale → Running ($TAILSCALE_BIN)"
+        [[ -n "$dns" ]] && info "MagicDNS = $dns"
+        [[ -n "$ip" ]] && info "IPv4 = $ip"
+        local port="${INFERENCE_PORT:-7474}"
+        if [[ -f "$ts_cache" ]] && command -v jq &>/dev/null; then
+            port="$(jq -r '.port // 7474' "$ts_cache" 2>/dev/null || echo "$port")"
+            local cached
+            cached="$(jq -r '.endpoint // empty' "$ts_cache" 2>/dev/null || true)"
+            [[ -n "$cached" ]] && info "Cached endpoint: $cached"
+        fi
+        if [[ -n "$dns" ]]; then
+            info "Suggested endpoint: http://${dns}:${port}"
+        elif [[ -n "$ip" ]]; then
+            info "Suggested endpoint: http://${ip}:${port}"
+        fi
+    else
+        warn "tailscale → ${backend:-not connected} ($TAILSCALE_BIN)"
+        if [[ "$backend" == "NeedsLogin" || "$backend" == "PrefsError" || -z "$backend" ]]; then
+            tailscale_login_hint 2>&1 | while IFS= read -r line; do warn "$line"; done
+        elif [[ -f "$ts_cache" ]]; then
+            warn "Cache present: $ts_cache — re-run: openmono tunnel setup --tailscale"
+        else
+            info "Optional setup: openmono tunnel setup --tailscale"
+        fi
+    fi
+}
+
 
 tunnel_require_systemd() {
     if ! command -v systemctl &>/dev/null; then
@@ -2442,7 +2540,60 @@ cmd_tunnel() {
     shift || true
     case "$sub" in
         setup)
-            bash "$REPO_DIR/scripts/setup-tunnel-inference.sh" "$@"
+            local use_tailscale=false
+            local setup_args=()
+            local arg
+            for arg in "$@"; do
+                case "$arg" in
+                    --tailscale) use_tailscale=true ;;
+                    *) setup_args+=("$arg") ;;
+                esac
+            done
+            if [[ "$use_tailscale" == "true" ]]; then
+                bash "$REPO_DIR/scripts/setup-tunnel-tailscale.sh" --tailscale "${setup_args[@]}"
+            else
+                bash "$REPO_DIR/scripts/setup-tunnel-inference.sh" "${setup_args[@]}"
+            fi
+            ;;
+        prepare)
+            bash "$REPO_DIR/scripts/prepare-dualbox-macos.sh" "$@"
+            ;;
+        doctor|secure-check)
+            local prep_rc=0
+            bash "$REPO_DIR/scripts/prepare-dualbox-macos.sh" "$@" || prep_rc=$?
+            echo ""
+            echo -e "${BLUE}── Security checklist ────────────────────────────────${NC}"
+            info "See docs/SECURITY.md"
+            if [[ -f "$HOME/.openmono/settings.json" ]] && command -v jq &>/dev/null; then
+                local ep key
+                ep="$(jq -r '.llm.endpoint // empty' "$HOME/.openmono/settings.json")"
+                key="$(jq -r '.llm.api_key // empty' "$HOME/.openmono/settings.json")"
+                if [[ -n "$ep" && "$ep" != http://localhost* && "$ep" != http://127.0.0.1* ]]; then
+                    if curl -sf --max-time 3 "${ep%/}/health" &>/dev/null; then
+                        ok "Remote health OK: $ep/health"
+                    else
+                        warn "Remote health failed: $ep/health (is inference up and Tailscale Running?)"
+                    fi
+                    if [[ -z "$key" ]]; then
+                        warn "Missing llm.api_key — chat will 401 until set"
+                        info "Helper: ./scripts/secure-mini-ssh-and-key.sh"
+                        info "Then:   ./scripts/apply-mini-endpoint.sh <key>"
+                    else
+                        local code
+                        code="$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' \
+                            -H "Authorization: Bearer ${key}" \
+                            -H 'Content-Type: application/json' \
+                            -d '{"model":"local","messages":[{"role":"user","content":"ping"}],"max_tokens":1}' \
+                            "${ep%/}/v1/chat/completions" 2>/dev/null || echo 000)"
+                        if [[ "$code" == "200" ]]; then
+                            ok "Authenticated chat probe → HTTP $code"
+                        else
+                            warn "Authenticated chat probe → HTTP ${code:-000} (copy the key from the inference box)"
+                        fi
+                    fi
+                fi
+            fi
+            return "$prep_rc"
             ;;
         start)
             if [[ "$NATIVE_INFERENCE" == "true" ]]; then
@@ -2520,6 +2671,8 @@ cmd_tunnel() {
                 fi
                 echo ""
             fi
+            _tunnel_print_tailscale_status
+            echo ""
             ;;
         logs)
             if [[ "$NATIVE_INFERENCE" == "true" ]]; then
@@ -2534,7 +2687,6 @@ cmd_tunnel() {
                 native_cmd_tunnel_rotate_key
             else
                 local env_file="$REPO_DIR/docker/.env"
-                local relay_cache="$HOME/.openmono/relay.json"
 
                 if [[ ! -f "$env_file" ]]; then
                     err "docker/.env not found. Run 'openmono tunnel setup' first."
@@ -2584,14 +2736,8 @@ cmd_tunnel() {
                 else
                     warn "docker compose not found — restart llama-server manually to enforce the new key"
                 fi
-                local endpoint=""
-                if [[ -f "$relay_cache" ]]; then
-                    local frps_addr remote_port
-                    frps_addr="$(jq -r '.frpsAddress // empty' "$relay_cache" 2>/dev/null)"
-                    remote_port="$(jq -r '.remotePort // empty' "$relay_cache" 2>/dev/null)"
-                    [[ -n "$frps_addr" && -n "$remote_port" ]] && \
-                        endpoint="http://$frps_addr:$remote_port"
-                fi
+                local endpoint
+                endpoint="$(_tunnel_resolve_endpoint)"
 
                 echo ""
                 printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
@@ -2611,21 +2757,26 @@ cmd_tunnel() {
         help|--help|-h|"")
             echo "Usage: openmono tunnel <subcommand>"
             echo ""
-            echo "Run on the inference box. Manages the frpc tunnel that dials your"
-            echo "OpenMono.ai relay server. On Linux, the tunnel runs as a systemd service;"
-            echo "on macOS, it runs as a Homebrew service."
+            echo "Run on the inference box. Dual-box transports:"
+            echo "  • frp relay (default) — systemd on Linux, Homebrew service on macOS"
+            echo "  • Tailscale           — MagicDNS / 100.x; own daemon (tailscaled)"
             echo ""
-            echo "  setup       Install and configure frpc; prompts for relay credentials"
-            echo "              (frpsAddress, relayToken, remotePort, proxyPrefix)."
-            echo "              Preserves existing LLAMA_API_KEY."
+            echo "  setup [--tailscale] [--auth-key tskey-auth-...]"
+            echo "              Default: install frpc for the openmonoagent relay."
+            echo "              With --tailscale: join or reuse a tailnet and print"
+            echo "              the agent endpoint. Preserves existing LLAMA_API_KEY."
+            echo "  prepare [--inference|--agent]"
+            echo "              Dual-box readiness checklist."
+            echo "  doctor      prepare, plus remote health and API-key probe."
             echo "  rotate-key  Generate a new LLAMA_API_KEY and restart llama-server."
-            echo "              Use when credentials are compromised. Prints the config"
-            echo "              set commands for the agent box."
+            echo "              Prints config set commands for the agent box."
             echo "  start       Start the frpc tunnel"
             echo "  stop        Stop the frpc tunnel"
             echo "  restart     Restart the frpc tunnel"
-            echo "  status      Show tunnel state + configured target"
+            echo "  status      Show frpc + Tailscale state"
             echo "  logs        Tail tunnel logs"
+            echo ""
+            echo "See docs/SECURITY.md"
             echo ""
             ;;
         *)

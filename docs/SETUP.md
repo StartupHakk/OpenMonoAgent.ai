@@ -272,6 +272,8 @@ Intel Macs have no Metal GPU and no unified memory, so native inference is unsup
 
 ## Dual-box setup
 
+Tailscale is the private path between an agent Mac and a separate inference box. On the inference box run `openmono tunnel setup --tailscale`, then on the agent box set `llm.endpoint` and `llm.api_key` and run `openmono tunnel doctor`. Checklist: [SECURITY.md](SECURITY.md). The relay path below still works when both machines are not on the same tailnet.
+
 Run the model on a dedicated inference box and connect from your laptop over the internet. No port forwarding required — the tunnel is established outbound from the inference box.
 
 > On the same LAN/VPN, or running the agent on a server box? See
