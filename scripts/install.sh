@@ -41,11 +41,11 @@ CTX_VISION_16G=98304  # 16GB tier + mmproj — ~1GB less KV than 128k, gives vis
 # MODEL_ACCURACY, MODEL_ALIAS, and _MODEL_LABEL.
 select_model() {
     case "${1:-0}" in
-        24) MODEL_NAME="Qwen3.8-27B-UD-Q4_K_M.gguf"
-            MODEL_URL="https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf"
+        24) MODEL_NAME="NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf"
+            MODEL_URL="https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF/resolve/main/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf"
             MODEL_ACCURACY="full"
-            MODEL_MMPROJ="mmproj-qwen3.8-27B-F16.gguf"
-            MODEL_MMPROJ_URL="https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf"
+            MODEL_MMPROJ="mmproj-NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf"
+            MODEL_MMPROJ_URL="https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF/resolve/main/mmproj-NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf"
             _MODEL_LABEL="Qwen3.8-27B-UD-Q4_K_M (~15GB) [GPU 24GB+ — full accuracy]" ;;
         16) MODEL_NAME="Qwen3.8-27B-UD-IQ3_XXS.gguf"
             MODEL_URL="https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-IQ3_XXS.gguf"
