@@ -71,7 +71,7 @@ cat <<'JSON'
     "16":{"name":"Qwen3.5-9B-UD-Q4_K_XL.gguf","url":"https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q4_K_XL.gguf","mmproj":"mmproj-qwen3.5-9B-F16.gguf","mmproj_url":"https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/mmproj-F16.gguf","ctx":16384,"accuracy":"lower","label":"Qwen3.5-9B-UD-Q4_K_XL (~5GB) [Apple Silicon 16GB — lower accuracy]"},
     "8":{"name":"Qwen3.5-9B-UD-Q4_K_XL.gguf","url":"https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q4_K_XL.gguf","mmproj":"","mmproj_url":"","ctx":8192,"accuracy":"lower","label":"Qwen3.5-9B-UD-Q4_K_XL (~5GB) [Apple Silicon <16GB]"}}}}},
  {"id":"flash-next","backend":"strata","prism":false,"aliases":["flash-next"],"requires":"CAN_STRATA",
-  "deny":"Qwen3.8-Flash-Next (Strata) needs Linux + an NVIDIA GPU (CUDA 13, auto-installed by scripts/strata.sh) and a 48GB-class box (~70GB weights, streamed from disk). Not available on this box — re-run with --model=qwen.",
+  "deny":"Qwen3.8-Flash-Next (Strata) needs Linux + an NVIDIA GPU (CUDA 13, auto-installed by scripts/strata.sh) and a 48GB-class box (MemTotal >= 44 GiB). 32 GB is not offered (SSD expert reads). AMD is not offered yet (HIP not wired). Re-run with --model=qwen.",
   "menu":{"label":"Qwen3.8-Flash-Next via Strata (~70GB)","tag":"NVIDIA / CUDA 13","line":"Qwen3.8-Flash-Next via Strata (~70GB, NVIDIA / CUDA 13)"},
  "script":"scripts/strata.sh","port_env":"STRATA_PORT","port_default":8080}],
  "context":{"linux":{"vision":172032,"vision_16g":98304,"cpu":196608},"macos":{"vision":172032,"vision_32g":49152,"vision_16g":12288}}}

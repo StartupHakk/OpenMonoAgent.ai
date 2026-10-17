@@ -30,8 +30,9 @@ set -euo pipefail
 # Env overrides:
 #   STRATA_DIR     where Strata lives            (default ~/strata)
 #   STRATA_PORT    server port                   (default 8080)
-#   STRATA_FAMILY  qwen|swift|coder|unsloth      (default qwen)
-#   STRATA_MODEL   Q2_0|IQ2_XS|IQ3_XXS|IQ3_S|... (default: setup picks for the RAM)
+#   STRATA_FAMILY  qwen|swift|coder|unsloth      (default: RAM-resident plan, else qwen)
+#   STRATA_MODEL   Q2_0|IQ2_XS|IQ3_XXS|IQ3_S|... (default: RAM-resident plan, else setup picks)
+#   STRATA_PLE_IO  ram|mmap|direct               (default: ram when experts+PLE fit in RAM)
 #   STRATA_CONTEXT context tokens                (default: setup picks for the VRAM)
 #   STRATA_VISION  yes|no|cpu                    (interactive prompt; "no" when non-interactive)
 #   STRATA_DATA_DIR model-file dir               (default <STRATA_DIR>-data next to Strata)
@@ -42,8 +43,11 @@ set -euo pipefail
 STRATA_REPO="https://github.com/Niko1221/Strata.git"
 STRATA_DIR="${STRATA_DIR:-$HOME/strata}"
 STRATA_PORT="${STRATA_PORT:-8080}"
-STRATA_FAMILY="${STRATA_FAMILY:-qwen}"
+# Empty family/model: apply_ram_plan picks a size that can keep experts AND
+# the ~27 GiB PLE table in RAM (see docs/ENGINE-DESIGN.md). Explicit values win.
+STRATA_FAMILY="${STRATA_FAMILY:-}"
 STRATA_MODEL="${STRATA_MODEL:-}"
+STRATA_PLE_IO="${STRATA_PLE_IO:-}"
 STRATA_CONTEXT="${STRATA_CONTEXT:-}"
 # STRATA_VISION empty = not chosen yet: cmd_install asks interactively (or
 # defaults to "no" when non-interactive). Preset it to skip the prompt.
@@ -95,6 +99,7 @@ STRATA_DIR="$STRATA_DIR"
 STRATA_PORT="$STRATA_PORT"
 STRATA_FAMILY="$STRATA_FAMILY"
 STRATA_MODEL="$STRATA_MODEL"
+STRATA_PLE_IO="$STRATA_PLE_IO"
 STRATA_CONTEXT="$STRATA_CONTEXT"
 STRATA_VISION="$STRATA_VISION"
 STRATA_DATA_DIR="$STRATA_DATA_DIR"
@@ -106,6 +111,40 @@ load_env() {
     [[ -f "$STRATA_ENV_FILE" ]] && source "$STRATA_ENV_FILE"
     STRATA_DIR="${STRATA_DIR:-$HOME/strata}"
     STRATA_PORT="${STRATA_PORT:-8080}"
+    STRATA_PLE_IO="${STRATA_PLE_IO:-}"
+}
+
+ENGINE_DIR="$REPO_DIR/engine"
+
+# Choose --family/--model/--ple-io so 64 GB boxes do not read the n-gram table
+# from SSD every token. See engine/openmono_engine/strata_plan.py.
+apply_ram_plan() {
+    local mem_gb out fam mod ple reason
+    mem_gb="$(awk '/^MemTotal:/{printf "%d", $2/1048576}' /proc/meminfo 2>/dev/null || echo 0)"
+    if ! command -v python3 >/dev/null 2>&1 || [[ ! -d "$ENGINE_DIR/openmono_engine" ]]; then
+        warn "RAM-resident planner skipped (need python3 and engine/)."
+        [[ -n "$STRATA_FAMILY" ]] || STRATA_FAMILY="qwen"
+        return 0
+    fi
+    out="$(PYTHONPATH="$ENGINE_DIR" python3 -m openmono_engine.strata_plan \
+        --mem-gb "$mem_gb" \
+        --family "${STRATA_FAMILY:-}" \
+        --model "${STRATA_MODEL:-}" \
+        --ple-io "${STRATA_PLE_IO:-}" 2>/dev/null)" || {
+        warn "RAM-resident planner failed; leaving Strata's own size picker."
+        [[ -n "$STRATA_FAMILY" ]] || STRATA_FAMILY="qwen"
+        return 0
+    }
+    fam="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("family",""))' "$out" 2>/dev/null || true)"
+    mod="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("model",""))' "$out" 2>/dev/null || true)"
+    ple="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("ple_io",""))' "$out" 2>/dev/null || true)"
+    reason="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("reason",""))' "$out" 2>/dev/null || true)"
+    [[ -n "$STRATA_FAMILY" ]] || STRATA_FAMILY="$fam"
+    [[ -n "$STRATA_MODEL" ]] || STRATA_MODEL="$mod"
+    [[ -n "$STRATA_PLE_IO" ]] || STRATA_PLE_IO="$ple"
+    [[ -n "$STRATA_FAMILY" ]] || STRATA_FAMILY="qwen"
+    info "RAM-resident plan (MemTotal ${mem_gb} GiB): family=${STRATA_FAMILY} model=${STRATA_MODEL:-auto} ple-io=${STRATA_PLE_IO:-direct}"
+    [[ -n "$reason" ]] && info "  $reason"
 }
 
 strata_base_url() { echo "http://127.0.0.1:${STRATA_PORT}"; }
@@ -154,9 +193,10 @@ ensure_server_config() {
         return 0
     fi
     key="$(strata_api_key)"
-    python3 - "$cfg_path" "$STRATA_HOST" "$key" <<'PY' || true
+    python3 - "$cfg_path" "$STRATA_HOST" "$key" "${STRATA_PLE_IO:-}" <<'PY' || true
 import json, sys
 path, host, key = sys.argv[1], sys.argv[2], (sys.argv[3] if len(sys.argv) > 3 else "")
+ple = sys.argv[4] if len(sys.argv) > 4 else ""
 try:
     cfg = json.load(open(path))
 except Exception:
@@ -166,6 +206,22 @@ if host and cfg.get("host") != host:
     cfg["host"] = host; changed.append("host=" + host)
 if key and cfg.get("api_key") != key:
     cfg["api_key"] = key; changed.append("shared api key")
+if ple:
+    args = list(cfg.get("args") or [])
+    flag = "--ple-io"
+    if flag in args:
+        i = args.index(flag)
+        if i + 1 < len(args) and not str(args[i + 1]).startswith("-"):
+            if args[i + 1] != ple:
+                args[i + 1] = ple
+                changed.append("ple-io=" + ple)
+        else:
+            args.insert(i + 1, ple)
+            changed.append("ple-io=" + ple)
+    else:
+        args.extend([flag, ple])
+        changed.append("ple-io=" + ple)
+    cfg["args"] = args
 if changed:
     json.dump(cfg, open(path, "w"), indent=1)
     print("[strata] run config updated (" + ", ".join(changed) + "): " + path)
@@ -547,6 +603,23 @@ cmd_install() {
         esac
     done
     [[ "${STRATA_YES:-0}" == "1" ]] && setup_args+=(--yes)
+    # CLI flags forwarded to setup.sh count as presets for the RAM-resident plan
+    # (otherwise empty STRATA_FAMILY would override a user-passed --family).
+    local prev=""
+    for arg in "$@"; do
+        case "$prev" in
+            --family) STRATA_FAMILY="$arg" ;;
+            --model) STRATA_MODEL="$arg" ;;
+            --ple-io) STRATA_PLE_IO="$arg" ;;
+        esac
+        prev="$arg"
+        case "$arg" in
+            --family=*) STRATA_FAMILY="${arg#--family=}" ;;
+            --model=*) STRATA_MODEL="${arg#--model=}" ;;
+            --ple-io=*) STRATA_PLE_IO="${arg#--ple-io=}" ;;
+        esac
+    done
+    apply_ram_plan
     [[ -n "$STRATA_FAMILY" ]] && setup_args+=(--family "$STRATA_FAMILY")
     [[ -n "$STRATA_MODEL" ]] && setup_args+=(--model "$STRATA_MODEL")
     [[ -n "$STRATA_CONTEXT" ]] && setup_args+=(--context "$STRATA_CONTEXT")
@@ -610,6 +683,8 @@ cmd_install() {
         exit "$setup_rc"
     fi
     save_env
+    _installed_run="$(find_run_script)"
+    [[ -n "$_installed_run" ]] && ensure_server_config "$_installed_run"
     ok "Strata installed. Start it with: openmono start   (or scripts/strata.sh start)"
     ok "Browse the model UI at: $(strata_base_url)  (after start)"
 }
@@ -643,6 +718,11 @@ cmd_start() {
         err "No run-*.sh found in $STRATA_DIR — install first: scripts/strata.sh install"
         exit 1
     fi
+    # Do not change family/model of an already-installed run script. If env has
+    # no family (pre-plan installs), keep Strata's usual qwen default and only
+    # add --ple-io ram when that combination fits.
+    [[ -n "$STRATA_FAMILY" ]] || STRATA_FAMILY="qwen"
+    apply_ram_plan
     # Make sure the run config binds a container-reachable address and carries
     # the shared API key (repairs installs made before setup got --host/--api-key).
     ensure_server_config "$run_script"

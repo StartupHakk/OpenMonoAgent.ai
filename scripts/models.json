@@ -211,7 +211,7 @@
       "prism": false,
       "aliases": ["flash-next"],
       "requires": "CAN_STRATA",
-      "deny": "Qwen3.8-Flash-Next (Strata) needs Linux + an NVIDIA GPU (CUDA 13, auto-installed by scripts/strata.sh) and a 48GB-class box (~70GB weights, streamed from disk). Not available on this box — re-run with --model=qwen.",
+      "deny": "Qwen3.8-Flash-Next (Strata) needs Linux + an NVIDIA GPU (CUDA 13, auto-installed by scripts/strata.sh) and a 48GB-class box (MemTotal >= 44 GiB). 32 GB is not offered (SSD expert reads). AMD is not offered yet (HIP not wired). Re-run with --model=qwen.",
       "menu": {
         "label": "Qwen3.8-Flash-Next via Strata (~70GB)",
         "tag": "NVIDIA / CUDA 13",

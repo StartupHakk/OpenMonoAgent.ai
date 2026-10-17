@@ -1,11 +1,12 @@
 # Setup & Commands
 
 > [!NOTE]
-> **Linux inference runs on Strata (Qwen3.8-Flash-Next).**
-> Fresh Linux installs use the Strata backend automatically — Strata serves an
-> OpenAI-compatible API at `http://127.0.0.1:8080/v1`. See [STRATA.md](STRATA.md)
-> for requirements, install/start/stop, dual-box relay, and switching back to
-> the legacy llama.cpp path (`OPENMONO_INFERENCE_BACKEND=llama`).
+> **Linux can run Strata (Qwen3.8-Flash-Next) on NVIDIA 48 GB-class boxes.**
+> Non-interactive `openmono setup` still defaults to Qwen on llama.cpp. Opt in
+> with `--model=flash-next` or `OPENMONO_INFERENCE_BACKEND=strata`. Strata
+> serves an OpenAI-compatible API at `http://127.0.0.1:8080/v1`. See
+> [STRATA.md](STRATA.md) (offer gate, RAM-resident PLE) and
+> [ENGINE-DESIGN.md](ENGINE-DESIGN.md) (Mosaic MoE engine).
 
 ## Requirements
 

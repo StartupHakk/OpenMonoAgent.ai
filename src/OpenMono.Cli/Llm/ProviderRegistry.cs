@@ -11,6 +11,7 @@ public sealed class ProviderRegistry
 
         Register(new LocalLlamaProvider());
         Register(new StrataProvider());
+        Register(new MosaicProvider());
         Register(new OpenAiProvider());
         Register(new AnthropicProvider());
         Register(new OllamaProvider());
@@ -94,6 +95,32 @@ internal sealed class StrataProvider : IProvider
         {
             Endpoint = config.Endpoint ?? DefaultEndpoint,
             Model = config.Model ?? "Qwen3.8-Flash-Next",
+        }) { ApiKey = config.ApiKey };
+
+    public bool ValidateConfig(ProviderConfig config, out string? error)
+    {
+        error = null;
+        return true;
+    }
+}
+
+/// <summary>
+/// Mosaic MoE runtime (scaffold): GLM-4.5-Air first, OpenAI-compat at :8090
+/// when a server exists. Not started by <c>openmono setup</c>. See
+/// docs/ENGINE-DESIGN.md and scripts/mosaic.sh.
+/// </summary>
+internal sealed class MosaicProvider : IProvider
+{
+    public const string DefaultEndpoint = "http://localhost:8090";
+
+    public string Name => "mosaic";
+    public string[] SupportedModels => ["GLM-4.5-Air"];
+
+    public ILlmClient CreateClient(ProviderConfig config) =>
+        new OpenAiCompatClient(new LlmConfig
+        {
+            Endpoint = config.Endpoint ?? DefaultEndpoint,
+            Model = config.Model ?? "GLM-4.5-Air",
         }) { ApiKey = config.ApiKey };
 
     public bool ValidateConfig(ProviderConfig config, out string? error)

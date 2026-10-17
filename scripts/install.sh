@@ -401,16 +401,17 @@ if [ "$OPENMONO_ROLE" != "agent" ]; then
     if [ "$(uname -s)" = "Linux" ] && [ "$_has_nvidia_hw" = true ] && [ "${AMD_IGPU_MODE:-0}" != "1" ]; then
         CAN_STRATA=1
     fi
-    # The Flash-Next weights are ~70GB: they stream from disk alongside the
-    # engine, so a 48GB-class box runs them (slow first boot, then the KV cache
-    # and OS compete for the rest). Gate on system RAM so smaller machines
-    # never see the option (48GB-class boxes report ~46-47 GiB in /proc/meminfo
-    # once firmware/kernel reservations are subtracted; 32GB boxes report ~31).
+    # Flash-Next weights are ~70GB. OpenMono offers Strata only on a 48GB-class
+    # box (MemTotal >= 44 GiB: 48GB machines report ~46-47 GiB after firmware
+    # reservations; 32GB boxes report ~31). 32 GB is enough for upstream Strata's
+    # Coder in low-RAM mode, but that mode reads experts from SSD while decoding,
+    # which OpenMono does not allow. AMD is not offered here: CUDA 13 is the
+    # auto-install path; HIP is a long source build and is not wired yet.
     if [ "$CAN_STRATA" = "1" ]; then
         _MEM_GB=$(awk '/^MemTotal:/{printf "%d", $2/1048576}' /proc/meminfo 2>/dev/null || echo 0)
         if [ "${_MEM_GB:-0}" -lt 44 ]; then
             CAN_STRATA=0
-            info "RAM: ${_MEM_GB}GB — Strata (Qwen3.8-Flash-Next, ~70GB weights) not offered; it needs a 48GB-class box."
+            info "RAM: ${_MEM_GB}GB - Strata (Qwen3.8-Flash-Next) not offered; OpenMono needs a 48GB-class box (MemTotal >= 44 GiB) so experts stay in RAM."
         fi
     fi
     # Unified picker: defaults to Qwen on stock llama.cpp; Bonsai / Strata are
