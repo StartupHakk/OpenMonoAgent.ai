@@ -16,7 +16,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\OpenMono.Core\OpenMono.Core.csproj" />
     <ProjectReference Include="..\OpenMono.Cli\OpenMono.Cli.csproj" />
+    <ProjectReference Include="..\OpenMono.HostBridge\OpenMono.HostBridge.csproj" />
   </ItemGroup>
 
 </Project>

@@ -1,4 +1,7 @@
+using OpenMono.HostBridge;
+using OpenMono.Permissions;
 using OpenMono.Playbooks;
+using OpenMono.Session;
 using OpenMono.Utils;
 
 namespace OpenMono.Acp;
@@ -32,9 +35,9 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
     {
         var contextKey = PermissionContextKey(toolName, summary);
 
-        // Check cache first - returns (allow, scope)
-        if (_session.TryGetRememberedPermission(contextKey) is var cached && cached.HasValue)
-            return cached.Value;
+        // Session memory first: a remembered grant resolves without a new pause.
+        if (_session.Store.TryResolve(contextKey) is { } cached)
+            return (cached.Allow, cached.Scope.ToWireString());
 
         // If a pause for this contextKey is already pending (e.g. from a concurrent
         // speculative tool execution), reuse that pause instead of registering a new
@@ -78,11 +81,11 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
     {
         var contextKey = "playbook:" + plan.PlaybookName;
 
-        // If approval already cached (user approved on first call, we're being re-invoked), return cached
-        if (_session.TryGetRememberedPermission(contextKey) is var cached && cached.HasValue)
+        // If approval already granted this session (remembered on resume), return it.
+        if (_session.Store.TryResolve(contextKey) is { } cachedPlaybook)
         {
             Utils.Log.Info($"[OMA_PLAYBOOK] RequestPlaybookApprovalAsync: using cached approval for {plan.PlaybookName}");
-            return cached.Value.Allow;
+            return cachedPlaybook.Allow;
         }
 
         var id = "pbk_" + Guid.NewGuid().ToString("N")[..12];
@@ -115,8 +118,8 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
     {
         var contextKey = "toggle_mode:" + reason;
 
-        if (_session.TryGetRememberedPermission(contextKey) is var cached && cached.HasValue)
-            return cached.Value.Allow;
+        if (_session.Store.TryResolve(contextKey) is { } cachedToggle)
+            return cachedToggle.Allow;
 
         var id = "mode_" + Guid.NewGuid().ToString("N")[..12];
         _session.RegisterPause(id, PendingResponseKind.ToggleMode, contextKey);
@@ -132,20 +135,40 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
 
     public async Task<string?> RequestUserInputAsync(string question, CancellationToken ct)
     {
-
-
-
-        if (_session.TryGetRememberedUserInput(question) is { } cached)
-            return cached;
-
+        // No general caching: every free-form question prompts. (HOST_EXEC
+        // authorization caching lives in the bridge's HostExecPermissionStore
+        // as grants, never replayed answers.)
         var id = "ask_" + Guid.NewGuid().ToString("N")[..12];
         _session.RegisterPause(id, PendingResponseKind.UserInput, question);
 
-        await _writer.WriteEventAsync("user_input_request", new
+        // HOST_EXEC envelope: emit structured fields next to the raw question
+        // so the client can render a proper consent card (command, cwd,
+        // escalation, timeout) without re-parsing the question text. Additive:
+        // old clients keep the {id, question} shape they already handle, and
+        // unparseable envelopes are sent exactly as before.
+        if (HostExecRequest.LooksLikeHostExec(question) &&
+            HostExecRequest.TryParse(question, out var hostExec) && hostExec is not null)
         {
-            id,
-            question,
-        });
+            await _writer.WriteEventAsync("user_input_request", new
+            {
+                id,
+                question,
+                kind = "host_exec",
+                command = hostExec.Command,
+                cwd = HostGatewayBootstrap.ResolveWorkDir(),
+                as_root = hostExec.AsRoot,
+                timeout_ms = hostExec.TimeoutMs,
+                background = hostExec.Background,
+            });
+        }
+        else
+        {
+            await _writer.WriteEventAsync("user_input_request", new
+            {
+                id,
+                question,
+            });
+        }
 
         DesktopNotifier.Alert(
             "OpenMono — input needed",

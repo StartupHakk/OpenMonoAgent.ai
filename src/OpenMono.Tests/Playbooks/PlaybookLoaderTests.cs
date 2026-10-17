@@ -42,6 +42,8 @@ public class PlaybookLoaderTests : IDisposable
             description: Smart git commit
             trigger: manual
             user-invocable: true
+            allowed-tools:
+              - Bash
             ---
 
             You are a commit assistant.
@@ -62,8 +64,15 @@ public class PlaybookLoaderTests : IDisposable
     {
         var playbookDir = Path.Combine(_tempDir, "simple");
         Directory.CreateDirectory(playbookDir);
+        // Frontmatter is required (allowed-tools), but with no explicit 'name'
+        // the loader falls back to the directory name.
         File.WriteAllText(Path.Combine(playbookDir, "PLAYBOOK.md"), """
-            You are a simple playbook without frontmatter.
+            ---
+            allowed-tools:
+              - Bash
+            ---
+
+            You are a simple playbook without a name key.
             """);
 
         var loader = new PlaybookLoader([_tempDir]);
@@ -83,6 +92,8 @@ public class PlaybookLoaderTests : IDisposable
             name: file-scan
             version: 1.0.0
             description: Creates files then greps output.
+            allowed-tools:
+              - Bash
             steps:
               - id: create-files
                 inline-prompt: Run the create-files script.

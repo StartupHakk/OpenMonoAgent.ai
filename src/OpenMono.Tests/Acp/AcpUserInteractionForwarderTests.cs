@@ -131,6 +131,33 @@ public sealed class AcpUserInteractionForwarderTests
 
 
 
+    [Fact]
+    public async Task RequestPermissionAsync_remembered_grant_resolves_without_pause()
+    {
+        var (forwarder, session, body) = BuildForwarder();
+        // Grant stored under a differently-cased key: normalization must hit.
+        session.Store.Remember("Bash", allow: true, GrantScope.Session);
+
+        var (allow, scope) = await forwarder.RequestPermissionAsync("bash", "rm -rf node_modules", dangerous: true, CancellationToken.None);
+
+        allow.Should().BeTrue();
+        scope.Should().Be("session");
+        session.PendingIds.Should().BeEmpty("no pause must register for a remembered grant");
+        body.Length.Should().Be(0, "no SSE event must emit for a remembered grant");
+    }
+
+    [Fact]
+    public async Task RequestPermissionAsync_remembered_deny_resolves_without_pause()
+    {
+        var (forwarder, session, _) = BuildForwarder();
+        session.Store.Remember("Bash", allow: false, GrantScope.Session);
+
+        var (allow, _) = await forwarder.RequestPermissionAsync("Bash", "anything", dangerous: false, CancellationToken.None);
+
+        allow.Should().BeFalse();
+        session.PendingIds.Should().BeEmpty();
+    }
+
     private static (AcpUserInteractionForwarder forwarder, AcpSession session, MemoryStream body) BuildForwarder()
     {
         var body = new MemoryStream();

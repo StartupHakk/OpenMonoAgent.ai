@@ -1,3 +1,6 @@
+using System;
+using System.Globalization;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using OpenMono.Acp;
 using OpenMono.Utils;
@@ -21,8 +24,26 @@ public sealed class AppConfig
     public bool AutoDetectCodeGraph { get; set; } = true;
     public bool Verbose { get; set; } = false;
     public bool ShowDetail { get; set; } = false;
-    public bool VisionEnabled { get; set; } =
-        Environment.GetEnvironmentVariable("OPENMONO_VISION_ENABLED") == "1";
+    [JsonIgnore] // derived by ResolveVision(); the real key is inference.vision_enabled
+    public bool VisionEnabled { get; set; }
+    // Resolution order: settings.json inference.vision_enabled (explicit) →
+    // OPENMONO_VISION_ENABLED env (set by the container launcher) → false.
+    public void ResolveVision()
+        => VisionEnabled = Inference.VisionEnabled
+            ?? Environment.GetEnvironmentVariable("OPENMONO_VISION_ENABLED") == "1";
+    // Parse the "modalities.vision" capability llama.cpp reports in /props.
+    // Returns null when the server doesn't advertise it (unknown — don't guess).
+    public static bool? ParsePropsVision(JsonElement root)
+    {
+        if (root.TryGetProperty("modalities", out var modalities)
+            && modalities.ValueKind == JsonValueKind.Object
+            && modalities.TryGetProperty("vision", out var visionEl))
+        {
+            if (visionEl.ValueKind == JsonValueKind.True) return true;
+            if (visionEl.ValueKind == JsonValueKind.False) return false;
+        }
+        return null;
+    }
     // Use OPENMONO_WORKSPACE if running in Docker container, otherwise use current directory
     public string WorkingDirectory { get; set; } = GetWorkingDirectory();
 
@@ -99,7 +120,14 @@ public class LlmConfig
 public sealed class WebConfig
 {
     public string? Gateway { get; set; }
+
+    // The launcher (openmono config set web.search true) writes JSON booleans,
+    // but this model is string-based (Truthy()). Read either form so a boolean
+    // never throws and skips the whole settings file.
+    [JsonConverter(typeof(FlexibleBoolToStringConverter))]
     public string? Search { get; set; }
+
+    [JsonConverter(typeof(FlexibleBoolToStringConverter))]
     public string? Scrape { get; set; }
 
     public bool? SearchEnabled => Truthy(Search);
@@ -116,6 +144,29 @@ public sealed class WebConfig
         string.IsNullOrWhiteSpace(value)
             ? null
             : value.Trim().ToLowerInvariant() is "1" or "true" or "yes" or "on";
+}
+
+// Accepts a JSON string, boolean, or number and stores it as a string, so a
+// boolean written by 'openmono config set web.search true' deserializes cleanly
+// instead of throwing (which would skip the entire settings file).
+public sealed class FlexibleBoolToStringConverter : JsonConverter<string?>
+{
+    public override string? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        => reader.TokenType switch
+        {
+            JsonTokenType.True  => "true",
+            JsonTokenType.False => "false",
+            JsonTokenType.Number => reader.TryGetInt64(out var l) ? l.ToString(CultureInfo.InvariantCulture) : reader.GetDouble().ToString(CultureInfo.InvariantCulture),
+            JsonTokenType.String => reader.GetString(),
+            JsonTokenType.Null   => null,
+            _ => throw new JsonException($"Expected string, boolean, or number for web setting (got {reader.TokenType})."),
+        };
+
+    public override void Write(Utf8JsonWriter writer, string? value, JsonSerializerOptions options)
+    {
+        if (value is null) writer.WriteNullValue();
+        else writer.WriteStringValue(value);
+    }
 }
 
 public sealed class PermissionConfig
@@ -180,8 +231,14 @@ public sealed class InferenceConfig
 {
     public int CtxSize { get; set; }
 
+    // Explicit vision/image-input choice (settings.json: inference.vision_enabled).
+    // Null = not set here: the OPENMONO_VISION_ENABLED env var wins (container
+    // launches pass it through). Set = authoritative across every launcher.
+    public bool? VisionEnabled { get; set; }
+
     public void MergeFrom(InferenceConfig source)
     {
         if (source.CtxSize > 0) CtxSize = source.CtxSize;
+        if (source.VisionEnabled.HasValue) VisionEnabled = source.VisionEnabled;
     }
 }

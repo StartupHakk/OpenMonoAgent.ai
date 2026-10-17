@@ -1,6 +1,8 @@
 using System.Text.Json;
 using OpenMono.Config;
+using OpenMono.HostBridge;
 using OpenMono.Memory;
+using OpenMono.Permissions;
 using OpenMono.Playbooks;
 using OpenMono.Session;
 using OpenMono.Utils;
@@ -159,7 +161,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
             case "/compact":
             {
-                var loop = _loopFactory.Create(_acpSession.State, this, _interaction);
+                var loop = _loopFactory.Create(_acpSession.State, this, _interaction, _acpSession.Store);
                 var before = _acpSession.State.Messages.Count;
                 await loop.RunManualCompactionAsync(string.IsNullOrWhiteSpace(args) ? null : args, ct);
                 var after = _acpSession.State.Messages.Count;
@@ -210,6 +212,18 @@ public sealed class AcpTurnRunner : IAcpEventSink
                     _memoryStore,
                     _playbookRegistry);
                 Log.Info($"[OMA_SYSTEMPROMPT] System prompt built: {_cachedSystemPrompt.Length} chars, {(_playbookRegistry?.All.Count ?? 0)} playbooks included");
+            }
+
+            // Host mode: pair with the host daemon when the launcher injected
+            // the host env, and append the standing orders once so the model
+            // knows its own tools see only the container workspace.
+            var gateway = await HostGatewayBootstrap.GetOrCreateAsync(_acpSession.State, ct);
+            if (gateway is not null)
+            {
+                _acpSession.State.Meta.HostEnabled = true;
+                if (!_cachedSystemPrompt.Contains(HostStandingOrders.Marker))
+                    _cachedSystemPrompt += "\n\n" + gateway.BuildStandingOrders();
+                Log.Info($"[OMA_SYSTEMPROMPT] Host mode ON for ACP session {_acpSession.Id} at {gateway.BaseUrl}");
             }
 
             Log.Info($"[OMA_SYSTEMPROMPT] Session {_acpSession.Id}: Adding system prompt ({_cachedSystemPrompt.Length} chars). Messages before: {_acpSession.Messages.Count}");
@@ -271,7 +285,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
         var sessionState = _acpSession.State;
         sessionState.Meta.TokenTracker ??= new TokenTracker();
-        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction);
+        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction, store: _acpSession.Store);
         try
         {
             var result = await loop.ExecutePlaybookDirectAsync(name, playbookArgs, resume, ct);
@@ -329,10 +343,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
         // "once"    → for an allow, seed a TEMPORARY grant so the resumed execution does
         //             not re-prompt, then forget it (below) so a later call prompts again.
         var isCaching = string.Equals(scope, "session", StringComparison.Ordinal);
-        if (allow)
-            _acpSession.RememberPermission(ctx.ContextKey, true, scope);
-        else
-            _acpSession.RememberPermission(ctx.ContextKey, false, scope);
+        _acpSession.Store.Remember(ctx.ContextKey, allow, GrantScopeExtensions.FromWireString(scope));
 
         Log.Info($"[OMA_PERM] Resolved: id={id} decision={decision} scope={scope} caching={isCaching} contextKey={ctx.ContextKey}");
 
@@ -343,7 +354,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
         // Uses shared session state; modifications are persisted automatically.
         var sessionState = _acpSession.State;
         sessionState.Meta.TokenTracker ??= new TokenTracker();
-        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction);
+        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction, store: _acpSession.Store);
         try
         {
             try
@@ -354,7 +365,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
             {
                 // Strict "once": the temporary grant only ever covers the resumed execution.
                 if (!isCaching)
-                    _acpSession.ForgetPermission(ctx.ContextKey);
+                    _acpSession.Store.Forget(ctx.ContextKey);
             }
 
             // Check if there are queued permissions to process
@@ -416,13 +427,56 @@ public sealed class AcpTurnRunner : IAcpEventSink
         if (!_acpSession.TryResolvePause(id, new AcpUserInputResponse(resolvedValue)))
             throw new InvalidOperationException($"failed to resolve pause id: {id}");
 
-        _acpSession.RememberUserInput(ctx.ContextKey, resolvedValue);
+        // Host mode on the ACP surface: the pause's question WAS a HOST_EXEC
+        // envelope (the client UI showed it as the consent card). The answer is
+        // the user's consent; on approval the command runs on bare metal via
+        // the daemon and the model is fed the execution result, not the answer.
+        if (HostExecRequest.LooksLikeHostExec(ctx.ContextKey))
+        {
+            var gateway = HostGatewayRegistry.Get(_acpSession.Id);
+            if (gateway is not null)
+            {
+                var answer = await RunHostExecOnResumeAsync(ctx.ContextKey, resolvedValue, gateway, ct);
+                AppendSyntheticToolMessages(answer);
+                _acpSession.State.Meta.AwaitingEscalationAck = false;
+                await DriveLoopAsync(ct);
+                return;
+            }
+        }
 
+        // No general user-input caching: each free-form question prompts fresh.
+        // (HOST_EXEC authorization is grant-cached bridge-side, never as answers.)
         AppendSyntheticToolMessages(resolvedValue);
 
         // A user_input answer is genuine user direction.
         _acpSession.State.Meta.AwaitingEscalationAck = false;
         await DriveLoopAsync(ct);
+    }
+
+    /// <summary>
+    /// Execute a HOST_EXEC envelope on resume, after the ACP client answered
+    /// the envelope (the consent card). The answer maps through the shared
+    /// consent vocabulary; on approval the command runs on bare metal via the
+    /// daemon and the execution output is the tool answer to the model.
+    /// </summary>
+    private async Task<string> RunHostExecOnResumeAsync(
+        string question,
+        string answer,
+        HostGateway gateway,
+        CancellationToken ct)
+    {
+        if (!HostExecRequest.TryParse(question, out var request) || request is null)
+            return HostExecRequest.MalformedEnvelopeAnswer(question);
+
+        var decision = HostConsent.Map(answer);
+
+        // The client already gave its consent (the envelope question IS the
+        // consent card); hand the mapped decision to the gateway so it records
+        // the session grant the same way the TUI card does. Always route
+        // through RunAsync — a DenyAll must set the gateway's deny-all flag so
+        // later commands never re-prompt, exactly like the TUI surface.
+        return await gateway.RunAsync(request,
+            (_, _, _) => Task.FromResult(decision), ct);
     }
 
     public async Task ResumeWithPlanDecisionAsync(string decision, CancellationToken ct)
@@ -464,7 +518,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
             throw new InvalidOperationException($"failed to resolve pause id: {id}");
 
         // Remember the decision so the tool doesn't re-prompt if resumed
-        _acpSession.RememberPermission(ctx.ContextKey, allow);
+        _acpSession.Store.Remember(ctx.ContextKey, allow, OpenMono.Permissions.GrantScope.Session);
 
         if (!allow)
         {
@@ -481,7 +535,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
         var sessionState = _acpSession.State;
         sessionState.Meta.TokenTracker ??= new TokenTracker();
-        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction);
+        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction, store: _acpSession.Store);
         try
         {
             await loop.ResolvePendingToolCallsAsync(true, ct);
@@ -532,7 +586,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
         // Cache the approval decision so RequestPlaybookApprovalAsync finds it
         // when the pending PlaybookTool is re-executed
-        _acpSession.RememberPermission(ctx.Value.ContextKey, allow);
+        _acpSession.Store.Remember(ctx.Value.ContextKey, allow, OpenMono.Permissions.GrantScope.Session);
 
         // Execute the pending PlaybookTool with the approval decision.
         // Same pattern as FileWrite: find the pending tool call, execute it,
@@ -540,7 +594,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
         // pause icon → cog → check.
         var sessionState = _acpSession.State;
         sessionState.Meta.TokenTracker ??= new TokenTracker();
-        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction);
+        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction, store: _acpSession.Store);
         try
         {
             try
@@ -582,7 +636,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
         var sessionState = _acpSession.State;
         sessionState.Meta.TokenTracker ??= new TokenTracker();
 
-        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction);
+        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction, store: _acpSession.Store);
 
         try
         {

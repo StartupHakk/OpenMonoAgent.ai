@@ -1,0 +1,7 @@
+{
+  "llm": {
+    "endpoint": "http://localhost:8080/v1",
+    "model": "Qwen3.8-Flash-Next",
+    "api_key": ""
+  }
+}

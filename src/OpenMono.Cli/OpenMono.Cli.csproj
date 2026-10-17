@@ -10,6 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\OpenMono.Core\OpenMono.Core.csproj" />
     <PackageReference Include="Spectre.Console" Version="0.50.0" />
     <PackageReference Include="Spectre.Console.Json" Version="0.50.0" />
     <PackageReference Include="Markdig" Version="0.40.0" />
@@ -18,6 +19,11 @@
     <PackageReference Include="Terminal.Gui" Version="2.0.0-develop.5264" />
     <PackageReference Include="TiktokenSharp" Version="1.2.1" />
     <PackageReference Include="SkiaSharp" Version="4.153.1" />
+    <!-- The base SkiaSharp package only ships macOS/Windows native assets.
+         On Linux (the agent Docker image) libSkiaSharp.so would be missing and
+         image compression would throw DllNotFoundException. The NoDependencies
+         variant bundles a self-contained .so with no libfontconfig1 need. -->
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.153.1" />
   </ItemGroup>
 
   <ItemGroup>

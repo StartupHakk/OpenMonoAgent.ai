@@ -7,8 +7,12 @@
 # its own --api-key, so /v1 stays a transparent pass-through.
 #
 # Substituted at load time from the environment (see docker-compose.yml):
-#   LLAMA_API_KEY       shared bearer token (reused from the llama-server key)
-#   LLAMA_UPSTREAM      e.g. llama-server:7474  (or host.docker.internal:7474 native)
+#   LLAMA_API_KEY       shared bearer token (reused from the inference key)
+#   LLAMA_UPSTREAM      e.g. llama-server:7474 — or host.docker.internal:8080
+#                       for the Strata backend (see docker-compose.strata.yml).
+#                       Despite the legacy name it is a plain OpenAI-compatible
+#                       HTTP upstream either way: /v1, /v1/messages and
+#                       /v1/responses all pass through untouched.
 #   SEARXNG_UPSTREAM    e.g. searxng:8080
 #   SCRAPLING_UPSTREAM  e.g. scrapling:5000
 #   WEB_SEARCH_ENABLED  true|false — reported on /services
@@ -63,8 +67,9 @@
 		}
 	}
 
-	# Everything else → llama-server (OpenAI-compatible API). llama enforces its
-	# own --api-key, so no Caddy auth here. flush_interval -1 disables response
+	# Everything else → the inference backend (OpenAI-compatible API). The
+	# backend enforces its own API key (llama --api-key / Strata --api-key),
+	# so no Caddy auth here. flush_interval -1 disables response
 	# buffering so SSE tokens stream through immediately.
 	handle {
 		reverse_proxy {$LLAMA_UPSTREAM:llama-server:7474} {

@@ -392,32 +392,27 @@ public sealed class AcpSessionStoreTests : IDisposable
     }
 
     [Fact]
-    public void RememberPermission_and_TryGetRememberedPermission_round_trip()
+    public void Session_exposes_a_shared_PermissionStore()
     {
         var session = NewBareSession();
-        session.TryGetRememberedPermission("Bash|x").Should().BeNull();
+        session.Store.Should().NotBeNull();
+        session.Store.TryResolve("Bash|x").Should().BeNull();
 
-        session.RememberPermission("Bash|x", allow: true);
-        session.RememberPermission("Bash|y", allow: false);
+        session.Store.Remember("Bash|x", allow: true, OpenMono.Permissions.GrantScope.Session);
+        session.Store.Remember("Bash|y", allow: false, OpenMono.Permissions.GrantScope.Session);
 
-        var cachedX = session.TryGetRememberedPermission("Bash|x");
-        cachedX.Should().NotBeNull();
-        cachedX.Value.Allow.Should().BeTrue();
-
-        var cachedY = session.TryGetRememberedPermission("Bash|y");
-        cachedY.Should().NotBeNull();
-        cachedY.Value.Allow.Should().BeFalse();
-
-        session.TryGetRememberedPermission("Bash|never-asked").Should().BeNull();
+        session.Store.TryResolve("Bash|x")!.Allow.Should().BeTrue();
+        session.Store.TryResolve("Bash|y")!.Allow.Should().BeFalse();
+        session.Store.TryResolve("Bash|never-asked").Should().BeNull();
     }
 
     [Fact]
-    public void RememberUserInput_and_TryGetRememberedUserInput_round_trip()
+    public void Session_has_no_general_user_input_cache()
     {
+        // Free-form answers resolve the pause but are never remembered:
+        // the store holds permission grants only.
         var session = NewBareSession();
-        session.RememberUserInput("which algorithm?", "AES-256-GCM");
-        session.TryGetRememberedUserInput("which algorithm?").Should().Be("AES-256-GCM");
-        session.TryGetRememberedUserInput("never-asked").Should().BeNull();
+        session.Store.TryResolve("which algorithm?").Should().BeNull();
     }
 
     private static AcpSession NewBareSession() => new()

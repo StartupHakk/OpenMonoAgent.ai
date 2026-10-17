@@ -1,8 +1,8 @@
 namespace OpenMono.Session;
 
-internal static class ModeInstructions
+public static class ModeInstructions
 {
-    internal static string CurrentModeBanner(bool planMode, IReadOnlyList<string> readOnlyTools)
+    public static string CurrentModeBanner(bool planMode, IReadOnlyList<string> readOnlyTools)
         => planMode ? PlanBanner(readOnlyTools) : BuildBanner;
 
     private static string PlanBanner(IReadOnlyList<string> readOnlyTools)
@@ -14,6 +14,7 @@ internal static class ModeInstructions
             $"Tools you CAN use right now (read-only): {tools}.\n" +
             "Tools UNAVAILABLE until Build mode: FileWrite, FileEdit, ApplyPatch, Bash (and other write/exec tools).\n" +
             "You can fully investigate, read, search, analyze, research, answer questions, and show example content INLINE in your reply.\n" +
+            "If HostExec is offered above, it runs on the HOST only for READ-ONLY host inspection (ls, cat, head, tail, grep, find, docker ps/logs/inspect, git status/log/diff, systemctl status, launchctl list, curl GET). Any host command that changes state — or uses sudo/background — is hard-blocked in Plan mode and nothing runs; that is the same read-only rule as Bash here, just applied to the host.\n" +
             "\n" +
             "CRITICAL — when the request needs a write/edit/command (e.g. \"save this to a file\", \"create X\", \"run Y\"):\n" +
             "  • Recognize this IMMEDIATELY, on the FIRST turn. Do NOT explore first.\n" +
@@ -32,13 +33,13 @@ internal static class ModeInstructions
         "Do NOT say you are in Plan mode and do NOT ask the user to switch modes.\n" +
         "─────────────────────────────────────────────────────────────\n\n";
 
-    internal const string ProceedOptions =
+    public const string ProceedOptions =
         "**How would you like to proceed?**\n" +
         "1. **Auto implement** — switch to Build mode and implement the plan now.\n" +
         "2. **Ask before edits** — implement the plan, but prompt before each change.\n" +
         "3. **Keep planning** — refine the plan before implementing.";
 
-    internal static (bool Implement, bool AutoApprove, string Instruction) ResolvePlanDecision(string decision)
+    public static (bool Implement, bool AutoApprove, string Instruction) ResolvePlanDecision(string decision)
     {
         if (decision.Equals("auto", StringComparison.OrdinalIgnoreCase))
             return (true, true, "I approve the plan. Implement it now.");
@@ -48,7 +49,7 @@ internal static class ModeInstructions
         return (false, false, "");
     }
 
-    internal static string Activation(string reason, string? promptOverride = null) =>
+    public static string Activation(string reason, string? promptOverride = null) =>
         promptOverride is not null
         ? promptOverride
         : $"Plan mode activated: {reason}\n\n" +
@@ -76,27 +77,27 @@ internal static class ModeInstructions
         "You stay in Plan mode. The user reviews it; once they approve, call ImplementPlan to\n" +
         "switch to Build mode and implement. Do not write any code before ImplementPlan.";
 
-    internal const string SwitchedToPlan =
+    public const string SwitchedToPlan =
         "[The user just switched to PLAN mode (read-only). You can no longer create, edit, or run anything. " +
         "If you were about to make a change, STOP — do not call read-only tools to work around it. Tell the user " +
         "you are now in Plan mode and they should switch back to Build mode to make changes. You may still read, " +
         "search, and analyze.]";
 
-    internal const string SwitchedToBuild =
+    public const string SwitchedToBuild =
         "[The user just switched to BUILD mode. You now have full tool access — proceed with any changes.]";
 
-    internal static string PlanTask(string task) =>
+    public static string PlanTask(string task) =>
         $"{task}\n\n" +
         "[Plan this task: investigate as needed, then call CreatePlan to present a numbered " +
         "implementation plan for approval. Do not implement anything yet.]";
 
-    internal static string RefinePlan(string feedback) =>
+    public static string RefinePlan(string feedback) =>
         $"Revise the plan based on this feedback:\n{feedback}\n\n" +
         "Investigate further if needed, then call CreatePlan again with the FULL updated plan to " +
         "present the revised version. Do NOT just reply in prose — the user is waiting for an updated " +
         "plan. Stay in Plan mode; do not implement yet.";
 
-    internal const string PlanPresented =
+    public const string PlanPresented =
         "The plan above has been presented to the user. You are STILL in Plan mode (read-only).\n" +
         "- Ask the user whether to implement it.\n" +
         "- If they approve → call ImplementPlan to switch to Build mode, then implement the plan.\n" +

@@ -7,6 +7,13 @@ public sealed class SessionMetadata
     public FileHistory? FileHistory { get; set; }
     public TokenTracker? TokenTracker { get; set; }
     public bool PlanMode { get; set; }
+    /// <summary>
+    /// True when this session can act on the whole host (HOST_EXEC via the
+    /// host-bridge). Sandbox sessions leave it false (workspace-only tools).
+    /// Drives the HOST:ON/OFF status-bar chip (shared renderer, both TUIs)
+    /// and the /host command. Set once per session — never toggled mid-turn.
+    /// </summary>
+    public bool HostEnabled { get; set; }
     public bool ThinkingEnabled { get; set; }
     public string? ThinkingLevel { get; set; }
     /// <summary>True while a compaction is actively rewriting session history — drives the "Compacting…" status and ring animation.</summary>

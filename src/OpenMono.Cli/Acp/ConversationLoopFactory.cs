@@ -53,9 +53,9 @@ public sealed class ConversationLoopFactory
 
 
 
-    public ConversationLoop Create(SessionState session, IAcpEventSink sink, IAcpUserInteraction interaction)
+    public ConversationLoop Create(SessionState session, IAcpEventSink sink, IAcpUserInteraction interaction, PermissionStore store)
     {
-        var placeholderPermissions = new PermissionEngine(_config, _output, _input);
+        var placeholderPermissions = new PermissionEngine(_config, _output, _input, store: store);
         return new ConversationLoop(
             _llm,
             _tools,
@@ -66,6 +66,7 @@ public sealed class ConversationLoopFactory
             _config,
             session,
             sink: sink,
-            interaction: interaction);
+            interaction: interaction,
+            store: store);
     }
 }

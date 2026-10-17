@@ -14,14 +14,29 @@ public static class MessageSanitizer
     public const string BrokenArgumentsMarker = "{\"error\":\"truncated\"}";
 
     /// <summary>Returns a request-safe copy of <paramref name="messages"/> where every assistant
-    /// tool-call argument is valid JSON and every tool message references an existing call.</summary>
+    /// tool-call argument is valid JSON, every tool message references an existing call, and no
+    /// assistant message is empty (llama.cpp and OpenAI-compatible providers reject assistant
+    /// messages with neither content nor tool_calls with a 400).</summary>
     public static List<Message> SanitizeForRequest(IReadOnlyList<Message> messages)
     {
         var result = new List<Message>(messages.Count);
         var knownCallIds = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var msg in messages)
+        for (var index = 0; index < messages.Count; index++)
         {
+            var msg = messages[index];
+            if (msg.Role == MessageRole.Assistant &&
+                string.IsNullOrWhiteSpace(msg.Content) &&
+                msg.ToolCalls is not { Count: > 0 })
+            {
+                // Fail closed: never forward a message the provider will 400 on.
+                // This also heals sessions whose stored history already holds one
+                // (e.g. a turn that produced thinking but no text and no calls).
+                Log.Warn($"[SANITIZE] Dropping empty assistant message at index {index} " +
+                    "(no content, no tool_calls) — providers reject these with 400.");
+                continue;
+            }
+
             if (msg.Role == MessageRole.Assistant && msg.ToolCalls is { Count: > 0 } calls)
             {
                 var repaired = false;

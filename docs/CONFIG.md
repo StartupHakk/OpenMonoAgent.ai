@@ -371,6 +371,66 @@ Override via env vars: `OPENMONO_WEB_SEARCH=1` / `OPENMONO_WEB_SCRAPE=1` (truthy
 
 ---
 
+## Host bridge (`openmono agent --host`)
+
+The bare-metal host sub-agent has its **own** config file: `~/.openmono/host-bridge.json`
+(0600, never holds secrets). It is *not* part of `settings.json`. `openmono config`
+routes `host.*` keys to that file; every other key still goes to `settings.json`.
+
+### Running the daemon
+
+The host-bridge daemon is the bare-metal executor. Run it directly, or let
+`openmono agent --host` start/stop it around an agent session:
+
+```bash
+openmono host daemon     # start the daemon (preferred; it stays up after the agent exits)
+openmono host status     # is it running? shows version + paired-session count
+openmono host stop       # stop it
+```
+
+Then pair any sandbox agent to it with `/host on` inside the agent (`/host off`
+revokes it mid-session). The daemon listens on `127.0.0.1:7476` plus — on Linux —
+the docker bridge gateway (`docker0`/`br-*`) so the agent container reaches it
+via `host.docker.internal`; on macOS Docker Desktop forwards that name to the
+host loopback natively. It never binds `0.0.0.0` or any LAN interface. The pair
+secret is read from the bind-mounted `~/.openmono/host-bridge.json`.
+
+### Policy keys
+
+```bash
+openmono config set host.sudo_policy allow      # escalation policy
+openmono config set host.exec_default ask       # default policy for host commands
+openmono config set host.run_as dimnd           # account host commands run as
+openmono config set host.allow_list "git *,docker *,systemctl status *"
+openmono config set host.deny_list "rm *,dd *,mkfs *"
+openmono config set host.timeout_ms 600000      # foreground command timeout
+openmono config get host.sudo_policy
+openmono config unset host.run_as
+```
+
+### Key → JSON path mapping
+
+| `openmono config` key | JSON path in `host-bridge.json` | Type | Default |
+|-----------------------|--------------------------------|------|---------|
+| `host.exec_default` | `.host_exec.default` | `ask` \| `allow` \| `deny` | `ask` |
+| `host.sudo_policy` | `.allow_sudo` | `ask` \| `allow` \| `deny` | `ask` |
+| `host.run_as` | `.run_as` | username (empty = whoever runs the bridge) | *(empty)* |
+| `host.allow_list` | `.host_exec.allow` | string array (comma-separated on the CLI) | `git *`, `systemctl status *`, `journalctl *` (Linux; macOS samples ship `git *`, `launchctl list *`, `log show *`) |
+| `host.deny_list` | `.host_exec.deny` | string array (comma-separated on the CLI) | *(sample deny list)* |
+| `host.timeout_ms` | `.timeout_ms` | integer (milliseconds) | `300000` |
+
+Policy semantics (`ask`/`allow`/`deny`) are shared between both policy keys:
+`ask` prompts y/N per command (or per escalation, for `host.sudo_policy`); a **yes
+is in-memory only for that one command and is never persisted**. Non-interactive
+runs fail closed (an `ask` that cannot be confirmed is denied). See
+[Deployment modes — host sub-agent](DEPLOYMENT-MODES.md#run-as-identity-sudo-and-the-paper-trail)
+for the full behavior.
+
+Install-time presets (non-interactive): `OPENMONO_HOST_BRIDGE`, `OPENMONO_HOST_EXEC_DEFAULT`,
+`OPENMONO_HOST_SUDO`, `OPENMONO_HOST_RUN_AS`, `OPENMONO_HOST_PASSWORD_FILE`.
+
+---
+
 ## Top-level flags
 
 | Key | Type | Default | Description |
@@ -378,7 +438,6 @@ Override via env vars: `OPENMONO_WEB_SEARCH=1` / `OPENMONO_WEB_SCRAPE=1` (truthy
 | `auto_detect_code_graph` | bool | `true` | Auto-register MCP graph servers if found |
 | `verbose` | bool | `false` | Log full LLM stream and tool pipeline |
 | `show_detail` | bool | `false` | Show extra detail in TUI panels |
-| `vision_enabled` | bool | `false` | Accept image attachments and pass them to the model (`OPENMONO_VISION_ENABLED=1`) |
 | `data_directory` | string | `~/.openmono` | Where sessions, memory, and checkpoints are stored |
 | `working_directory` | string | cwd | Override the workspace root |
 | `host_working_directory` | string | — | Host path when running inside Docker (used for bind-mount mapping) |
@@ -408,6 +467,6 @@ server-reported `n_ctx` (at least 1024) takes precedence at startup.
 | `OPENMONO_DATA_DIR` | `data_directory` |
 | `OPENMONO_MODEL_PRESET` | Activate a preset by name |
 | `OPENMONO_PROVIDER` | Activate a provider by name |
-| `OPENMONO_VISION_ENABLED` | `vision_enabled` — set to `1` to enable image input |
+| `OPENMONO_VISION_ENABLED` | `inference.vision_enabled` — set to `1` to enable image input (the settings file wins when explicitly set) |
 | `OPENMONO_WEB_SEARCH` | `web.search` — set to `1` to force-enable SearXNG routing |
 | `OPENMONO_WEB_SCRAPE` | `web.scrape` — set to `1` to force-enable Scrapling routing |

@@ -77,6 +77,7 @@ public sealed class AcpInputReaderAdapter : IInputReader
         }
         if (string.Equals(toolName, "FileWrite", StringComparison.Ordinal)) return true;
         if (string.Equals(toolName, "ApplyPatch", StringComparison.Ordinal)) return true;
+        if (string.Equals(toolName, "HostExec", StringComparison.Ordinal)) return true;
         return false;
     }
 }

@@ -1,0 +1,28 @@
+# OpenMono.ai — Caddy gateway override for the Strata backend.
+#
+# Strata serves host-native on 127.0.0.1:8080 (see scripts/strata.sh), so there
+# is no llama-server container to upstream to. This file repoints the Caddy
+# gateway at the host's Strata process via host.docker.internal, keeping the
+# single-port frpc tunnel story unchanged: one remote port still fans out to
+# inference (/v1, /v1/messages, /v1/responses) + search (/search) + scrape.
+#
+# Usage (inference box, Strata backend):
+#   STRATA_PORT=8080 docker compose -f docker-compose.yml \
+#     -f docker-compose.strata.yml --profile server up -d caddy
+# Or export COMPOSE_FILE="docker-compose.yml:docker-compose.strata.yml".
+#
+# The agent then uses either the gateway:
+#   openmono config set llm.endpoint http://<relay-host>:<remotePort>
+# or Strata directly (single-box):
+#   openmono config set llm.endpoint http://localhost:8080/v1
+
+services:
+  caddy:
+    environment:
+      # Caddy's {$LLAMA_UPSTREAM} placeholder reads this value; despite the
+      # legacy name it may point at Strata — it is a plain OpenAI-compatible
+      # HTTP upstream either way.
+      - LLAMA_UPSTREAM=host.docker.internal:${STRATA_PORT:-8080}
+    # host.docker.internal resolves via this mapping on Linux Docker.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

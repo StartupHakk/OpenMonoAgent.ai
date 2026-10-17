@@ -1,0 +1,229 @@
+{
+  "_comment": [
+    "OpenMono.ai — model + inference-backend catalog.",
+    "Single source of truth for the installers (scripts/install.sh, scripts/install_macos.sh)",
+    "and scripts/lib/prism.sh. Edit THIS file to add or change a model; you do not need to",
+    "touch the shell scripts. Resolved at install time with jq (jq is a hard prerequisite).",
+    "If this file is missing or corrupt the installers fall back to embedded defaults in",
+    "scripts/lib/model-catalog.sh, so a bad edit can never brick the installer.",
+    "",
+    "Schema (schema=1):",
+    "  default                 id of the model chosen when nothing is specified.",
+    "  models[]                one entry per selectable model.",
+    "    id                    stable identifier; --model=<id> matches this or any alias.",
+    "    backend               'llama' (stock llama.cpp path) or 'strata' (custom script).",
+    "    prism                 true => uses the PrismML llama.cpp fork image (Bonsai).",
+    "    aliases[]             extra --model= names that select this entry.",
+    "    requires              capability flag that must be 1 to offer this model:",
+    "                          'CAN_BONSAI' or 'CAN_STRATA', or null for always-available.",
+    "    deny                  message printed when an explicit --model=<id> is refused",
+    "                          because its 'requires' gate fails.",
+    "    menu{label,tag,line}  text shown in the interactive picker ('line' is the exact",
+    "                          menu row; label/tag are used when 'line' is absent).",
+    "    files{name,url,mmproj,mmproj_url}  model identity when it is fixed across tiers",
+    "                          (Bonsai: one GGUF, tiers only change ctx/kv). For tier-varying",
+    "                          models (Qwen) the identity lives in each tier instead.",
+    "    accuracy              fixed accuracy label for file-identity models (Bonsai).",
+    "    label                 fixed picker/download label for file-identity models",
+    "                          (tiers[].label wins when a tier row exists).",
+    "    script                backend 'strata': path to the manager script to run instead of",
+    "                          the llama download path. port_env/port_default name the OpenAI",
+    "                          endpoint written to docker/.env.",
+    "    platforms{linux,macos}  per-platform tier tables. The tier KEY differs by platform:",
+    "                          linux keys on VRAM MB bucket (24/16/12/8/cpu), macOS keys on",
+    "                          unified RAM GB (48/32/16/8). Same GGUF can map to a different",
+    "                          tier key per platform — that is expected.",
+    "      tiers{<key>:{...}}    ctx (tokens), accuracy (full|standard|lower|bonsai-*),",
+    "                          optional kv (cache-type-k/v for the GPU override), an optional",
+    "                          per-tier label, and, when the file varies per tier,",
+    "                          name/url/mmproj/mmproj_url.",
+    "      min_mem             macOS-only: minimum unified RAM (GB) required to offer this",
+    "                          model (used by install_macos.sh; absent => no extra gate).",
+    "  context{linux,macos}    context-reduction constants (mmproj/vision headroom) so they",
+    "                          can be tuned here instead of in the scripts."
+  ],
+  "schema": 1,
+  "default": "qwen",
+  "models": [
+    {
+      "id": "qwen",
+      "backend": "llama",
+      "prism": false,
+      "aliases": ["qwen"],
+      "requires": null,
+      "menu": {
+        "label": "Qwen on llama.cpp",
+        "tag": "default — standard, most compatible",
+        "line": "Qwen on llama.cpp  [default — standard, most compatible]"
+      },
+      "platforms": {
+        "linux": {
+          "tiers": {
+            "24": {
+              "name": "Qwen3.8-27B-UD-Q4_K_M.gguf",
+              "url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf",
+              "mmproj": "mmproj-qwen3.8-27B-F16.gguf",
+              "mmproj_url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf",
+              "ctx": 196608, "kv": "q8_0", "accuracy": "full",
+              "label": "Qwen3.8-27B-UD-Q4_K_M (~15GB) [GPU 24GB+ — full accuracy]"
+            },
+            "16": {
+              "name": "Qwen3.8-27B-UD-IQ3_XXS.gguf",
+              "url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-IQ3_XXS.gguf",
+              "mmproj": "mmproj-qwen3.8-27B-F16.gguf",
+              "mmproj_url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf",
+              "ctx": 180224, "kv": "q4_0", "accuracy": "lower",
+              "label": "Qwen3.8-27B-UD-IQ3_XXS (~12GB) [GPU 16GB — lower accuracy]"
+            },
+            "12": {
+              "name": "Qwen3.5-9B-UD-Q4_K_XL.gguf",
+              "url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q4_K_XL.gguf",
+              "mmproj": "mmproj-qwen3.5-9B-F16.gguf",
+              "mmproj_url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/mmproj-F16.gguf",
+              "ctx": 196608, "kv": "q4_0", "accuracy": "lower",
+              "label": "Qwen3.5-9B-UD-Q4_K_XL (~5GB) [GPU 12GB — lower accuracy]"
+            },
+            "cpu": {
+              "name": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+              "url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+              "mmproj": "mmproj-qwen3.6-35B-A3B-F16.gguf",
+              "mmproj_url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/mmproj-F16.gguf",
+              "ctx": 196608, "kv": "q8_0", "accuracy": "standard",
+              "label": "Qwen3.6-35B-A3B (~17.6GB) [CPU]"
+            }
+          }
+        },
+        "macos": {
+          "tiers": {
+            "48": {
+              "name": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+              "url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+              "mmproj": "mmproj-qwen3.6-35B-A3B-F16.gguf",
+              "mmproj_url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/mmproj-F16.gguf",
+              "ctx": 196608, "accuracy": "standard",
+              "label": "Qwen3.6-35B-A3B (~17.6GB) [Apple Silicon >=48GB — standard]"
+            },
+            "32": {
+              "name": "Qwen3.5-9B-UD-Q4_K_XL.gguf",
+              "url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q4_K_XL.gguf",
+              "mmproj": "mmproj-qwen3.5-9B-F16.gguf",
+              "mmproj_url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/mmproj-F16.gguf",
+              "ctx": 65536, "accuracy": "lower",
+              "label": "Qwen3.5-9B-UD-Q4_K_XL (~5GB) [Apple Silicon 32GB]"
+            },
+            "16": {
+              "name": "Qwen3.5-9B-UD-Q4_K_XL.gguf",
+              "url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q4_K_XL.gguf",
+              "mmproj": "mmproj-qwen3.5-9B-F16.gguf",
+              "mmproj_url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/mmproj-F16.gguf",
+              "ctx": 16384, "accuracy": "lower",
+              "label": "Qwen3.5-9B-UD-Q4_K_XL (~5GB) [Apple Silicon 16GB — lower accuracy]"
+            },
+            "8": {
+              "name": "Qwen3.5-9B-UD-Q4_K_XL.gguf",
+              "url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q4_K_XL.gguf",
+              "mmproj": "", "mmproj_url": "",
+              "ctx": 8192, "accuracy": "lower",
+              "label": "Qwen3.5-9B-UD-Q4_K_XL (~5GB) [Apple Silicon <16GB]"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "bonsai-pq2",
+      "backend": "llama",
+      "prism": true,
+      "aliases": ["bonsai-pq2", "bonsai", "pq2"],
+      "requires": "CAN_BONSAI",
+      "menu": {
+        "label": "Ternary-Bonsai-2-27B PQ2_0 (~7.2GB)",
+        "tag": "Prism CUDA/Vulkan",
+        "line": "Ternary-Bonsai-2-27B PQ2_0 (~7.2GB) [Prism CUDA/Vulkan]"
+      },
+      "files": {
+        "name": "Ternary-Bonsai-2-27B-PQ2_0.gguf",
+        "url": "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/resolve/main/Ternary-Bonsai-2-27B-PQ2_0.gguf",
+        "mmproj": "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
+        "mmproj_url": "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/resolve/main/Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf"
+      },
+      "accuracy": "bonsai-pq2",
+      "label": "Ternary-Bonsai-2-27B-PQ2_0 (~7.2GB) [recommended]",
+      "platforms": {
+        "linux": {
+          "tiers": {
+            "24": { "ctx": 196608, "kv": "q8_0", "label": "Ternary-Bonsai-2-27B-PQ2_0 (~7.2GB) [recommended]" },
+            "16": { "ctx": 131072, "kv": "q4_0", "label": "Ternary-Bonsai-2-27B-PQ2_0 (~7.2GB) [recommended]" },
+            "12": { "ctx": 98304, "kv": "q4_0", "label": "Ternary-Bonsai-2-27B-PQ2_0 (~7.2GB) [recommended]" },
+            "8":  { "ctx": 32768,  "kv": "q4_0", "label": "Ternary-Bonsai-2-27B-PQ2_0 (~7.2GB) [recommended]" }
+          }
+        },
+        "macos": {
+          "min_mem": 24,
+          "tiers": {
+            "48": { "ctx": 98304, "label": "Ternary-Bonsai-2-27B-PQ2_0 (~7.2GB) [EXPERIMENTAL on Metal]" },
+            "24": { "ctx": 65536, "label": "Ternary-Bonsai-2-27B-PQ2_0 (~7.2GB) [EXPERIMENTAL on Metal]" }
+          }
+        }
+      }
+    },
+    {
+      "id": "bonsai-ptq1",
+      "backend": "llama",
+      "prism": true,
+      "aliases": ["bonsai-ptq1", "ptq1"],
+      "requires": "CAN_BONSAI",
+      "menu": {
+        "label": "Ternary-Bonsai-2-27B PTQ1_0 (~5.9GB)",
+        "tag": "tightest VRAM",
+        "line": "Ternary-Bonsai-2-27B PTQ1_0 (~5.9GB) [tightest VRAM]"
+      },
+      "files": {
+        "name": "Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+        "url": "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/resolve/main/Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+        "mmproj": "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
+        "mmproj_url": "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/resolve/main/Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf"
+      },
+      "accuracy": "bonsai-ptq1",
+      "label": "Ternary-Bonsai-2-27B-PTQ1_0 (~5.9GB) [tightest memory]",
+      "platforms": {
+        "linux": {
+          "tiers": {
+            "24": { "ctx": 196608, "kv": "q8_0", "label": "Ternary-Bonsai-2-27B-PTQ1_0 (~5.9GB) [tightest memory]" },
+            "16": { "ctx": 131072, "kv": "q4_0", "label": "Ternary-Bonsai-2-27B-PTQ1_0 (~5.9GB) [tightest memory]" },
+            "12": { "ctx": 98304, "kv": "q4_0", "label": "Ternary-Bonsai-2-27B-PTQ1_0 (~5.9GB) [tightest memory]" },
+            "8":  { "ctx": 32768,  "kv": "q4_0", "label": "Ternary-Bonsai-2-27B-PTQ1_0 (~5.9GB) [tightest memory]" }
+          }
+        },
+        "macos": {
+          "min_mem": 16,
+          "tiers": {
+            "48": { "ctx": 98304, "label": "Ternary-Bonsai-2-27B-PTQ1_0 (~5.9GB) [EXPERIMENTAL on Metal]" },
+            "24": { "ctx": 65536, "label": "Ternary-Bonsai-2-27B-PTQ1_0 (~5.9GB) [EXPERIMENTAL on Metal]" },
+            "16": { "ctx": 32768, "label": "Ternary-Bonsai-2-27B-PTQ1_0 (~5.9GB) [EXPERIMENTAL on Metal]" }
+          }
+        }
+      }
+    },
+    {
+      "id": "flash-next",
+      "backend": "strata",
+      "prism": false,
+      "aliases": ["flash-next"],
+      "requires": "CAN_STRATA",
+      "deny": "Qwen3.8-Flash-Next (Strata) needs Linux + an NVIDIA GPU (CUDA 13, auto-installed by scripts/strata.sh) and a 48GB-class box (~70GB weights, streamed from disk). Not available on this box — re-run with --model=qwen.",
+      "menu": {
+        "label": "Qwen3.8-Flash-Next via Strata (~70GB)",
+        "tag": "NVIDIA / CUDA 13",
+        "line": "Qwen3.8-Flash-Next via Strata (~70GB, NVIDIA / CUDA 13)"
+      },
+      "script": "scripts/strata.sh",
+      "port_env": "STRATA_PORT",
+      "port_default": 8080
+    }
+  ],
+  "context": {
+    "linux": { "vision": 172032, "vision_16g": 98304, "cpu": 196608 },
+    "macos": { "vision": 172032, "vision_32g": 49152, "vision_16g": 12288 }
+  }
+}

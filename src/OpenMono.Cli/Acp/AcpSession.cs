@@ -77,11 +77,10 @@ public sealed class AcpSession
     }
 
     private readonly ConcurrentDictionary<string, PendingPause> _pending = new();
-    // Permission cache: (Allow: bool, Scope: "once"|"session")
-    // "once" scope = temporary grant for this tool call, forgotten after execution
-    // "session" scope = persistent grant for remainder of session
-    private readonly ConcurrentDictionary<string, (bool Allow, string Scope)> _rememberedPermissions = new();
-    private readonly ConcurrentDictionary<string, string> _rememberedUserInputs = new();
+    // Single session-scoped permission memory shared by every runtime path.
+    // Constructed inline so every session (live, reloaded, test) gets one;
+    // grants are in-memory only and never serialized.
+    public OpenMono.Permissions.PermissionStore Store { get; } = new();
 
     // Permission queue: max 1 permission in flight per session
     // Additional permissions queued until current one resolves
@@ -113,18 +112,6 @@ public sealed class AcpSession
         _permissionQueue.Clear();
     }
 
-    public void RememberPermission(string contextKey, bool allow, string scope = "session")
-        => _rememberedPermissions[contextKey] = (allow, scope);
-
-    public (bool Allow, string Scope)? TryGetRememberedPermission(string contextKey)
-        => _rememberedPermissions.TryGetValue(contextKey, out var v) ? v : null;
-
-    // Drop a remembered decision. Used for "once" scope: a temporary grant is
-    // seeded so the resumed tool execution passes without re-prompting, then
-    // forgotten immediately so a later call this session prompts again.
-    public void ForgetPermission(string contextKey)
-        => _rememberedPermissions.TryRemove(contextKey, out _);
-
     // Permission queue management (Phase 2 feature)
     public bool TryEnqueuePermission(string id, string toolName, string summary, bool dangerous)
     {
@@ -153,12 +140,6 @@ public sealed class AcpSession
 
         return null;
     }
-
-    public void RememberUserInput(string contextKey, string value)
-        => _rememberedUserInputs[contextKey] = value;
-
-    public string? TryGetRememberedUserInput(string contextKey)
-        => _rememberedUserInputs.TryGetValue(contextKey, out var v) ? v : null;
 
     private sealed record PendingPause(
         PendingResponseKind Kind,

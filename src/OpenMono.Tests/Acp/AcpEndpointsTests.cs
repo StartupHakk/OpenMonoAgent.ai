@@ -153,6 +153,79 @@ public sealed class AcpEndpointsTests : IAsyncLifetime
         res.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
+
+
+    [Fact]
+    public async Task PostHost_returns_404_for_unknown_session()
+    {
+        var res = await _client.PostAsJsonAsync("/api/v1/sessions/sess_missing/host", new { action = "on" });
+        res.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task PostHost_rejects_bad_body_and_unknown_action()
+    {
+        var sid = await CreateSessionAsync();
+
+        var raw = await _client.PostAsync($"/api/v1/sessions/{sid}/host",
+            new StringContent("not json", System.Text.Encoding.UTF8, "application/json"));
+        raw.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        var bad = await _client.PostAsJsonAsync($"/api/v1/sessions/{sid}/host", new { action = "sideways" });
+        bad.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task PostHost_on_without_daemon_answers_gracefully_not_4xx()
+    {
+        var sid = await CreateSessionAsync();
+
+        // No host daemon env/secret in the test fixture: pairing must fail
+        // closed as ok:false with guidance, never a crash or a 4xx.
+        var origMode = Environment.GetEnvironmentVariable("OPENMONO_HOST_MODE");
+        var origSecret = Environment.GetEnvironmentVariable("OPENMONO_HOST_PAIR_SECRET");
+        var origUrl = Environment.GetEnvironmentVariable("OPENMONO_HOST_DAEMON_URL");
+        Environment.SetEnvironmentVariable("OPENMONO_HOST_MODE", null);
+        Environment.SetEnvironmentVariable("OPENMONO_HOST_PAIR_SECRET", null);
+        // Dead port: even if the machine has a real pair secret on disk,
+        // pairing deterministically fails on connect instead of racing a
+        // developer's actually-running daemon.
+        Environment.SetEnvironmentVariable("OPENMONO_HOST_DAEMON_URL", "http://127.0.0.1:1");
+        try
+        {
+            var res = await _client.PostAsJsonAsync($"/api/v1/sessions/{sid}/host", new { action = "on" });
+            res.StatusCode.Should().Be(HttpStatusCode.OK);
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            doc.RootElement.GetProperty("ok").GetBoolean().Should().BeFalse();
+            doc.RootElement.GetProperty("host_enabled").GetBoolean().Should().BeFalse();
+            doc.RootElement.GetProperty("error").GetString().Should().NotBeNullOrWhiteSpace();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OPENMONO_HOST_MODE", origMode);
+            Environment.SetEnvironmentVariable("OPENMONO_HOST_PAIR_SECRET", origSecret);
+            Environment.SetEnvironmentVariable("OPENMONO_HOST_DAEMON_URL", origUrl);
+        }
+    }
+
+    [Fact]
+    public async Task PostHost_off_is_idempotent_for_unpaired_session()
+    {
+        var sid = await CreateSessionAsync();
+
+        for (var i = 0; i < 2; i++)
+        {
+            var res = await _client.PostAsJsonAsync($"/api/v1/sessions/{sid}/host", new { action = "off" });
+            res.StatusCode.Should().Be(HttpStatusCode.OK);
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            doc.RootElement.GetProperty("ok").GetBoolean().Should().BeTrue();
+            doc.RootElement.GetProperty("host_enabled").GetBoolean().Should().BeFalse();
+        }
+
+        var store = _app.Services.GetRequiredService<AcpSessionStore>();
+        store.TryGet(sid)!.State.Meta.HostEnabled.Should().BeFalse();
+    }
+
     [Fact]
     public async Task GetSession_returns_200_with_metadata_for_existing_session()
     {
@@ -167,6 +240,7 @@ public sealed class AcpEndpointsTests : IAsyncLifetime
         root.GetProperty("model").GetString().Should().Be("test-model");
         root.GetProperty("turn_count").GetInt32().Should().Be(0);
         root.GetProperty("plan_mode").GetBoolean().Should().BeTrue("new sessions default to plan mode (read-only)");
+        root.GetProperty("host_enabled").GetBoolean().Should().BeFalse("new sessions are sandboxed; the extension reads this for the Host button state");
     }
 
 

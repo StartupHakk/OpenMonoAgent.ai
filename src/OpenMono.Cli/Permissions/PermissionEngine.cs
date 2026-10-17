@@ -27,32 +27,30 @@ public sealed class PermissionEngine
     private readonly IOutputSink _output;
     private readonly IInputReader _input;
     private readonly bool _nonInteractive;
-    private readonly HashSet<string> _sessionAllowAll = [];
-    private readonly HashSet<string> _sessionDenyAll = [];
+    // Single session-scoped grant memory, shared across every engine in the
+    // session (forked per sub-agent). Replaces _sessionAllowAll/_sessionDenyAll
+    // and the capability type sets.
+    private readonly PermissionStore _store;
     private int _consecutiveDenials;
     private int _totalDenials;
 
-    private readonly HashSet<string> _sessionAllowCapTypes = [];
-    private readonly HashSet<string> _sessionDenyCapTypes = [];
-
+    // Capability type grants live in the store (TryResolveCapability);
+    // pattern rules below stay engine-local.
     private readonly List<(string CapType, string Pattern, bool Allow)> _sessionCapRules = [];
     private readonly Stack<(string RunId, HashSet<string> Tools)> _playbookScopes = [];
 
-    public PermissionEngine(AppConfig config, IOutputSink output, IInputReader input, bool nonInteractive = false)
+    public PermissionEngine(AppConfig config, IOutputSink output, IInputReader input, bool nonInteractive = false, PermissionStore? store = null)
     {
         _config = config;
         _output = output;
         _input  = input;
         _nonInteractive = nonInteractive;
+        _store = store ?? new PermissionStore();
     }
 
     public PermissionEngine CreateChildEngine(IOutputSink output, IInputReader input)
     {
-        var child = new PermissionEngine(_config, output, input, nonInteractive: true);
-        child._sessionAllowAll.UnionWith(_sessionAllowAll);
-        child._sessionDenyAll.UnionWith(_sessionDenyAll);
-        child._sessionAllowCapTypes.UnionWith(_sessionAllowCapTypes);
-        child._sessionDenyCapTypes.UnionWith(_sessionDenyCapTypes);
+        var child = new PermissionEngine(_config, output, input, nonInteractive: true, store: _store.Fork());
         child._sessionCapRules.AddRange(_sessionCapRules);
         foreach (var scope in _playbookScopes.Reverse())
             child._playbookScopes.Push(scope);
@@ -84,7 +82,7 @@ public sealed class PermissionEngine
         if (capabilities.Count == 0)
             return new(true, null, capabilities);
 
-        if (_sessionDenyAll.Contains(toolName))
+        if (_store.TryResolve(toolName) is { Allow: false })
             return new(false,
                 $"{toolName} was denied for this session by the user. " +
                 "This is an app-level block — NOT a file system permission issue. " +
@@ -96,7 +94,7 @@ public sealed class PermissionEngine
         {
             var capType = cap.GetType().Name;
 
-            if (_sessionDenyCapTypes.Contains(capType))
+            if (_store.TryResolveCapability(capType) is { Allow: false })
                 return new(false, $"Capability type {capType} denied for this session", capabilities);
 
             var denyReason = CheckCapabilityDenyRules(cap);
@@ -107,7 +105,7 @@ public sealed class PermissionEngine
         if (IsPreApprovedByPlaybookScope(toolName))
             return new(true, null, capabilities);
 
-        if (_sessionAllowAll.Contains(toolName))
+        if (_store.TryResolve(toolName) is { Allow: true })
             return new(true, null, capabilities);
 
         var uncoveredCaps = new List<Capability>();
@@ -115,7 +113,7 @@ public sealed class PermissionEngine
         {
             var capType = cap.GetType().Name;
 
-            if (_sessionAllowCapTypes.Contains(capType))
+            if (_store.TryResolveCapability(capType) is { Allow: true })
                 continue;
 
             if (CheckCapabilityAllowRules(cap))
@@ -151,12 +149,12 @@ public sealed class PermissionEngine
             return new(true);
         }
 
-        if (_sessionAllowAll.Contains(toolName))
+        if (_store.TryResolve(toolName) is { Allow: true })
         {
             TrackAllow();
             return new(true);
         }
-        if (_sessionDenyAll.Contains(toolName))
+        if (_store.TryResolve(toolName) is { Allow: false })
             return new(false,
                 $"{toolName} was denied for this session by the user. " +
                 "This is an app-level block — NOT a file system permission issue. " +
@@ -350,21 +348,16 @@ public sealed class PermissionEngine
     private CapabilityDecision AllowAllCapabilitiesForSession(
         string toolName, List<Capability> caps, IReadOnlyList<Capability> allCaps)
     {
-        _sessionDenyAll.Remove(toolName);
-        _sessionAllowAll.Add(toolName);
+        _store.Remember(toolName, allow: true, GrantScope.Session);
 
         foreach (var cap in caps)
-        {
-            _sessionDenyCapTypes.Remove(cap.GetType().Name);
-            _sessionAllowCapTypes.Add(cap.GetType().Name);
-        }
+            _store.RememberCapability(cap.GetType().Name, allow: true, GrantScope.Session);
         return new(true, null, allCaps);
     }
 
     private CapabilityDecision DenyAllCapabilitiesForSession(string toolName, IReadOnlyList<Capability> allCaps)
     {
-        _sessionAllowAll.Remove(toolName);
-        _sessionDenyAll.Add(toolName);
+        _store.Remember(toolName, allow: false, GrantScope.Session);
         return new(false, PermissionDeniedSession, allCaps);
     }
 
@@ -391,15 +384,13 @@ public sealed class PermissionEngine
 
     private PermissionDecision AllowAllForSession(string toolName)
     {
-        _sessionDenyAll.Remove(toolName);
-        _sessionAllowAll.Add(toolName);
+        _store.Remember(toolName, allow: true, GrantScope.Session);
         return new(true);
     }
 
     private PermissionDecision DenyAllForSession(string toolName)
     {
-        _sessionAllowAll.Remove(toolName);
-        _sessionDenyAll.Add(toolName);
+        _store.Remember(toolName, allow: false, GrantScope.Session);
         return new(false,
             $"{toolName} was denied for this session by the user. " +
             "This is an app-level block — NOT a file system permission issue. " +
@@ -427,6 +418,14 @@ public sealed class PermissionEngine
     {
         if (toolName == "Bash" && input.TryGetProperty("command", out var cmd))
             return cmd.GetString() ?? input.ToString();
+
+        if (toolName == "HostExec" && input.TryGetProperty("command", out var hostCmd))
+        {
+            var asRoot = input.TryGetProperty("as_root", out var ar) && ar.ValueKind == JsonValueKind.True;
+            var bg = input.TryGetProperty("background", out var b) && b.ValueKind == JsonValueKind.True;
+            var tag = (asRoot ? "sudo " : "") + (bg ? "(bg) " : "");
+            return $"[host] {tag}{hostCmd.GetString() ?? input.ToString()}";
+        }
 
         if ((toolName == "FileWrite" || toolName == "FileEdit") &&
             input.TryGetProperty("file_path", out var fp))

@@ -43,10 +43,16 @@ services:
       start_period: 30s
 
   # ── Inference-side web services (optional, opt-in per service) ──────────────
-  # Caddy is the single front door tunneled by frpc. It path-routes to llama
-  # (pass-through), SearXNG (/search) and Scrapling (/scrape), enforcing the
-  # shared LLAMA_API_KEY bearer on the two services that have no auth of their
-  # own. It starts whenever either the `search` or `scraper` profile is active.
+  # Caddy is the single front door tunneled by frpc. It path-routes to the
+  # inference backend (pass-through), SearXNG (/search) and Scrapling (/scrape),
+  # enforcing the shared LLAMA_API_KEY bearer on the two services that have no
+  # auth of their own. It starts whenever either the `search` or `scraper`
+  # profile is active.
+  #
+  # Strata backend (Linux default, see docs/STRATA.md): Strata serves
+  # host-native on 127.0.0.1:8080, so apply docker-compose.strata.yml to
+  # repoint LLAMA_UPSTREAM at host.docker.internal:8080. No llama-server
+  # container is started in that mode.
   caddy:
     image: caddy:2-alpine
     container_name: openmono-gateway
@@ -105,8 +111,26 @@ services:
     volumes:
       - ${WORKSPACE:-.}:/workspace
       - ${HOME}/.openmono:/home/agent/.openmono
+      # Host-bridge authority stays host-side. The pair secret file is
+      # shadowed by /dev/null so the sandbox can never read, copy, flip
+      # sudo_policy, or gut the deny-list. Pairing therefore runs on the
+      # launcher invite (OPENMONO_HOST_INVITE, TTL-bounded: every session in
+      # the run may pair with it until it expires)
+      # or the operator approval lane (openmono host approve). The daemon's
+      # command-audit dirs are shadowed by tmpfs so the sandbox cannot see
+      # or tamper them.
+      - /dev/null:/home/agent/.openmono/host-bridge.json
+      - type: tmpfs
+        target: /home/agent/.openmono/host-bridge/logs
+      - type: tmpfs
+        target: /home/agent/.openmono/logs
       - ${HOME}/.code-review-graph:/home/agent/.code-review-graph
       - ../ref:/ref:ro
+      # Server ops (opt-in): the docker.sock is NOT mounted by default. The
+      # launcher mounts it only with OPENMONO_DOCKER_SOCK=1 (it grants the
+      # sandbox host-root-equivalent power — enable deliberately). If you
+      # invoke compose directly, add it yourself:
+      #   - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - HOME=/home/agent
       - OPENMONO_ENDPOINT=${OPENMONO_ENDPOINT:-http://llama-server:7474}
@@ -125,6 +149,13 @@ services:
       - OPENMONO_WEB_GATEWAY=${OPENMONO_WEB_GATEWAY:-}
       - OPENMONO_WEB_SEARCH=${OPENMONO_WEB_SEARCH:-}
       - OPENMONO_WEB_SCRAPE=${OPENMONO_WEB_SCRAPE:-}
+      # Host mode passthrough: `openmono agent` injects the real values (daemon
+      # URL via host.docker.internal + pair secret) when it starts the daemon.
+      # Empty default = host feature off inside the container; /host on can
+      # still pair manually against a reachable daemon.
+      - OPENMONO_HOST_MODE=${OPENMONO_HOST_MODE:-}
+      - OPENMONO_HOST_DAEMON_URL=${OPENMONO_HOST_DAEMON_URL:-}
+      - OPENMONO_HOST_OS=${OPENMONO_HOST_OS:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     stdin_open: true

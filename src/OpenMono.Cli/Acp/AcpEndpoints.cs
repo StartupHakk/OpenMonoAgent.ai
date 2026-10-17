@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using OpenMono.Config;
+using OpenMono.HostBridge;
 using OpenMono.Session;
 using OpenMono.Utils;
 
@@ -24,6 +25,7 @@ public static class AcpEndpoints
         app.MapGet("/api/v1/sessions/{id}", GetSession);
         app.MapGet("/api/v1/sessions/{id}/messages", GetMessages);
         app.MapPost("/api/v1/sessions/{id}/turn", PostTurn);
+        app.MapPost("/api/v1/sessions/{id}/host", ToggleHost);
         app.MapDelete("/api/v1/sessions/{id}", DeleteSession);
 
         app.MapGet("/api/v1/sessions/{id}/diffs", GetDiffs);
@@ -108,6 +110,7 @@ public static class AcpEndpoints
             started_at = session.StartedAt.ToString("o"),
             turn_count = session.TurnCount,
             plan_mode = session.PlanMode,
+            host_enabled = session.State.Meta.HostEnabled,
             thinking_level = thinkingLevel,
             thinking_enabled = thinkingEnabled,
             thinking_levels = thinkingProfile.Kind == ReasoningKind.EffortLevels ? thinkingProfile.Levels : ["off", "on"],
@@ -122,6 +125,113 @@ public static class AcpEndpoints
         var session = store.TryGet(id);
         if (session is null) return Results.NotFound();
         return Results.Ok(new MessagesEnvelope { Messages = ProjectMessages(session.Messages) });
+    }
+
+
+
+    /// <summary>
+    /// Host-mode toggle for a sandbox session (<c>{"action":"on"|"off"}</c>).
+    /// The editor/extension equivalent of the TUI's <c>/host on|off</c>: on
+    /// pairs with the host daemon and injects the standing orders, off revokes
+    /// the pairing and strips them. Wire contract: 200 with
+    /// <c>{ ok, host_enabled, run_as?, sudo?, error? }</c>; 404 unknown session;
+    /// 400 malformed body or unknown action. Pairing failures are NOT 4xx —
+    /// they come back as <c>ok:false</c> with a human-readable <c>error</c>
+    /// so the client can render guidance (start the daemon, check the secret).
+    /// </summary>
+    private static async Task<IResult> ToggleHost(
+        HttpContext ctx,
+        string id,
+        AcpSessionStore store,
+        CancellationToken ct)
+    {
+        var session = store.TryGet(id);
+        if (session is null) return Results.NotFound();
+
+        string action;
+        try
+        {
+            using var doc = await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ct);
+            action = doc.RootElement.TryGetProperty("action", out var aEl) ? aEl.GetString() ?? "" : "";
+        }
+        catch (JsonException ex)
+        {
+            return Results.BadRequest(new { error = "invalid_json", detail = ex.Message });
+        }
+
+        action = action.Trim().ToLowerInvariant();
+        if (action is not ("on" or "off"))
+            return Results.BadRequest(new { error = "invalid_action", detail = "action must be \"on\" or \"off\"" });
+
+        if (action == "on")
+        {
+            var gateway = HostGatewayRegistry.Get(session.Id);
+            if (gateway is { IsPaired: true } && !await gateway.IsPairingLiveAsync(ct))
+            {
+                // Stale token (daemon restarted): the local flag says ON but
+                // the daemon would reject every exec. Drop it and re-pair
+                // below instead of no-opping on the dead pairing.
+                HostGatewayRegistry.Unregister(session.Id);
+                gateway = null;
+            }
+            if (gateway is not { IsPaired: true })
+            {
+                var (paired, error) = await HostGatewayBootstrap.TryPairAsync(session.State, ct);
+                if (paired is null)
+                    return Results.Ok(new { ok = false, host_enabled = false, error = error ?? "pairing failed" });
+                gateway = paired;
+            }
+
+            session.State.Meta.HostEnabled = true;
+            InjectHostStandingOrders(session, gateway);
+            store.Save(session);
+            return Results.Ok(new
+            {
+                ok = true,
+                host_enabled = true,
+                run_as = gateway.RunAs,
+                sudo = gateway.Sudo.ToString().ToLowerInvariant(),
+            });
+        }
+
+        // off: idempotent — an unpaired session is already sandboxed.
+        var existing = HostGatewayRegistry.Get(session.Id);
+        if (existing is { IsPaired: true })
+        {
+            await existing.UnpairAsync(ct);
+            HostGatewayRegistry.Unregister(session.Id);
+        }
+        session.State.Meta.HostEnabled = false;
+        StripHostStandingOrders(session);
+        store.Save(session);
+        return Results.Ok(new { ok = true, host_enabled = false });
+    }
+
+    private static void InjectHostStandingOrders(AcpSession session, HostGateway gateway)
+    {
+        var orders = gateway.BuildStandingOrders();
+        if (orders is null) return;
+        // Same marker guard as the first-turn path in AcpTurnRunner: when no
+        // system message exists yet, the next turn injects the orders itself.
+        var index = session.Messages.FindIndex(m => m.Role == MessageRole.System);
+        if (index < 0) return;
+        var system = session.Messages[index];
+        if (system.Content is not null && system.Content.Contains(HostStandingOrders.Marker)) return;
+        session.Messages[index] = system with { Content = system.Content + "\n\n" + orders };
+    }
+
+    private static void StripHostStandingOrders(AcpSession session)
+    {
+        // The standing orders are always appended as the last block of the
+        // system message, so cutting at the marker removes exactly them.
+        for (var i = 0; i < session.Messages.Count; i++)
+        {
+            var m = session.Messages[i];
+            if (m.Role != MessageRole.System || m.Content is null) continue;
+            var cut = m.Content.IndexOf(HostStandingOrders.Marker, StringComparison.Ordinal);
+            if (cut < 0) continue;
+            session.Messages[i] = m with { Content = m.Content[..cut].TrimEnd() };
+        }
     }
 
 

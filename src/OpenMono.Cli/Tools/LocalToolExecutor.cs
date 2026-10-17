@@ -110,10 +110,30 @@ public sealed class LocalToolExecutor : IToolExecutor
         // filtering — a weak model can still emit a call for a tool it was never offered.
         // PlanModePolicy is the single allowlist; blocked calls never execute and surface a
         // clean, generic "blocked in plan mode" signal to the UI (start + failed end).
+        // One exception: HostExec may run in Plan mode, but ONLY as a read-only host
+        // inspection (see PlanModePolicy.HostCommandAllowedInPlanMode) — planning an
+        // agent-observed host problem requires seeing host state, but never mutating it.
         Log.Info($"[OMA_MODE_GATE] PlanMode={_session.Meta.PlanMode}, Tool={call.Name}, IsReadOnly={tool.IsReadOnly}");
-        if (_session.Meta.PlanMode && !PlanModePolicy.IsToolAllowed(tool))
+        var planBlocked = _session.Meta.PlanMode && !PlanModePolicy.IsToolAllowed(tool);
+        string? planBlockMessage = null;
+        if (planBlocked && PlanModePolicy.IsHostExec(tool))
         {
-            var planModeError = PlanModePolicy.BlockedMessage(call.Name);
+            var hostCmd = input.TryGetProperty("command", out var hc) ? hc.GetString() : null;
+            var hostRoot = input.TryGetProperty("as_root", out var har) && har.ValueKind == JsonValueKind.True;
+            var hostBg = input.TryGetProperty("background", out var hbg) && hbg.ValueKind == JsonValueKind.True;
+            if (PlanModePolicy.HostCommandAllowedInPlanMode(hostCmd, hostRoot, hostBg))
+            {
+                planBlocked = false;
+                Log.Info("[OMA_MODE_GATE] HostExec permitted in plan mode (read-only inspection)");
+            }
+            else
+            {
+                planBlockMessage = PlanModePolicy.HostBlockedMessage();
+            }
+        }
+        if (planBlocked)
+        {
+            var planModeError = planBlockMessage ?? PlanModePolicy.BlockedMessage(call.Name);
             _journal.RecordPermissionDecided(call.Id, false, "plan_mode_blocked");
             _output.WriteToolDenied(call.Name, planModeError);
             Log.Info($"[OMA_MODE] Tool '{call.Name}' blocked in plan mode (not in read-only allowlist)");
@@ -123,6 +143,27 @@ public sealed class LocalToolExecutor : IToolExecutor
                 await _sink.OnToolEndAsync(call.Id, call.Name, ok: false, durationMs: 0.0);
             }
             return ToolResult.Error(planModeError);
+        }
+
+        // HARD host-mode gate for HostExec. The tool definitions already hide
+        // HostExec when Host is off (ConversationLoop), but a hallucinated call
+        // must never reach the gateway path — blocked here exactly like the
+        // plan-mode gate, with a clean signal to the UI and the model.
+        if (string.Equals(tool.Name, "HostExec", StringComparison.OrdinalIgnoreCase)
+            && !_session.Meta.HostEnabled)
+        {
+            var hostOffError =
+                "'HostExec' is not available — Host mode is OFF for this session. " +
+                "Ask the user to turn Host on (the Host toggle) before any host action. " +
+                "Do not fake host actions with Bash and do not retry this call.";
+            _journal.RecordPermissionDecided(call.Id, false, "host_mode_off");
+            _output.WriteToolDenied(call.Name, hostOffError);
+            Log.Info($"Tool '{call.Name}' blocked: Host mode is off");
+            if (_sink is not null)
+            {
+                await _sink.OnToolEndAsync(call.Id, call.Name, ok: false, durationMs: 0.0);
+            }
+            return ToolResult.Error(hostOffError);
         }
 
         var capabilities = tool.RequiredCapabilities(input);

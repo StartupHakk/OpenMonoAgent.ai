@@ -68,3 +68,7 @@ __pycache__/
 # --- React UI (server/ui) ---
 server/ui/node_modules/
 server/ui/dist/
+
+# --- scratch ---
+.tmp-pasted.png
+.tmp-deploy-hb/

@@ -115,6 +115,12 @@ _env_get() {
     [[ -n "$line" ]] && printf '%s' "${line#*=}"
 }
 
+# Re-resolve LLAMA_PORT now that _env_get exists: the installer persists the
+# actual bind port to docker/.env (it may differ from 7474), so every health
+# probe in this script must use the same port compose binds, not a hardcoded 7474.
+LLAMA_PORT="${LLAMA_PORT:-$(_env_get LLAMA_PORT)}"
+LLAMA_PORT="${LLAMA_PORT:-7474}"
+
 _env_set() {
     local key="$1" val="$2" env_file="$DOCKER_DIR/.env"
     mkdir -p "$(dirname "$env_file")"; touch "$env_file"
@@ -125,13 +131,50 @@ _env_set() {
     chmod 0600 "$env_file"
 }
 
+# Mirror the LLAMA_API_KEY into ~/.openmono/settings.json (llm.api_key) so the
+# local agent's config never drifts from the backend's live key: docker/.env is
+# what llama-server/gateway start with, settings.json is what the agent dials
+# with. Only touches an existing settings file (a missing one means setup has
+# not run yet — the setup flow writes the key itself).
+_sync_api_key_to_settings() {
+    local key="$1"
+    local settings="$HOME/.openmono/settings.json"
+    [[ -n "$key" && -f "$settings" ]] || return 0
+    command -v jq &>/dev/null || return 0
+    cmd_config set llm.api_key "$key" >/dev/null 2>&1 || true
+}
+
+# ── Inference backend selection (Linux) ─────────────────────────────────────
+# Strata (Qwen3.8-Flash-Next, host-native :8080/v1) is the default for fresh
+# installs on this branch; pre-existing installs without the marker keep the
+# legacy llama.cpp Docker path. macOS Apple Silicon always uses NATIVE_INFERENCE.
+_inference_backend() {
+    local b
+    b="$(_env_get INFERENCE_BACKEND)"
+    if [[ "$b" == "strata" || "$b" == "llama" ]]; then
+        printf '%s' "$b"
+    elif [[ -f "$HOME/.openmono/strata.env" ]]; then
+        printf 'strata'
+    else
+        printf 'llama'
+    fi
+}
+
+_strata_port() {
+    local p
+    p="$(_env_get STRATA_PORT)"
+    printf '%s' "${p:-8080}"
+}
+
 # Reuse the existing LLAMA_API_KEY as the gateway's shared bearer; generate one
-# if absent. Sets _LLAMA_KEY_GENERATED so callers can restart llama to apply it.
+# if absent. Sets _LLAMA_KEY_GENERATED so callers can restart the inference
+# backend to apply it.
 _ensure_llama_key() {
     local key; key="$(_env_get LLAMA_API_KEY)"
     if [[ -z "$key" ]]; then
         key="$(openssl rand -hex 24)"
         _env_set LLAMA_API_KEY "$key"
+        _sync_api_key_to_settings "$key"
         _LLAMA_KEY_GENERATED=1
         info "Generated LLAMA_API_KEY (shared gateway bearer)" >&2
     fi
@@ -140,10 +183,16 @@ _ensure_llama_key() {
 
 _apply_llama_key_restart() {
     [[ "${_LLAMA_KEY_GENERATED:-0}" == "1" ]] || return 0
-    info "Restarting llama-server to apply the new API key..."
+    info "Restarting inference backend to apply the new API key..."
     if [[ "$NATIVE_INFERENCE" == "true" ]]; then
         command -v native_cmd_restart &>/dev/null && native_cmd_restart || \
-            warn "Restart llama-server manually: openmono restart"
+            warn "Restart inference backend manually: openmono restart"
+    elif [[ "$(_inference_backend)" == "strata" ]]; then
+        # Gateway picks up Caddy env on restart; Strata itself keeps running.
+        if (cd "$DOCKER_DIR" && docker compose ps --services 2>/dev/null | grep -q '^openmono-gateway$'); then
+            (cd "$DOCKER_DIR" && docker compose up -d caddy) || \
+                warn "Restart gateway manually: openmono restart"
+        fi
     else
         if (cd "$DOCKER_DIR" && docker compose ps --services 2>/dev/null | grep -q '^llama-server$'); then
             (cd "$DOCKER_DIR" && docker compose up -d llama-server) || \
@@ -152,9 +201,22 @@ _apply_llama_key_restart() {
     fi
 }
 
+# docker compose wrapper: on the Strata backend, layer
+# docker-compose.strata.yml so the Caddy gateway fronts the host's Strata
+# (host.docker.internal:8080) instead of the llama-server container.
+_compose() {
+    if [[ "$(_inference_backend)" == "strata" && -f "$DOCKER_DIR/docker-compose.strata.yml" ]]; then
+        docker compose -f docker-compose.yml -f docker-compose.strata.yml "$@"
+    else
+        docker compose "$@"
+    fi
+}
+
 # Bring up the gateway + whichever web services are installed (used by cmd_start
 # and after 'openmono stop', which tears the whole stack down). Caddy is named
-# explicitly so llama-server (also in the server profile) isn't touched here.
+# explicitly so the inference backend container (llama-server, also in the
+# server profile) isn't touched here. On the Strata backend the gateway is
+# layered with docker-compose.strata.yml so it fronts the host's Strata.
 _start_web_services() {
     [[ "$(_env_get GATEWAY_ENABLED)" == "true" ]] || return 0
     _ensure_docker
@@ -162,7 +224,7 @@ _start_web_services() {
     [[ "$(_env_get WEB_SEARCH_ENABLED)" == "true" ]] && { profiles+=(--profile search); names+=(searxng); }
     [[ "$(_env_get WEB_SCRAPE_ENABLED)" == "true" ]] && { profiles+=(--profile scraper); names+=(scrapling); }
     info "Starting gateway (${names[*]})..."
-    (cd "$DOCKER_DIR" && docker compose "${profiles[@]}" up -d "${names[@]}") || \
+    (cd "$DOCKER_DIR" && _compose "${profiles[@]}" up -d "${names[@]}") || \
         warn "Failed to start gateway services. Check: docker compose ps"
 }
 
@@ -174,7 +236,7 @@ _setup_gateway() {
     _ensure_llama_key >/dev/null
     [[ "$NATIVE_INFERENCE" == "true" ]] && _env_set LLAMA_UPSTREAM "host.docker.internal:7474"
     _env_set GATEWAY_ENABLED true
-    (cd "$DOCKER_DIR" && docker compose --profile server up -d caddy) || {
+    (cd "$DOCKER_DIR" && _compose --profile server up -d caddy) || {
         err "Failed to start the gateway. Check: docker compose ps"; return 1
     }
     _apply_llama_key_restart
@@ -239,7 +301,7 @@ cmd_setup_search() {
     _env_set WEB_SEARCH_ENABLED true
 
     info "Starting SearXNG + gateway..."
-    (cd "$DOCKER_DIR" && docker compose --profile search up -d searxng caddy) || {
+    (cd "$DOCKER_DIR" && _compose --profile search up -d searxng caddy) || {
         err "Failed to start SearXNG. Check: docker compose ps"; return 1
     }
     _apply_llama_key_restart
@@ -263,7 +325,7 @@ cmd_setup_scraper() {
         err "Failed to build the Scrapling image."; return 1
     }
     info "Starting Scrapling + gateway..."
-    (cd "$DOCKER_DIR" && docker compose --profile scraper up -d scrapling caddy) || {
+    (cd "$DOCKER_DIR" && _compose --profile scraper up -d scrapling caddy) || {
         err "Failed to start Scrapling. Check: docker compose ps"; return 1
     }
     _apply_llama_key_restart
@@ -329,22 +391,34 @@ cmd_help() {
     echo "an agent box and an inference box."
     echo ""
     echo "Any box:"
-    printf "  %-14s %s\n" "setup"   "Install (--full|--inference|--agent) [--gpu|--cpu]"
+    printf "  %-14s %s\n" "setup"   "Install (--full|--inference|--agent) [--gpu|--cpu] [--model=bonsai-pq2|bonsai-ptq1|qwen]"
     printf "  %-14s %s\n" "upgrade" "Update to the latest version + rebuild the agent (--check to preview)"
+    printf "  %-14s %s\n" "uninstall" "Remove OpenMono (--dry-run to preview; --deep also removes system packages)"
     printf "  %-14s %s\n" "config"  "Read/write ~/.openmono/settings.json (e.g. llm.endpoint, llm.api_key)"
+    printf "  %-14s %s\n" "host"    "Host-bridge daemon for whole-machine mode [daemon|stop|status]"
     printf "  %-14s %s\n" "version" "Print the CLI version"
     printf "  %-14s %s\n" "help"    "Show this help"
     echo ""
     echo "Agent box (run the coding agent):"
-    printf "  %-14s %s\n" "agent"    "Run the coding agent in the current directory"
+    printf "  %-14s %s\n" "agent"    "Run the coding agent in the current directory [--host|--sandbox]"
     printf "  %-14s %s\n" "graph"    "Build the code-review-graph for a project"
     printf "  %-14s %s\n" "graphify" "Build the graphify knowledge graph for a project"
     echo ""
-    echo "Inference box (llama-server lifecycle):"
-    printf "  %-14s %s\n" "start"   "Start llama-server in the background"
-    printf "  %-14s %s\n" "stop"    "Stop llama-server"
-    printf "  %-14s %s\n" "restart" "Restart llama-server"
-    printf "  %-14s %s\n" "logs"    "Tail llama-server logs"
+    echo "Agent modes (pick one per run; default: sandbox):"
+    echo "  --sandbox  Container sandbox: project bind-mounted as /workspace."
+    echo "             Required for the VS Code / Cursor extension (--acp-only)."
+    echo "  --host     Whole-machine mode: starts the host-bridge daemon on"
+    echo "             this box, then runs the agent sandboxed as usual. The"
+    echo "             agent pairs with the daemon; every host command shows"
+    echo "             a HOST EXECUTION card first, then runs audited on bare"
+    echo "             metal (pull, build, install, redeploy, troubleshoot)."
+    echo "             Policy: ~/.openmono/host-bridge.json"
+    echo ""
+    echo "Inference box (inference backend lifecycle):"
+    printf "  %-14s %s\n" "start"   "Start inference backend + gateway services in the background"
+    printf "  %-14s %s\n" "stop"    "Stop the stack (flags: --llama --gateway --search --scraper --agent-host --agent --all)"
+    printf "  %-14s %s\n" "restart" "Restart inference backend"
+    printf "  %-14s %s\n" "logs"    "Tail inference backend logs"
     printf "  %-14s %s\n" "status"  "Show container + GPU + model status"
     echo ""
     echo "Optional web services (inference box, run in Docker):"
@@ -354,7 +428,7 @@ cmd_help() {
     echo ""
     echo "Inference box (frpc tunnel to the relay — dual-box only):"
     printf "  %-14s %s\n" "tunnel setup"      "Install frpc + systemd unit (prompts for relay signup values)"
-    printf "  %-14s %s\n" "tunnel rotate-key" "Rotate LLAMA_API_KEY and restart llama-server"
+    printf "  %-14s %s\n" "tunnel rotate-key" "Rotate LLAMA_API_KEY and restart backend"
     printf "  %-14s %s\n" "tunnel start"      "Start the frpc tunnel"
     printf "  %-14s %s\n" "tunnel stop"       "Stop the frpc tunnel"
     printf "  %-14s %s\n" "tunnel restart"    "Restart the frpc tunnel"
@@ -369,7 +443,7 @@ cmd_help() {
     echo "Examples:"
     echo "  openmono setup                    # First-time single-box setup (auto-detects GPU)"
     echo "  openmono setup --cpu              # Force CPU mode"
-    echo "  openmono start                    # Start llama-server"
+    echo "  openmono start                    # Start inference backend"
     echo "  openmono agent                    # Run agent in current directory"
     echo "  openmono --verbose                # Run agent with LLM debug output"
     echo "  WORKSPACE=/my/repo openmono agent # Run agent against a specific repo"
@@ -395,20 +469,33 @@ cmd_setup() {
             --inference)    export OPENMONO_ROLE=inference ;;
             --agent)        export OPENMONO_ROLE=agent ;;
             --full)         export OPENMONO_ROLE=full ;;
+            --model=*)      export OPENMONO_MODEL="${arg#--model=}" ;;
+            --vision=*)     export OPENMONO_VISION="${arg#--vision=}" ;;
+            --bonsai)       export OPENMONO_MODEL=bonsai-pq2 ;;
+            --bonsai-ptq1)  export OPENMONO_MODEL=bonsai-ptq1 ;;
+            --qwen)         export OPENMONO_MODEL=qwen ;;
+            --flash-next)   export OPENMONO_MODEL=flash-next ;;
             --verbose|-v)   export OPENMONO_VERBOSE=1 ;;
             --help|-h)
-                echo "Usage: openmono setup [--full|--inference|--agent] [--gpu|--cpu] [--verbose]"
+                echo "Usage: openmono setup [--full|--inference|--agent] [--gpu|--cpu] [--model=NAME] [--vision=on|off] [--verbose]"
                 echo ""
                 echo "Installs one of three roles. Pick based on what the box will do:"
                 echo ""
-                echo "  --full        DEFAULT. Agent + llama-server + model on one machine."
+                echo "  --full        DEFAULT. Agent + inference server + model on one machine."
                 echo "                Use when you have a single workstation."
-                echo "  --inference   llama-server + model only (no agent). Use on the GPU box"
+                echo "  --inference   Inference server + model only (no agent). Use on the GPU box"
                 echo "                in dual-box mode. Pair with 'openmono tunnel setup' to"
                 echo "                expose it through an OpenMono.Relay."
-                echo "  --agent       Agent + code-review-graph only (no model, no llama-server)."
+                echo "  --agent       Agent + code-review-graph only (no model, no inference server)."
                 echo "                Use on the laptop in dual-box mode. Point at a remote"
                 echo "                inference server via 'openmono config set llm.endpoint …'."
+                echo ""
+                echo "Model engine (setup analyzes your hardware and only offers what this box can run; default = Qwen on llama.cpp):"
+                echo "  --model=qwen         Stock Qwen on standard llama.cpp  [DEFAULT]"
+                echo "  --model=bonsai-pq2   Ternary-Bonsai-2-27B PQ2_0 (~7.2GB) [NVIDIA CUDA / 7940HS Vulkan / Apple Silicon 16GB+ experimental]"
+                echo "  --model=bonsai-ptq1  Ternary-Bonsai-2-27B PTQ1_0 (~5.9GB, small cards)"
+                echo "  --model=flash-next   Qwen3.8-Flash-Next via Strata (~70GB, Linux + NVIDIA / CUDA 13, 48GB-class RAM+)"
+                echo "  --bonsai / --bonsai-ptq1 / --qwen / --flash-next   shorthands for the above"
                 echo ""
                 echo "GPU mode (applies to --full and --inference):"
                 echo "  --gpu         Force GPU mode (requires NVIDIA + nvidia-container-toolkit)"
@@ -416,6 +503,15 @@ cmd_setup() {
                 echo ""
                 echo "Other:"
                 echo "  --verbose     Show detailed command output (default: step-level progress)"
+                echo ""
+                echo "Server sub-agent (opt-in add-on, full/agent only — never inference):"
+                echo "  Setup asks once (default No, breaks container sandbox when installed)."
+                echo "  On Yes it asks again: ask-every-time (default) vs allow-routine."
+                echo "  For non-interactive installs:"
+                echo "    OPENMONO_HOST_BRIDGE=1 OPENMONO_HOST_EXEC_DEFAULT=ask openmono setup --agent     # confirm each host cmd"
+                echo "    OPENMONO_HOST_BRIDGE=1 OPENMONO_HOST_EXEC_DEFAULT=allow openmono setup --agent   # routine runs without asking"
+                echo "    OPENMONO_HOST_BRIDGE=0 openmono setup --agent   # skip the prompt (default)"
+                echo "  Add it later any time with: bash scripts/install-host-bridge.sh"
                 echo ""
                 echo "A full log is written to ~/.openmono/logs/setup-<timestamp>.log"
                 echo ""
@@ -525,10 +621,14 @@ cmd_setup() {
 EOF
             detail "Created $settings_file for agent-only role (configure endpoint with: openmono config set llm.endpoint <url>)"
         else
-            cat > "$settings_file" <<'EOF'
+            _default_endpoint="http://localhost:7474"
+            if [[ "${OPENMONO_INFERENCE_BACKEND:-}" == "strata" ]]; then
+                _default_endpoint="http://localhost:${STRATA_PORT:-8080}/v1"
+            fi
+            cat > "$settings_file" <<EOF
 {
   "llm": {
-    "endpoint": "http://localhost:7474",
+    "endpoint": "$_default_endpoint",
     "api_key": ""
   }
 }
@@ -548,11 +648,16 @@ EOF
 
     case "$OPENMONO_ROLE" in
         full|inference)
-            echo "  llama-server port : ${LLAMA_PORT}"
-            if [[ "$NATIVE_INFERENCE" == "true" ]]; then
-                echo "  mode              : Metal GPU (native llama.cpp)"
+            if [[ "${OPENMONO_INFERENCE_BACKEND:-}" == "strata" && "$NATIVE_INFERENCE" != "true" ]]; then
+                echo "  strata endpoint : http://localhost:${STRATA_PORT:-8080}/v1"
+                echo "  mode            : Strata (Qwen3.8-Flash-Next, host-native)"
             else
-                echo "  mode              : $([ "${GPU_MODE:-0}" = "1" ] && echo GPU || echo CPU)"
+                echo "  llama-server port : ${LLAMA_PORT}"
+                if [[ "$NATIVE_INFERENCE" == "true" ]]; then
+                    echo "  mode              : Metal GPU (native llama.cpp)"
+                else
+                    echo "  mode              : $([ "${GPU_MODE:-0}" = "1" ] && echo GPU || echo CPU)"
+                fi
             fi
             echo ""
             ;;
@@ -567,7 +672,7 @@ EOF
             echo -e "    2. ${BOLD}openmono agent${NC}                 # Start the agent"
             echo ""
             echo "  Other commands:"
-            echo -e "    ${BOLD}openmono status${NC}              # Show llama-server status"
+            echo -e "    ${BOLD}openmono status${NC}              # Show inference backend status"
             echo -e "    ${BOLD}openmono config${NC}             # Configure settings"
             echo ""
             ;;
@@ -579,7 +684,7 @@ EOF
             echo -e "    2. Use the endpoint + API key from step 1 on your agent box"
             echo ""
             echo "  Other commands:"
-            echo -e "    ${BOLD}openmono start${NC}              # Start llama-server"
+            echo -e "    ${BOLD}openmono start${NC}              # Start inference backend"
             echo -e "    ${BOLD}openmono status${NC}             # Show server status"
             echo -e "    ${BOLD}openmono logs${NC}               # Tail server logs"
             echo ""
@@ -587,26 +692,41 @@ EOF
         agent)
             echo "  Your machine is configured as the agent (dual-box mode)."
             echo ""
-            echo "  ${BOLD}⚠ Important: You must configure the remote inference server first.${NC}"
+            echo "  ${BOLD}⚠ This box has no inference endpoint yet.${NC} On the inference box, run:"
             echo ""
-            echo "  If the inference server is on a remote machine, run these commands NOW:"
+            echo -e "    ${BOLD}openmono tunnel setup${NC}     # connect it to the openmonoagent.ai relay"
             echo ""
-            echo -e "    ${BOLD}openmono config set llm.endpoint http://<server-ip>:<port>${NC}"
-            echo -e "    ${BOLD}openmono config set llm.api_key <your-api-key>${NC}"
+            echo "  That prints the endpoint + API key to use here. Configure this box with:"
             echo ""
-            echo "  Example (replace with your actual relay address from openmonoagent.ai):"
-            echo -e "    ${BOLD}openmono config set llm.endpoint http://relay.openmonoagent.ai:17474${NC}"
-            echo -e "    ${BOLD}openmono config set llm.api_key abc123def456${NC}"
+            echo -e "    ${BOLD}openmono config set llm.endpoint  http://relay.openmonoagent.ai:<port>${NC}"
+            echo -e "    ${BOLD}openmono config set llm.api_key   <key from tunnel setup>${NC}"
             echo ""
             echo "  Then run the agent:"
             echo -e "    ${BOLD}cd your-project/${NC}"
             echo -e "    ${BOLD}openmono agent${NC}"
             echo ""
-            echo "  Check config with:"
-            echo -e "    ${BOLD}openmono config${NC}"
-            echo ""
             ;;
     esac
+
+    if [[ "${OPENMONO_HOST_BRIDGE:-0}" == "1" ]]; then
+        echo "  Bare-metal host access installed (opt-in add-on)."
+        echo ""
+        echo "  The agent stays sandboxed; a host-bridge daemon on this box runs"
+        echo "  host commands (pull, build, install, redeploy, troubleshoot)"
+        echo "  behind a HOST EXECUTION card, audited and policy-gated:"
+        echo ""
+        echo -e "    ${BOLD}cd your-project/ && openmono agent --host${NC}   # run the agent with host access (daemon auto-starts)"
+        echo -e "    ${BOLD}openmono host status${NC}                       # check the daemon (start: openmono host daemon)"
+        echo -e "    ${BOLD}openmono host stop${NC}                         # stop the daemon"
+        echo ""
+        echo "  Or keep the agent sandboxed and pair on demand: start the daemon"
+        echo "  with ${BOLD}openmono host daemon${NC}, then run ${BOLD}/host on${NC} inside the agent."
+        echo ""
+        echo "  Host policy (change any time, stored in ~/.openmono/host-bridge.json):"
+        echo -e "    ${BOLD}openmono config set host.sudo_policy ask|allow|deny${NC}"
+        echo -e "    ${BOLD}openmono config set host.exec_default ask|allow${NC}"
+        echo ""
+    fi
 
     echo "  Troubleshooting:"
     echo "    If you exit before the shell reloads, reload it manually:"
@@ -621,7 +741,7 @@ EOF
 
     unset OPENMONO_GPU OPENMONO_CPU OPENMONO_ROLE OPENMONO_VERBOSE OPENMONO_LOG_DIR \
           OPENMONO_LOG_FILE OPENMONO_ENV_FILE GPU_MODE AMD_IGPU_MODE AMD_IGPU_REBOOT_PENDING \
-          INSTALL_DIR LLAMA_PORT OPENMONO_VERBOSE
+          INSTALL_DIR LLAMA_PORT OPENMONO_VERBOSE OPENMONO_HOST_BRIDGE
     export PATH="$INSTALL_DIR:$PATH"
     exec -l "$SHELL"
 }
@@ -629,6 +749,15 @@ EOF
 cmd_start() {
     if [[ "$NATIVE_INFERENCE" == "true" ]]; then
         native_cmd_start || return $?
+        _start_web_services || true
+        echo ""
+        echo "  Run the agent: openmono agent"
+        return 0
+    fi
+
+    # Strata backend: host-native server via scripts/strata.sh (no Docker).
+    if [[ "$(_inference_backend)" == "strata" ]]; then
+        bash "$REPO_DIR/scripts/strata.sh" start || return $?
         _start_web_services || true
         echo ""
         echo "  Run the agent: openmono agent"
@@ -675,41 +804,220 @@ cmd_start() {
     _start_web_services || true
 }
 
-cmd_stop() {
-    if [[ "$NATIVE_INFERENCE" == "true" ]]; then
-        native_cmd_stop || return $?
-        if docker info &>/dev/null 2>&1; then
-            (cd "$DOCKER_DIR" && docker compose down 2>/dev/null || true)
-        fi
-        return 0
-    fi
-
-    _ensure_docker
-    cd "$DOCKER_DIR"
-    export LLAMA_PORT
-    if ! curl -sf "http://localhost:${LLAMA_PORT}/health" &>/dev/null; then
-        warn "llama-server is not responding on port ${LLAMA_PORT}"
-    fi
-
-    info "Stopping llama-server..."
-    if docker compose stop llama-server 2>/dev/null; then
-        ok "Stopped"
-    else
-        if docker compose kill llama-server 2>/dev/null; then
-            ok "Force-stopped"
+# Inventory for bare `openmono stop`: everything actually running relative
+# to OMA, so the operator confirms against reality instead of assumptions.
+_stop_inventory() {
+    echo ""
+    echo "Running OpenMono pieces:"
+    if [[ "$(_inference_backend)" == "strata" ]]; then
+        if pgrep -f 'strata' &>/dev/null; then
+            echo "  - Strata inference server (host-native) — stop with: openmono stop"
         else
-            err "Failed to stop llama-server. Try: cd docker && docker compose kill llama-server"
-            return 1
+            echo "  - Strata inference server: not running"
+        fi
+    elif [[ "$NATIVE_INFERENCE" == "true" ]]; then
+        # Native port lives in settings (inference.port), not LLAMA_PORT.
+        local nport="$LLAMA_PORT"
+        if command -v jq &>/dev/null && [[ -f "$HOME/.openmono/settings.json" ]]; then
+            local cfg_port
+            cfg_port="$(jq -r '.inference.port // empty' "$HOME/.openmono/settings.json" 2>/dev/null || true)"
+            [[ "$cfg_port" =~ ^[0-9]+$ ]] && nport="$cfg_port"
+        fi
+        if curl -sf "http://localhost:${nport}/health" &>/dev/null; then
+            echo "  - llama-server (native, Metal) on port ${nport}"
+        else
+            echo "  - llama-server (native): not responding on port ${nport}"
+        fi
+    else
+        if curl -sf "http://localhost:${LLAMA_PORT}/health" &>/dev/null; then
+            echo "  - llama-server (docker) healthy on port ${LLAMA_PORT}"
+        else
+            echo "  - llama-server (docker): not responding"
+        fi
+    fi
+    if docker info &>/dev/null 2>&1; then
+        local running
+        running="$(cd "$DOCKER_DIR" && docker compose ps --format '{{.Service}} ({{.State}})' 2>/dev/null | grep -v '^$' || true)"
+        if [[ -n "$running" ]]; then
+            echo "$running" | while IFS= read -r line; do echo "  - $line"; done
+        else
+            echo "  - no compose services running"
+        fi
+        local extra
+        extra="$(docker ps -a --filter 'name=openmono-host-bridge' --filter 'name=openmono-agent' \
+            --format '{{.Names}} ({{.State}})' 2>/dev/null || true)"
+        if [[ -n "$extra" ]]; then
+            echo "$extra" | while IFS= read -r line; do echo "  - $line [agent container — kept unless --agent-host/--agent]"; done
+        fi
+        if pgrep -f 'host-bridge' &>/dev/null; then
+            echo "  - host-bridge process is LIVE (stop it with Ctrl-C / /quit first — stop never kills it)"
+        fi
+    else
+        echo "  - Docker daemon not accessible — container state unknown"
+    fi
+    echo ""
+}
+
+cmd_stop() {
+    # Selectors: default = full compose stack (llama + gateway + search +
+    # scraper). Run-created agent containers are NEVER touched by default —
+    # stopping those would kill someone's live `openmono agent` session in
+    # another terminal. Ask for them explicitly (--agent-host, --agent) or
+    # take everything with --all.
+    local sel_llama=false sel_gateway=false sel_search=false sel_scraper=false
+    local sel_bridge=false sel_agent=false sel_all=false rm_orphans=false
+    local a
+    for a in ${1+"$@"}; do
+        case "$a" in
+            --llama) sel_llama=true ;;
+            --gateway) sel_gateway=true ;;
+            --search) sel_search=true ;;
+            --scraper) sel_scraper=true ;;
+            --agent-host) sel_bridge=true ;;
+            --agent) sel_agent=true ;;
+            --all) sel_all=true ;;
+            --remove-orphans) rm_orphans=true ;;
+            -h|--help)
+                echo "Usage: openmono stop [--llama] [--gateway] [--search] [--scraper] [--agent-host] [--agent] [--all] [--remove-orphans]"
+                echo ""
+                echo "  (no flags)   Stop the full compose stack: llama-server + gateway/search/scraper."
+                echo "  --agent-host  Also remove the openmono-host-bridge container (agent --host)."
+                echo "                Stop the host-bridge process itself with Ctrl-C / /quit first."
+                echo "  --agent       Also remove live openmono-agent run containers (sandbox sessions)."
+                echo "  --all         Everything above + 'compose down --remove-orphans'."
+                return 0 ;;
+            *)
+                err "Unknown flag for stop: $a (see: openmono stop --help)"
+                return 1 ;;
+        esac
+    done
+    if [[ "$sel_all" == "true" ]]; then
+        sel_llama=true; sel_gateway=true; sel_search=true; sel_scraper=true
+        sel_bridge=true; sel_agent=true
+    elif [[ "$sel_llama" == "false" && "$sel_gateway" == "false" && \
+            "$sel_search" == "false" && "$sel_scraper" == "false" && \
+            "$sel_bridge" == "false" && "$sel_agent" == "false" ]]; then
+        sel_llama=true; sel_gateway=true; sel_search=true; sel_scraper=true
+    fi
+    local no_flags=true
+    [[ "$sel_bridge" == "true" || "$sel_agent" == "true" || "$sel_all" == "true" || \
+       "$sel_llama" == "false" || "$sel_gateway" == "false" || \
+       "$sel_search" == "false" || "$sel_scraper" == "false" ]] && no_flags=false
+    # Bare `openmono stop`: show everything actually running relative to OMA
+    # and require confirmation. Explicit flags proceed without asking.
+    if [[ "$no_flags" == "true" ]]; then
+        if [[ -t 0 ]]; then
+            _stop_inventory
+            local confirm=""
+            read -r -p "Stop all of the above? [y/N] " confirm || confirm=""
+            case "$confirm" in
+                [yY]|[yY]es) ;;
+                *)
+                    info "Aborted — nothing stopped. Target pieces explicitly, e.g.: openmono stop --llama"
+                    return 0 ;;
+            esac
+        else
+            info "Non-interactive — proceeding with the full compose stack (no agent containers)."
         fi
     fi
 
-    docker compose down 2>/dev/null || true
+    local rc=0
+
+    # Native inference (macOS): never early-return. A dead llama-server must
+    # not skip the compose cleanup below — that ordering bug used to leave
+    # gateway/search/scraper running forever after `openmono stop`.
+    local backend; backend="$(_inference_backend)"
+
+    if [[ "$NATIVE_INFERENCE" == "true" ]]; then
+        if [[ "$sel_llama" == "true" ]]; then
+            native_cmd_stop || { warn "native llama-server stop failed — continuing with containers."; rc=1; }
+        fi
+    elif [[ "$backend" == "strata" ]]; then
+        # Strata serves host-native (it is not a compose service): stop it via its
+        # manager. The gateway/agent containers are still torn down below.
+        if [[ "$sel_llama" == "true" ]]; then
+            bash "$REPO_DIR/scripts/strata.sh" stop || { warn "Strata stop failed — continuing with containers."; rc=1; }
+        fi
+    else
+        _ensure_docker
+        if [[ "$sel_llama" == "true" ]]; then
+            if ! curl -sf "http://localhost:${LLAMA_PORT}/health" &>/dev/null; then
+                warn "llama-server is not responding on port ${LLAMA_PORT}"
+            fi
+        fi
+    fi
+
+    if docker info &>/dev/null 2>&1; then
+        cd "$DOCKER_DIR"
+        export LLAMA_PORT
+        # Explicit service names bypass compose profile filtering, so every
+        # selected service is stopped regardless of which profiles started it.
+        local svcs=()
+        [[ "$sel_llama" == "true" && "$backend" != "strata" ]] && svcs+=(llama-server)
+        [[ "$sel_gateway" == "true" ]] && svcs+=(caddy)
+        [[ "$sel_search" == "true" ]] && svcs+=(searxng)
+        [[ "$sel_scraper" == "true" ]] && svcs+=(scrapling)
+        if [[ ${#svcs[@]} -gt 0 ]]; then
+            info "Stopping ${svcs[*]}..."
+            if docker compose stop "${svcs[@]}" 2>/dev/null; then
+                ok "Stopped: ${svcs[*]}"
+            else
+                warn "Some services did not stop cleanly — check: docker compose ps"
+                rc=1
+            fi
+        fi
+        # Run-created containers are invisible to `compose down` (they come
+        # from `compose run -d --name`, not `up`), so remove them by name.
+        # `rm -f` on a non-existent name is a silent no-op success.
+        if [[ "$sel_bridge" == "true" ]]; then
+            if docker rm -f openmono-host-bridge 2>/dev/null; then
+                ok "Removed openmono-host-bridge container"
+            else
+                info "No openmono-host-bridge container to remove"
+            fi
+        fi
+        if [[ "$sel_agent" == "true" ]]; then
+            if docker rm -f openmono-agent 2>/dev/null; then
+                ok "Removed openmono-agent container"
+            else
+                info "No openmono-agent container to remove"
+            fi
+        fi
+        # Full-stack selections finish with `down` (previous behaviour): this
+        # removes stopped containers + the project network. Subset selections
+        # only stop, so unrelated services keep running.
+        if [[ "$sel_llama" == "true" && "$sel_gateway" == "true" && \
+              "$sel_search" == "true" && "$sel_scraper" == "true" ]]; then
+            if [[ "$rm_orphans" == "true" || "$sel_all" == "true" ]]; then
+                docker compose down --remove-orphans 2>/dev/null || rc=1
+            else
+                docker compose down 2>/dev/null || rc=1
+            fi
+        fi
+        if [[ "$rc" == "0" ]]; then
+            ok "Stop complete — verify: docker compose ps"
+        else
+            warn "Stop finished with warnings — verify: docker compose ps"
+        fi
+    else
+        warn "Docker daemon is not accessible — native processes (if any) handled above; containers untouched."
+        rc=1
+    fi
+    return $rc
 }
 
 cmd_restart() {
     if [[ "$NATIVE_INFERENCE" == "true" ]]; then
         native_cmd_restart || return $?
         return 0
+    fi
+
+    # Strata backend: stop + start the host server (start is a no-op if healthy).
+    if [[ "$(_inference_backend)" == "strata" ]]; then
+        info "Restarting Strata..."
+        bash "$REPO_DIR/scripts/strata.sh" stop || true
+        bash "$REPO_DIR/scripts/strata.sh" start
+        return $?
     fi
 
     _ensure_docker
@@ -793,18 +1101,467 @@ _clipboard_bridge_stop() {
     CLIPBOARD_BRIDGE_PID=""
 }
 
+# ── Host sub-agent (bare-metal operator via ACP bridge) ────────────────────────
+# `--host` runs the .NET host-bridge on bare metal. The bridge drives this box's
+# in-container agent over ACP — the same HTTP/SSE API the VS Code extension and
+# the smoke test use — and executes host commands itself (shell, git, files,
+# installs). The model loop stays in the container: nothing here runs inference
+# or duplicates the agent. VS Code / extension use (--acp-only) stays
+# sandbox-only and is rejected with --host.
+
+cmd_agent_host_bin() {
+    if [[ -n "${OPENMONO_HOST_BRIDGE_BIN:-}" && -x "$OPENMONO_HOST_BRIDGE_BIN" ]]; then
+        printf '%s' "$OPENMONO_HOST_BRIDGE_BIN"
+        return 0
+    fi
+    if [[ -x "$HOME/.openmono/bin/host-bridge/host-bridge" ]] &&
+       "$HOME/.openmono/bin/host-bridge/host-bridge" --version &>/dev/null; then
+        printf '%s' "$HOME/.openmono/bin/host-bridge/host-bridge"
+        return 0
+    fi
+    return 1
+}
+
+cmd_agent_host_project() {
+    local proj="$REPO_DIR/src/OpenMono.HostBridge/OpenMono.HostBridge.csproj"
+    [[ -f "$proj" ]] || return 1
+    command -v dotnet &>/dev/null || return 1
+    printf '%s' "$proj"
+    return 0
+}
+
+# Host-bridge daemon: the bare-metal half of host mode. The sandbox agent
+# pairs with it over host.docker.internal using the shared pair_secret from
+# ~/.openmono/host-bridge.json; every host command the user approves runs on
+# the host machine, audited + policy-gated. `openmono agent --host` starts it
+# automatically; `openmono host daemon` starts it standalone (manual /host on).
+HOST_DAEMON_PORT="${OPENMONO_HOST_DAEMON_PORT:-7476}"
+HOST_DAEMON_PIDFILE="$HOME/.openmono/host-daemon.pid"
+HOST_DAEMON_LOG="$HOME/.openmono/logs/host-daemon.log"
+
+_host_daemon_container_url() {
+    # Linux: containers reach the host at the docker bridge gateway; the request
+    # lands on the socket bound to that bridge IP, so the URL must name it (the
+    # daemon binds its bridge IPs too). host.docker.internal + a forced
+    # Host: 127.0.0.1 header mismatches the bound prefix -> HttpListener 404.
+    # macOS (Docker Desktop vpnkit) lands on host loopback, so keep the name.
+    if [[ "$(uname -s)" == Linux ]]; then
+        local gw
+        gw="$(docker network inspect bridge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null)"
+        if [[ "$gw" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "http://${gw}:${HOST_DAEMON_PORT}"
+            return
+        fi
+    fi
+    echo "http://host.docker.internal:${HOST_DAEMON_PORT}"
+}
+
+_host_daemon_bin() {
+    local bin proj
+    if bin="$(cmd_agent_host_bin)"; then
+        printf 'bin\t%s' "$bin"
+        return 0
+    fi
+    if proj="$(cmd_agent_host_project)"; then
+        printf 'proj\t%s' "$proj"
+        return 0
+    fi
+    return 1
+}
+
+_host_daemon_alive() {
+    curl -sf --max-time 2 "http://127.0.0.1:${HOST_DAEMON_PORT}/ping" &>/dev/null
+}
+
+_host_daemon_start() {
+    _HOST_DAEMON_LAUNCHED=0
+    _host_daemon_alive && return 0
+    local spec kind target
+    spec="$(_host_daemon_bin)" || {
+        err "Host sub-agent is not installed."
+        err "Install it with: bash $REPO_DIR/scripts/install-host-bridge.sh"
+        return 1
+    }
+    kind="${spec%%$'\t'*}"
+    target="${spec#*$'\t'}"
+    mkdir -p "$HOME/.openmono/logs"
+    # Pre-create the daemon's bg-log dir as the current user. If Docker
+    # auto-created it first (it owns the tmpfs shadow mountpoint in
+    # ~/.openmono as root), background/as_root execs fail closed; tell the
+    # operator how to fix ownership instead of failing silently.
+    if ! mkdir -p "$HOME/.openmono/host-bridge/logs" 2>/dev/null; then
+        err "~/.openmono/host-bridge/logs is not writable (usually root-owned, created by Docker)."
+        err "Fix ownership with:  sudo chown -R \"$USER\" ~/.openmono/host-bridge"
+    elif [[ ! -w "$HOME/.openmono/host-bridge/logs" ]]; then
+        err "~/.openmono/host-bridge/logs exists but is not writable."
+        err "Fix ownership with:  sudo chown -R \"$USER\" ~/.openmono/host-bridge"
+    fi
+    info "Starting host-bridge daemon on 127.0.0.1:${HOST_DAEMON_PORT} (log: $HOST_DAEMON_LOG)"
+    # The prereqs installer puts .NET under ~/.dotnet and wires it into rc
+    # files; a non-interactive shell never sources those, and the published
+    # apphost needs DOTNET_ROOT to find the runtime then.
+    if [[ -z "${DOTNET_ROOT:-}" && -x "$HOME/.dotnet/dotnet" ]]; then
+        export DOTNET_ROOT="$HOME/.dotnet"
+    fi
+    if [[ "$kind" == "bin" ]]; then
+        nohup "$target" --daemon --daemon-port "$HOST_DAEMON_PORT" --workdir "$(pwd)" \
+            >>"$HOST_DAEMON_LOG" 2>&1 &
+    else
+        nohup dotnet run --project "$target" -- --daemon --daemon-port "$HOST_DAEMON_PORT" --workdir "$(pwd)" \
+            >>"$HOST_DAEMON_LOG" 2>&1 &
+    fi
+    echo $! > "$HOST_DAEMON_PIDFILE"
+    _HOST_DAEMON_LAUNCHED=1
+    for _ in $(seq 1 20); do
+        _host_daemon_alive && return 0
+        sleep 0.5
+    done
+    err "Host-bridge daemon did not become reachable on port $HOST_DAEMON_PORT."
+    err "See $HOST_DAEMON_LOG for details."
+    return 1
+}
+
+_host_daemon_pair_secret() {
+    local settings="$HOME/.openmono/host-bridge.json"
+    if [[ -f "$settings" ]] && command -v jq &>/dev/null; then
+        jq -r '.pair_secret // empty' "$settings"
+    fi
+}
+
+_host_daemon_stop_owned() {
+    # Only stop daemons this invocation started (pidfile), never a pre-existing
+    # daemon the user started deliberately with `openmono host daemon`.
+    [[ "${_HOST_DAEMON_OWNED:-}" == "1" ]] || return 0
+    _HOST_DAEMON_OWNED=0
+    # Daemon session tokens live in memory: killing it silently invalidates the
+    # pairing of every OTHER running sandbox (their agent then reads HOST:ON
+    # against a dead token). If other agent containers are still up, leave the
+    # shared daemon running; it idles harmlessly.
+    if [[ "$(docker ps --filter 'label=com.docker.compose.service=agent' --filter status=running -q 2>/dev/null | wc -l | tr -d ' ')" != "0" ]]; then
+        return 0
+    fi
+    if [[ -f "$HOST_DAEMON_PIDFILE" ]]; then
+        local pid
+        pid="$(cat "$HOST_DAEMON_PIDFILE" 2>/dev/null)" || true
+        [[ -n "$pid" ]] && kill "$pid" &>/dev/null || true
+        rm -f "$HOST_DAEMON_PIDFILE"
+    fi
+}
+
+cmd_host() {
+    local sub="${1:-status}"
+    case "$sub" in
+        daemon|start)
+            shift 2>/dev/null || true
+            _host_daemon_start || return 1
+            ok "host-bridge daemon is running on 127.0.0.1:${HOST_DAEMON_PORT}"
+            info "Pair secret: ~/.openmono/host-bridge.json (0600) · audit: ~/.openmono/logs/"
+            info "In the sandbox agent, connect with: /host on (pairs silently — agents started while this daemon is up get an invite automatically)"
+            info "Approval is only needed for agents started BEFORE this daemon: openmono host requests && openmono host approve <id>"
+            info "Stop with: openmono host stop"
+            ;;
+        stop)
+            if [[ -f "$HOST_DAEMON_PIDFILE" ]]; then
+                local pid
+                pid="$(cat "$HOST_DAEMON_PIDFILE" 2>/dev/null)" || true
+                if [[ -n "$pid" ]] && kill "$pid" &>/dev/null; then
+                    rm -f "$HOST_DAEMON_PIDFILE"
+                    ok "host-bridge daemon stopped"
+                else
+                    rm -f "$HOST_DAEMON_PIDFILE"
+                    err "pidfile exists but process $pid is not running (cleaned up)"
+                fi
+            elif _host_daemon_alive; then
+                # Daemon was started outside the launcher (no pidfile): find it
+                # by port. Safe to kill the listener only after /status proves
+                # a real host-bridge daemon answers there (a squatter on the
+                # port must never get killed by us).
+                if curl -sf --max-time 2 "http://127.0.0.1:${HOST_DAEMON_PORT}/status" 2>/dev/null \
+                    | jq -e '.daemon == true' &>/dev/null; then
+                    local pid
+                    pid="$(lsof -ti "tcp:${HOST_DAEMON_PORT}" -sTCP:LISTEN 2>/dev/null | head -1)" || true
+                    if [[ -n "$pid" ]] && kill "$pid" &>/dev/null; then
+                        sleep 1
+                        ok "host-bridge daemon stopped (pid $pid — it had no pidfile, started outside the launcher)"
+                    else
+                        err "daemon confirmed on port $HOST_DAEMON_PORT but its process could not be killed — stop it manually (pkill -f host-bridge)"
+                        return 1
+                    fi
+                else
+                    err "something answers on port $HOST_DAEMON_PORT but it is not the host-bridge daemon — not killing anything"
+                    return 1
+                fi
+            else
+                info "no host-bridge daemon running"
+            fi
+            ;;
+        status)
+            local status_json
+            status_json="$(curl -sf --max-time 2 "http://127.0.0.1:${HOST_DAEMON_PORT}/status" 2>/dev/null)" || status_json=""
+            if [[ -n "$status_json" ]]; then
+                ok "host-bridge daemon is up on 127.0.0.1:${HOST_DAEMON_PORT}"
+                if command -v jq &>/dev/null; then
+                    local ver paired
+                    ver="$(jq -r '.version // "?"' <<<"$status_json" 2>/dev/null)"
+                    paired="$(jq -r '.paired_sessions // 0' <<<"$status_json" 2>/dev/null)"
+                    info "version ${ver} · paired sessions: ${paired}"
+                else
+                    head -c 200 <<<"$status_json"; echo ""
+                fi
+                if [[ "${2:-}" == "--show" ]]; then
+                    if command -v jq &>/dev/null; then
+                        info "pair secret: $(jq -r '.pair_secret // "(none)"' "$HOME/.openmono/host-bridge.json" 2>/dev/null)"
+                    else
+                        info "pair secret: (jq not installed — see ~/.openmono/host-bridge.json)"
+                    fi
+                fi
+            elif _host_daemon_alive; then
+                ok "host-bridge daemon is up on 127.0.0.1:${HOST_DAEMON_PORT} (no /status support - upgrade for details)"
+            else
+                info "host-bridge daemon is not running (start with: openmono host daemon)"
+            fi
+            ;;
+        invite)
+            # Mint a pairing invite for a manual sandbox launch (TTL-bounded):
+            #   export OPENMONO_HOST_INVITE=$(openmono host invite)
+            if ! _host_daemon_alive; then err "no daemon running on port $HOST_DAEMON_PORT"; return 1; fi
+            local secret inv
+            secret="$(_host_daemon_pair_secret)"
+            [[ -z "$secret" ]] && { err "no pair_secret in ~/.openmono/host-bridge.json"; return 1; }
+            inv="$(curl -sf --max-time 3 -X POST -d '' -H "X-Pair-Secret: $secret" \
+                "http://127.0.0.1:${HOST_DAEMON_PORT}/admin/invite" 2>/dev/null \
+                | jq -r '.invite // empty' 2>/dev/null)"
+            if [[ -z "$inv" ]]; then err "daemon did not issue an invite (old daemon version?)"; return 1; fi
+            printf '%s\n' "$inv"
+            info "TTL-bounded invite (every session in the run may pair with it) — launch with: OPENMONO_HOST_INVITE=<above> docker compose run ..."
+            ;;
+        approve|deny)
+            local sid="${2:-}"
+            if [[ -z "$sid" ]] || ! _host_daemon_alive; then
+                [[ -z "$sid" ]] && err "Usage: openmono host $sub <session-id> (list with: openmono host requests)"
+                _host_daemon_alive || err "no daemon running on port $HOST_DAEMON_PORT"
+                return 1
+            fi
+            local secret body rc
+            secret="$(_host_daemon_pair_secret)"
+            [[ -z "$secret" ]] && { err "no pair_secret in ~/.openmono/host-bridge.json"; return 1; }
+            body="{\"session_id\":\"$sid\"}"
+            rc="$(curl -sf --max-time 3 -X POST -H "X-Pair-Secret: $secret" \
+                -H "Content-Type: application/json" -d "$body" \
+                "http://127.0.0.1:${HOST_DAEMON_PORT}/admin/$sub" 2>/dev/null \
+                | jq -r '.ok' 2>/dev/null)"
+            if [[ "$rc" == "true" ]]; then
+                ok "pair request $sub: $sid"
+            else
+                err "no pending pair request for '$sid' (or daemon error) — list with: openmono host requests"
+                return 1
+            fi
+            ;;
+        requests)
+            if ! _host_daemon_alive; then info "no daemon running on port $HOST_DAEMON_PORT"; return 0; fi
+            local secret reqs
+            secret="$(_host_daemon_pair_secret)"
+            [[ -z "$secret" ]] && { err "no pair_secret in ~/.openmono/host-bridge.json"; return 1; }
+            reqs="$(curl -sf --max-time 3 -H "X-Pair-Secret: $secret" \
+                "http://127.0.0.1:${HOST_DAEMON_PORT}/admin/requests" 2>/dev/null)"
+            if command -v jq &>/dev/null; then
+                local n
+                n="$(jq -r '.items | length' <<<"$reqs" 2>/dev/null)"
+                if [[ "${n:-0}" == "0" ]]; then
+                    info "no pending pair requests"
+                else
+                    jq -r '.items[] | "  session \(.session_id)\n    workdir \(.workdir)\n    approve: openmono host approve \(.session_id)"' <<<"$reqs"
+                fi
+            else
+                head -c 300 <<<"$reqs"; echo ""
+            fi
+            ;;
+        sessions|revoke)
+            if ! _host_daemon_alive; then info "no daemon running on port $HOST_DAEMON_PORT"; return 0; fi
+            local secret
+            secret="$(_host_daemon_pair_secret)"
+            [[ -z "$secret" ]] && { err "no pair_secret in ~/.openmono/host-bridge.json"; return 1; }
+            if [[ "$sub" == "sessions" ]]; then
+                local list
+                list="$(curl -sf --max-time 3 -H "X-Pair-Secret: $secret" \
+                    "http://127.0.0.1:${HOST_DAEMON_PORT}/admin/sessions" 2>/dev/null)"
+                if command -v jq &>/dev/null; then
+                    local n
+                    n="$(jq -r '.items | length' <<<"$list" 2>/dev/null)"
+                    if [[ "${n:-0}" == "0" ]]; then
+                        info "no paired sessions"
+                    else
+                        jq -r '.items[] | "  session \(.session_id) · since \(.since) · token \(.token_hint)*** · workdir \(.workdir)"' <<<"$list"
+                        info "revoke with: openmono host revoke <session-id>"
+                    fi
+                else
+                    head -c 300 <<<"$list"; echo ""
+                fi
+            else
+                local sid="${2:-}"
+                [[ -z "$sid" ]] && { err "Usage: openmono host revoke <session-id> (list with: openmono host sessions)"; return 1; }
+                local r
+                r="$(curl -sf --max-time 3 -X POST -H "X-Pair-Secret: $secret" \
+                    -H "Content-Type: application/json" -d "{\"session_id\":\"$sid\"}" \
+                    "http://127.0.0.1:${HOST_DAEMON_PORT}/admin/revoke" 2>/dev/null \
+                    | jq -r '.ok' 2>/dev/null)"
+                if [[ "$r" == "true" ]]; then ok "revoked session $sid"; else err "no such session: $sid"; return 1; fi
+            fi
+            ;;
+        *)
+            err "Usage: openmono host [daemon|start|stop|status|invite|requests|approve|deny|sessions|revoke]"
+            return 1
+            ;;
+    esac
+}
+
+cmd_agent_host() {
+    # VS Code / extension integration is sandbox-only by design.
+    local a
+    for a in ${1+"$@"}; do
+        if [[ "$a" == "--acp-only" ]]; then
+            err "--acp-only (VS Code / Cursor extension mode) is only supported in sandbox mode."
+            err "Run without --host: openmono agent --acp-only --acp-port 7475"
+            exit 1
+        fi
+    done
+
+    # Fail fast when no inference is configured (local or relay).
+    local settings="$HOME/.openmono/settings.json"
+    local cfg_endpoint=""
+    if [[ -f "$settings" ]] && command -v jq &>/dev/null; then
+        if ! jq -e . "$settings" >/dev/null 2>&1; then
+            err "~/.openmono/settings.json is corrupt — cannot read llm.endpoint."
+            err "Check for stray text after the closing brace (a stray character breaks the whole file),"
+            err "or restore settings.json.bak, then re-run 'openmono config set llm.endpoint <url>'."
+            exit 1
+        fi
+        cfg_endpoint=$(jq -r '.llm.endpoint // empty' "$settings")
+    fi
+    if [[ -z "$cfg_endpoint" ]]; then
+        err "No LLM endpoint configured in ~/.openmono/settings.json"
+        err "Point at local inference or your relay:"
+        err "  openmono config set llm.endpoint http://localhost:8080/v1  # Strata (Linux)"
+        err "  openmono config set llm.endpoint http://localhost:7474      # legacy llama.cpp"
+        err "  openmono config set llm.endpoint http://<relay-host>:<remotePort>"
+        err "  openmono config set llm.api_key <token>"
+        exit 1
+    fi
+
+    # Local inference still starts the familiar way; remote (relay/direct) needs nothing.
+    local is_local=false
+    case "$cfg_endpoint" in
+        http://localhost:*|http://127.0.0.1:*)
+            is_local=true
+            ;;
+    esac
+    if [[ "$is_local" == "true" ]] && ! curl -sf --max-time 3 "${cfg_endpoint%/}/health" &>/dev/null; then
+        if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+            info "Local inference is not responding — starting it now..."
+            cmd_start || exit 1
+        elif [[ "$NATIVE_INFERENCE" == "true" ]]; then
+            info "Local inference is not responding — starting it now..."
+            cmd_start || exit 1
+        else
+            err "Local inference endpoint $cfg_endpoint is not responding and Docker is unavailable."
+            err "Start inference with: openmono start"
+            err "Or point at your relay: openmono config set llm.endpoint http://<relay-host>:<remotePort>"
+            exit 1
+        fi
+    fi
+
+    export OPENMONO_REPO_DIR="$REPO_DIR"
+
+    # New host mode: the model loop still runs in the sandbox (same safety,
+    # same UI), while a host-bridge daemon runs on this machine. Pairing uses
+    # the shared secret; every host action gets a HOST EXECUTION card first,
+    # then runs audited + policy-gated on bare metal. The daemon is started
+    # here and stopped when the agent exits (unless the user started their own).
+    _host_daemon_start || exit 1
+    if [[ "${_HOST_DAEMON_LAUNCHED:-0}" == "1" ]]; then
+        _HOST_DAEMON_OWNED=1
+        trap '_host_daemon_stop_owned' EXIT INT TERM
+    fi
+
+    local secret invite
+    secret="$(_host_daemon_pair_secret)"
+    if [[ -z "$secret" ]]; then
+        err "No pair_secret in ~/.openmono/host-bridge.json — the daemon failed to generate one."
+        err "Check $HOST_DAEMON_LOG"
+        exit 1
+    fi
+    # Preferred path: a TTL-bounded invite (every session in the run may pair
+    # with it). If the daemon is
+    # too old to have /admin/invite, fall back to the shared secret.
+    invite="$(curl -sf --max-time 3 -X POST -d '' \
+        -H "X-Pair-Secret: $secret" \
+        "http://127.0.0.1:${HOST_DAEMON_PORT}/admin/invite" 2>/dev/null \
+        | jq -r '.invite // empty' 2>/dev/null)"
+    export OPENMONO_HOST_MODE=1
+    export OPENMONO_HOST_DAEMON_URL="$(_host_daemon_container_url)"
+    # The sandbox needs the HOST's OS, not the container's: the daemon-URL
+    # rewrite (host.docker.internal -> bridge IPv4) is a Linux-host behavior,
+    # and macOS routing (Docker Desktop vpnkit vs Colima vmnet) differs.
+    export OPENMONO_HOST_OS="$(uname -s)"
+    if [[ -n "$invite" ]]; then
+        export OPENMONO_HOST_INVITE="$invite"
+    else
+        export OPENMONO_HOST_PAIR_SECRET="$secret"
+    fi
+    export OPENMONO_HOST_WORKSPACE="$(pwd)"
+
+    cmd_agent_sandbox "$@"
+    local rc=$?
+    _host_daemon_stop_owned
+    return $rc
+}
+
 cmd_agent() {
+    local mode="${OPENMONO_AGENT_MODE:-sandbox}"
+    local fwd=()
+    local a
+    for a in ${1+"$@"}; do
+        case "$a" in
+            --host) mode=host ;;
+            --sandbox) mode=sandbox ;;
+            *) fwd+=("$a") ;;
+        esac
+    done
+    set -- "${fwd[@]+"${fwd[@]}"}"
+    case "$mode" in
+        host) cmd_agent_host "$@" ;;
+        sandbox) cmd_agent_sandbox "$@" ;;
+        *)
+            err "Unknown agent mode: $mode (use --host, --sandbox, or OPENMONO_AGENT_MODE=host|sandbox)"
+            exit 1
+            ;;
+    esac
+}
+
+cmd_agent_sandbox() {
     _ensure_docker
     WORKSPACE="${WORKSPACE:-$(pwd)}"
     export WORKSPACE
 
     mkdir -p "${HOME}/.openmono"
+    # Defensive: keep host-bridge.json a file. The main compose shadows it with
+    # /dev/null inside the sandbox, but any variant that bind-mounts the file
+    # directly would have Docker create a DIRECTORY at that host path when the
+    # source is missing — which then blocks the daemon from writing its config.
+    # Empty file = daemon generates defaults + pair secret on first run.
+    [[ -e "${HOME}/.openmono/host-bridge.json" ]] || : > "${HOME}/.openmono/host-bridge.json"
 
     cd "$DOCKER_DIR"
 
     local settings="$HOME/.openmono/settings.json"
     local cfg_endpoint cfg_key cfg_web_gateway cfg_web_search cfg_web_scrape
     if [[ -f "$settings" ]] && command -v jq &>/dev/null; then
+        if ! jq -e . "$settings" >/dev/null 2>&1; then
+            err "~/.openmono/settings.json is corrupt — cannot read llm.endpoint."
+            err "Check for stray text after the closing brace (a stray character breaks the whole file),"
+            err "or restore settings.json.bak, then re-run 'openmono config set llm.endpoint <url>'."
+            exit 1
+        fi
         cfg_endpoint=$(jq -r '.llm.endpoint // empty' "$settings")
         cfg_key=$(jq -r '.llm.api_key // empty' "$settings")
         [[ -n "$cfg_key" ]] && export OPENMONO_API_KEY="$cfg_key"
@@ -823,6 +1580,10 @@ cmd_agent() {
         [[ -n "${cfg_web_search:-}" ]] && export OPENMONO_WEB_SEARCH="$cfg_web_search"
         [[ -n "${cfg_web_scrape:-}" ]] && export OPENMONO_WEB_SCRAPE="$cfg_web_scrape"
     fi
+
+    # An explicit OPENMONO_ENDPOINT wins over settings.json — the same precedence
+    # the CLI's ConfigLoader uses — so it can be overridden per invocation.
+    cfg_endpoint="${OPENMONO_ENDPOINT:-${cfg_endpoint:-}}"
 
     if [[ -z "$cfg_endpoint" ]]; then
         err "No LLM endpoint configured in ~/.openmono/settings.json"
@@ -843,14 +1604,37 @@ cmd_agent() {
             source "$REPO_DIR/scripts/macos/inference.sh" 2>/dev/null || true
             native_load_config || exit 1
             native_ensure_running || exit 1
+        elif [[ "$(_inference_backend)" == "strata" ]]; then
+            # Strata backend: the first auto-start block above (via cmd_start →
+            # scripts/strata.sh) already handled this. Nothing llama to do here.
+            true
         else
-            if ! curl -sf "http://localhost:7474/health" &>/dev/null; then
-                info "llama-server not running — starting it now..."
+            # Probe the port compose actually binds (resolved from docker/.env
+            # above) — a hardcoded 7474 declares a running server dead when a
+            # previous install moved the host mapping.
+            local _hport="$LLAMA_PORT"
+            if curl -sf "http://localhost:${_hport}/health" &>/dev/null; then
+                # If settings.json points at a different port than the live
+                # server, the config is stale — say so instead of silently
+                # waiting on the wrong door.
+                local _ep _eport
+                _ep="${cfg_endpoint#*://}"; _ep="${_ep%%/*}"
+                _eport="${_ep##*:}"
+                if [[ "$_eport" =~ ^[0-9]+$ && "$_eport" != "$_hport" ]]; then
+                    warn "llama-server is healthy on port ${_hport} but llm.endpoint says :${_eport} — updating settings"
+                    if command -v jq &>/dev/null && [[ -f "$settings" ]]; then
+                        jq --arg e "http://127.0.0.1:${_hport}" '.llm.endpoint = $e' "$settings" > "$settings.tmp" && mv "$settings.tmp" "$settings"
+                        cfg_endpoint="http://127.0.0.1:${_hport}"
+                    fi
+                fi
+            fi
+            if ! curl -sf "http://localhost:${_hport}/health" &>/dev/null; then
+                info "llama-server not responding on port ${_hport} — restarting..."
                 docker compose up -d llama-server
                 info "Waiting for llama-server to be healthy (model load can take 1-2 min)..."
                 for i in $(seq 1 36); do
-                    if curl -sf "http://localhost:7474/health" &>/dev/null; then
-                        ok "llama-server is healthy"
+                    if curl -sf "http://localhost:${_hport}/health" &>/dev/null; then
+                        ok "llama-server is healthy on port ${_hport}"
                         break
                     fi
                     sleep 5
@@ -861,8 +1645,42 @@ cmd_agent() {
         fi
     fi
 
-     if [[ "$is_local" == "true" && "$NATIVE_INFERENCE" != "true" ]]; then
-        export OPENMONO_ENDPOINT="http://llama-server:7474"
+     if [[ "$is_local" == "true" ]]; then
+        # The configured endpoint points at loopback / the host gateway, which
+        # the agent container cannot reach by that name. Rewrite the HOST only,
+        # preserving the port and any base path from the config, so a custom
+        # STRATA_PORT/LLAMA_PORT or an endpoint like ...:8081/v1 keeps working:
+        #   - Strata serves host-native → reach it via the host gateway.
+        #   - Native Metal llama.cpp also runs on the HOST (not in compose) →
+        #     same host-gateway rewrite; leaving localhost in place makes the
+        #     container dial itself and every chat request connection-refuses.
+        #   - llama.cpp runs in its own container → reach it by service name.
+        local _ep _host_port _port _path
+        _ep="${cfg_endpoint#*://}"          # host[:port][/path]
+        _host_port="${_ep%%/*}"
+        _path=""
+        [[ "$_ep" == */* ]] && _path="/${_ep#*/}"
+        _port="${_host_port##*:}"
+        [[ "$_port" == "$_host_port" ]] && _port=""   # no explicit port
+        if [[ "$(_inference_backend)" == "strata" ]]; then
+            _port="${_port:-$(_strata_port)}"
+            export OPENMONO_ENDPOINT="http://host.docker.internal:${_port}${_path}"
+        elif [[ "$NATIVE_INFERENCE" == "true" ]]; then
+            # Apple-Silicon native Metal: llama-server is a host process bound
+            # to the host's loopback/port. The sandbox reaches host loopback via
+            # the docker desktop / colima host gateway under the same port.
+            _port="${_port:-7474}"
+            export OPENMONO_ENDPOINT="http://host.docker.internal:${_port}${_path}"
+        else
+            _port="${_port:-7474}"
+            # llama.cpp listens on 7474 INSIDE the container regardless of the
+            # host mapping (compose maps LLAMA_PORT->7474). If the endpoint
+            # names the host-side port, translate it to the internal one.
+            if [[ "$_port" == "$LLAMA_PORT" && "$LLAMA_PORT" != "7474" ]]; then
+                _port=7474
+            fi
+            export OPENMONO_ENDPOINT="http://llama-server:${_port}${_path}"
+        fi
     else
         export OPENMONO_ENDPOINT="$cfg_endpoint"
     fi
@@ -889,9 +1707,63 @@ cmd_agent() {
     fi
 
 
+    # Docker socket is opt-in only: the default sandbox must NOT get the host
+    # daemon. Set OPENMONO_DOCKER_SOCK=1 when the task actually needs docker
+    # against the host (deploy + troubleshoot containerized backends).
+    # OPENMONO_NO_DOCKER_SOCK=1 remains supported as an explicit veto (and as
+    # a harmless no-op for existing configs that set it).
+    local docker_sock_args=()
+    if [[ "${OPENMONO_DOCKER_SOCK:-0}" == "1" && "${OPENMONO_NO_DOCKER_SOCK:-0}" != "1" && -S /var/run/docker.sock ]]; then
+        docker_sock_args+=(-v /var/run/docker.sock:/var/run/docker.sock)
+    fi
+
     local extra_env=()
     local _upd; _upd="$(_update_notice 2>/dev/null || true)"
     [[ -n "$_upd" ]] && extra_env+=(-e "OPENMONO_UPDATE_NOTICE=$_upd")
+
+    # Host mode: forward the daemon pairing details injected by cmd_agent_host
+    # into the sandbox so the agent pairs on boot (HOST:ON + standing orders).
+    if [[ "${OPENMONO_HOST_MODE:-}" == "1" ]]; then
+        extra_env+=(
+            -e "OPENMONO_HOST_MODE=1"
+            -e "OPENMONO_HOST_DAEMON_URL=${OPENMONO_HOST_DAEMON_URL:-}"
+            -e "OPENMONO_HOST_OS=${OPENMONO_HOST_OS:-}"
+            -e "OPENMONO_HOST_WORKSPACE=${OPENMONO_HOST_WORKSPACE:-$WORKSPACE}")
+        # The invite (TTL-bounded) is preferred; the pair secret never enters the
+        # sandbox when the daemon supports /admin/invite.
+        if [[ -n "${OPENMONO_HOST_INVITE:-}" ]]; then
+            extra_env+=(-e "OPENMONO_HOST_INVITE=${OPENMONO_HOST_INVITE}")
+        elif [[ -n "${OPENMONO_HOST_PAIR_SECRET:-}" ]]; then
+            extra_env+=(-e "OPENMONO_HOST_PAIR_SECRET=${OPENMONO_HOST_PAIR_SECRET}")
+        fi
+    elif [[ "${OPENMONO_HOST_AUTO_INVITE:-1}" == "1" ]] \
+        && curl -sf --max-time 2 "http://127.0.0.1:${HOST_DAEMON_PORT}/ping" &>/dev/null; then
+        # Plain `openmono agent` with a daemon already running: mint a
+        # long-TTL invite (host-side, pair secret never leaves) and
+        # inject it WITHOUT OPENMONO_HOST_MODE. Nothing pairs on boot — the
+        # invite is consumed only when the user runs /host on or clicks the
+        # extension button, which then pairs silently (no approve step).
+        # Opt out: OPENMONO_HOST_AUTO_INVITE=0 (keeps the approval lane).
+        # Trade-off, by design: the invite sits in the container env until
+        # used, so sandbox code could consume it; the daemon's deny-list,
+        # sudo=ask and command audit still apply.
+        local _auto_secret _auto_invite
+        _auto_secret="$(_host_daemon_pair_secret)"
+        if [[ -n "$_auto_secret" ]]; then
+            _auto_invite="$(curl -sf --max-time 3 -X POST \
+                -H "X-Pair-Secret: $_auto_secret" \
+                -H "content-type: application/json" \
+                -d '{"ttl_seconds":43200}' \
+                "http://127.0.0.1:${HOST_DAEMON_PORT}/admin/invite" 2>/dev/null \
+                | jq -r '.invite // empty' 2>/dev/null)"
+            if [[ -n "$_auto_invite" ]]; then
+                extra_env+=(
+                    -e "OPENMONO_HOST_INVITE=${_auto_invite}"
+                    -e "OPENMONO_HOST_DAEMON_URL=$(_host_daemon_container_url)"
+                    -e "OPENMONO_HOST_WORKSPACE=${OPENMONO_HOST_WORKSPACE:-$WORKSPACE}")
+            fi
+        fi
+    fi
 
     _clipboard_bridge_start
     trap '_clipboard_bridge_stop' EXIT INT TERM
@@ -902,6 +1774,7 @@ cmd_agent() {
         -e HOME=/home/agent \
         -e WORKSPACE="$WORKSPACE" \
         "${git_args[@]+"${git_args[@]}"}" \
+        "${docker_sock_args[@]+"${docker_sock_args[@]}"}" \
         "${extra_env[@]+"${extra_env[@]}"}" \
         agent "$@" || _agent_rc=$?
 
@@ -914,6 +1787,8 @@ cmd_logs() {
     if [[ "$NATIVE_INFERENCE" == "true" ]]; then
 
         native_cmd_logs || return $?
+    elif [[ "$(_inference_backend)" == "strata" ]]; then
+        bash "$REPO_DIR/scripts/strata.sh" logs "$@"
     else
         _ensure_docker
         cd "$DOCKER_DIR"
@@ -927,6 +1802,47 @@ cmd_status() {
 
     if [[ "$NATIVE_INFERENCE" == "true" ]]; then
         native_cmd_status
+    elif [[ "$(_inference_backend)" == "strata" ]]; then
+        # Strata backend: host-native server + optional gateway containers.
+        bash "$REPO_DIR/scripts/strata.sh" status || true
+
+        if docker info &>/dev/null 2>&1; then
+            echo ""
+            echo -e "${BLUE}── Gateway containers ───────────────────────────────${NC}"
+            docker ps \
+                --filter "name=openmono-gateway" \
+                --filter "name=openmono-agent" \
+                --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || true
+        fi
+
+        echo ""
+        echo -e "${BLUE}── GPU ──────────────────────────────────────────────${NC}"
+        if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null 2>&1; then
+            nvidia-smi \
+                --query-gpu=name,memory.used,memory.total,utilization.gpu \
+                --format=csv,noheader,nounits \
+                | awk -F', ' '{printf "  %s  VRAM: %s/%s MiB  GPU: %s%%\n", $1, $2, $3, $4}'
+        else
+            echo "  No NVIDIA GPU detected (Strata also supports AMD — see docs/STRATA.md)"
+        fi
+
+        echo ""
+        echo -e "${BLUE}── Model ────────────────────────────────────────────${NC}"
+        _STRATA_PORT="$(_strata_port)"
+        LOADED=$(curl -sf --max-time 3 "http://localhost:${_STRATA_PORT}/v1/models" \
+            | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+models = d.get('data', [])
+print(models[0].get('id', '').strip() if models else '')
+" 2>/dev/null || true)
+        if [ -n "$LOADED" ]; then
+            ok "Model loaded: $LOADED"
+        else
+            warn "Model not reachable — start Strata with: openmono start"
+        fi
+        echo ""
+        return 0
     else
         _ensure_docker
         if ! docker info &>/dev/null 2>&1; then
@@ -1130,35 +2046,127 @@ cmd_upgrade() {
     echo "  Run the agent: openmono agent"
 }
 
+# Build a jq path like .llm.api_key from dotted input "llm.api_key".
+_openmono_jq_path() {
+    local p="$1"
+    p="${p//\"/\\\"}"
+    # shellcheck disable=SC2001
+    echo ".$(echo "$p" | sed 's/\./.\"/g; s/$/\"/; s/^\.\"/./')"
+}
+
+# host.* config lives in the bridge's own file (~/.openmono/host-bridge.json),
+# NOT settings.json (which is owned by the typed AppConfig). Keys:
+#   host.exec_default  ask|allow|deny        -> .host_exec.default
+#   host.sudo_policy   ask|allow|deny        -> .allow_sudo
+#   host.run_as        username              -> .run_as
+#   host.allow_list    comma-separated       -> .host_exec.allow  (array)
+#   host.deny_list     comma-separated       -> .host_exec.deny   (array)
+#   host.timeout_ms    integer milliseconds  -> .timeout_ms
+_openmono_host_key_to_jq() {
+    case "$1" in
+        host.exec_default)  echo ".host_exec.default" ;;
+        host.sudo_policy)   echo ".allow_sudo" ;;
+        host.run_as)        echo ".run_as" ;;
+        host.allow_list)    echo ".host_exec.allow" ;;
+        host.deny_list)     echo ".host_exec.deny" ;;
+        host.timeout_ms)    echo ".timeout_ms" ;;
+        *) return 1 ;;
+    esac
+}
+
 cmd_config() {
     local settings="$HOME/.openmono/settings.json"
+    local bridgecfg="$HOME/.openmono/host-bridge.json"
 
     # Help works even without jq installed
     if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
         echo "Usage: openmono config <subcommand>"
         echo ""
         echo "  get <key>           Read a setting (dotted path, e.g. llm.endpoint)"
-        echo "  set <key> <value>   Write a setting"
+        echo "  set <key> <value>   Write a setting (type-aware: number/bool/array)"
         echo "  unset <key>         Remove a setting"
         echo "  list                Print the whole settings file (default)"
         echo ""
+        echo "Settings file: ~/.openmono/settings.json"
+        echo ""
+        echo "Host-bridge settings (openmono agent --host) live in"
+        echo "~/.openmono/host-bridge.json and use host.* keys:"
+        echo "  host.exec_default   ask | allow | deny   default policy for host commands"
+        echo "  host.sudo_policy    ask | allow | deny   escalation policy (ask = y/N per command)"
+        echo "  host.run_as         username             account host commands run as"
+        echo "  host.allow_list     a, b, c              allow-list patterns (comma-separated)"
+        echo "  host.deny_list      a, b, c              deny-list patterns (comma-separated)"
+        echo "  host.timeout_ms     number               per-command timeout in ms"
+        echo ""
         echo "Examples:"
         echo "  openmono config set llm.endpoint http://10.0.0.5:17474"
-        echo "  openmono config set llm.api_key mytoken123"
+        echo "  openmono config set inference.vision_enabled true   # allow image input"
         echo "  openmono config get llm.endpoint"
-        echo "  openmono config unset llm.api_key"
-        echo ""
-        echo "Settings file: ~/.openmono/settings.json"
+        echo "  openmono config set host.sudo_policy allow"
+        echo "  openmono config set host.exec_default ask"
+        echo "  openmono config set host.timeout_ms 600000"
+        echo "  openmono config unset host.run_as"
         return 0
     fi
-
-    mkdir -p "$(dirname "$settings")"
-    [[ -f "$settings" ]] || echo '{}' > "$settings"
 
     if ! command -v jq &>/dev/null; then
         err "jq is required for 'openmono config'. Install it: sudo apt install jq"
         return 1
     fi
+
+    # Coerce a raw CLI value into a type-correct jq expression for the key.
+    # Strings stay strings; pure integers become JSON numbers; true/false
+    # become booleans; comma lists become JSON arrays.
+    _openmono_config_value() {
+        local key="$1" value="$2"
+        case "$key" in
+            *.allow_list|*.deny_list|host.allow_list|host.deny_list)
+            # Split on commas without bash-4 arrays (macOS ships bash 3.2).
+            local out="" item
+            local IFS=','
+            for item in $value; do
+                item="$(echo "$item" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+                [[ -z "$item" ]] && continue
+                item="${item//\"/\\\"}"
+                out="${out:+$out, }\"$item\""
+            done
+            printf '[%s]' "$out"
+            return 0
+            ;;
+            host.timeout_ms)
+                if [[ "$value" =~ ^[0-9]+$ ]]; then
+                    printf '%s' "$value"
+                    return 0
+                fi
+                err "host.timeout_ms must be a whole number of milliseconds (got: $value)"
+                return 1
+                ;;
+            host.exec_default|host.sudo_policy)
+                # Portable lowercasing (no ${var,,} — macOS ships bash 3.2).
+                local lowered
+                lowered="$(echo "$value" | tr '[:upper:]' '[:lower:]')"
+                case "$lowered" in
+                    ask|allow|deny) printf '"%s"' "$lowered"; return 0 ;;
+                esac
+                err "$key must be one of: ask, allow, deny (got: $value)"
+                return 1
+                ;;
+            host.run_as)
+                if ! [[ "$value" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]]; then
+                    err "host.run_as must match ^[a-z_][a-z0-9_-]*[$]?\$ (got: $value)"
+                    return 1
+                fi
+                ;;
+        esac
+        if [[ "$value" =~ ^-?[0-9]+$ ]]; then
+            printf '%s' "$value"
+        elif [[ "$value" == "true" || "$value" == "false" ]]; then
+            printf '%s' "$value"
+        else
+            value="${value//\"/\\\"}"
+            printf '"%s"' "$value"
+        fi
+    }
 
     case "${1:-}" in
         get)
@@ -1166,7 +2174,14 @@ cmd_config() {
                 err "Usage: openmono config get <key>"
                 return 1
             fi
-            jq -r ".$2 // empty" "$settings"
+            local key="$2" target file
+            if target="$(_openmono_host_key_to_jq "$key")"; then
+                file="$bridgecfg"
+            else
+                file="$settings"
+            fi
+            [[ -f "$file" ]] || { echo "(missing: $file — run 'openmono agent --host' or 'openmono config set $key <value>')"; return 1; }
+            jq -r "$target // empty" "$file"
             ;;
         set)
             if [[ -z "${2:-}" || -z "${3:-}" ]]; then
@@ -1174,13 +2189,46 @@ cmd_config() {
                 return 1
             fi
             local path="$2" value="$3"
-            # Build a jq path like .llm.api_key from dotted input "llm.api_key"
-            # shellcheck disable=SC2001
+            local target file
+            if target="$(_openmono_host_key_to_jq "$path")"; then
+                file="$bridgecfg"
+            else
+                file="$settings"
+            fi
             local jq_path
-            jq_path=".$(echo "$path" | sed 's/\./.\"/g; s/$/\"/; s/^\.\"/./')"
-            jq "$jq_path = \"$value\"" "$settings" > "$settings.tmp"
-            mv "$settings.tmp" "$settings"
-            chmod 0600 "$settings"
+            # Host keys use the mapped path (.allow_sudo, .host_exec.allow, …);
+            # settings keys use the dotted path (.llm.api_key, …).
+            if [[ -n "$target" ]]; then
+                jq_path="$target"
+            else
+                jq_path="$(_openmono_jq_path "$path")"
+            fi
+            local jq_value
+            if ! jq_value="$(_openmono_config_value "$path" "$value")"; then
+                return 1
+            fi
+            mkdir -p "$(dirname "$file")"
+            if [[ "$file" == "$bridgecfg" && ! -f "$file" ]]; then
+                # Create the bridge config from its own defaults if missing:
+                # the sample carries the ask-by-default policy and tool allow-list.
+                local hb_bin
+                if ! hb_bin="$(cmd_agent_host_bin 2>/dev/null)" || [[ ! -x "$hb_bin" ]]; then
+                    err "host-bridge binary not found — install it first (bash scripts/install-host-bridge.sh)"
+                    return 1
+                fi
+                if ! "$hb_bin" --init --non-interactive >/dev/null 2>&1; then
+                    err "could not create $file with 'host-bridge --init --non-interactive'"
+                    return 1
+                fi
+            fi
+            [[ -f "$file" ]] || { echo '{}' > "$file"; }
+            if ! jq "$jq_path = $jq_value" "$file" > "$file.tmp"; then
+                rm -f "$file.tmp"
+                err "failed to set $path (invalid value?)"
+                return 1
+            fi
+            mv "$file.tmp" "$file"
+            chmod 0600 "$file"
             ok "$path = $value"
             ;;
         unset)
@@ -1189,14 +2237,26 @@ cmd_config() {
                 return 1
             fi
             local upath="$2"
-            local ujq
-            ujq=".$(echo "$upath" | sed 's/\./.\"/g; s/$/\"/; s/^\.\"/./')"
-            jq "del($ujq)" "$settings" > "$settings.tmp"
-            mv "$settings.tmp" "$settings"
-            chmod 0600 "$settings"
+            local ufile
+            if _openmono_host_key_to_jq "$upath" >/dev/null; then
+                ufile="$bridgecfg"
+            else
+                ufile="$settings"
+            fi
+            [[ -f "$ufile" ]] || { err "$ufile not found — nothing to unset"; return 1; }
+            local ujq target
+            if target="$(_openmono_host_key_to_jq "$upath")"; then
+                ujq="$target"
+            else
+                ujq="$(_openmono_jq_path "$upath")"
+            fi
+            jq "del($ujq)" "$ufile" > "$ufile.tmp"
+            mv "$ufile.tmp" "$ufile"
+            chmod 0600 "$ufile"
             ok "unset $upath"
             ;;
         list|"")
+            [[ -f "$settings" ]] || echo '{}' > "$settings"
             jq . "$settings"
             ;;
         *)
@@ -1329,8 +2389,20 @@ cmd_tunnel() {
                 echo "LLAMA_API_KEY=$new_key" >> "$tmp"
                 mv "$tmp" "$env_file"
                 chmod 0600 "$env_file"
-                ok "LLAMA_API_KEY rotated in docker/.env"
-                if command -v docker &>/dev/null && docker compose version &>/dev/null 2>&1; then
+                _sync_api_key_to_settings "$new_key"
+                ok "LLAMA_API_KEY rotated in docker/.env (docker/.env + settings.json)"
+                if [[ "$(_inference_backend)" == "strata" ]]; then
+                    # Strata backend: the rotated key guards the Caddy gateway.
+                    # Restart it when present; Strata itself keeps its own key.
+                    if (cd "$REPO_DIR/docker" && _compose ps --services 2>/dev/null | grep -q '^caddy$'); then
+                        info "Restarting Caddy gateway with new API key..."
+                        (cd "$REPO_DIR/docker" && _compose up -d caddy) || \
+                            warn "Restart failed — run manually: openmono restart"
+                        ok "Gateway restarted"
+                    else
+                        warn "Gateway is not running — start it with: openmono setup gateway"
+                    fi
+                elif command -v docker &>/dev/null && docker compose version &>/dev/null 2>&1; then
                     if (cd "$REPO_DIR/docker" && docker compose ps --services 2>/dev/null | grep -q '^llama-server$'); then
                         info "Restarting llama-server with new API key..."
                         (cd "$REPO_DIR/docker" && docker compose restart llama-server) || \
@@ -1356,11 +2428,13 @@ cmd_tunnel() {
                 printf "${BLUE}${BOLD}  API Key Rotated${NC}\n"
                 printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
                 echo ""
-                echo "  Run the following on the agent box to apply the new key:"
+                echo "  Run the following on REMOTE agent boxes to apply the new key:"
                 echo ""
                 [[ -n "$endpoint" ]] && \
                     printf "    ${BOLD}openmono config set llm.endpoint  %s${NC}\n" "$endpoint"
                 printf "    ${BOLD}openmono config set llm.api_key   %s${NC}\n" "$new_key"
+                [[ -f "$HOME/.openmono/settings.json" ]] && \
+                    echo "  (this machine's settings.json was updated automatically; the lines above are for other agent boxes)"
                 echo ""
             fi
             ;;
@@ -1419,15 +2493,17 @@ fi
 
 case "$COMMAND" in
     setup)          cmd_setup "$@";;
-    start)          cmd_start ;;
-    stop)           cmd_stop ;;
-    restart)        cmd_restart ;;
+    start)          cmd_start "$@" ;;
+    stop)           cmd_stop "$@" ;;
+    restart)        cmd_restart "$@" ;;
     agent)          cmd_agent "${AGENT_FORWARD[@]+"${AGENT_FORWARD[@]}"}" "$@" ;;
+    host)           cmd_host "$@" ;;
     logs)           cmd_logs ;;
     status)         cmd_status ;;
     graph)          cmd_graph "$@" ;;
     graphify)       cmd_graphify "$@" ;;
     upgrade|update) cmd_upgrade "$@" ;;
+    uninstall)      bash "$REPO_DIR/scripts/uninstall.sh" "$@" ;;
     config)         cmd_config "$@" ;;
     tunnel)         cmd_tunnel "$@" ;;
     version|--version|-V) cmd_version ;;

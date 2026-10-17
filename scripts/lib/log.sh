@@ -129,6 +129,36 @@ run_live() {
     return "${PIPESTATUS[0]}"
 }
 
+# run_progress — quiet build runner with an in-place progress bar.
+# For commands whose output carries cmake-style "[ 42%]" markers (cmake
+# --build, make). Every line still goes to the log; the user sees one
+# updating bar instead of hundreds of compile lines. OPENMONO_VERBOSE=1
+# falls back to streaming everything.
+run_progress() {
+    _log "RUN_PROGRESS: $*"
+    if [ "$OPENMONO_VERBOSE" = "1" ]; then
+        printf "     ${DIM}\$ %s${NC}\n" "$*"
+        "$@" 2>&1 | tee -a "$OPENMONO_LOG_FILE"
+        return "${PIPESTATUS[0]}"
+    fi
+    if [ ! -t 1 ]; then
+        "$@" >> "$OPENMONO_LOG_FILE" 2>&1
+        return "$?"
+    fi
+    "$@" 2>&1 | tee -a "$OPENMONO_LOG_FILE" | awk '
+        match($0, /\[[ ]*[0-9]+%\]/) {
+            p = substr($0, RSTART + 1, RLENGTH - 2)
+            gsub(/[^0-9]/, "", p)
+            bar = ""; filled = int(p / 2)
+            for (i = 0; i < 50; i++) bar = bar (i < filled ? "#" : ".")
+            printf "\r  [%s] %3d%%", bar, p + 0
+            fflush(stdout)
+        }
+        END { printf "\n" }
+    '
+    return "${PIPESTATUS[0]}"
+}
+
 # show_log_tail — print last N lines of the log (for error diagnostics)
 show_log_tail() {
     local lines="${1:-20}"

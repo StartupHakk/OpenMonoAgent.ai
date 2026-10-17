@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>OpenMono</RootNamespace>
+    <AssemblyName>OpenMono.Core</AssemblyName>
+    <Description>Shared kernel: session primitives, config, permissions base, rendering contracts' DTOs. Referenced by OpenMono.Cli and OpenMono.HostBridge; namespaces are unchanged from their original homes.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="OpenMono.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -72,7 +72,8 @@ public sealed class ConversationLoop : IDisposable
         int maxIterations = 1000,
         int agentDepth = 0,
         Func<string?>? dequeuePendingUserInput = null,
-        Action<string>? onPendingUserInputInjected = null)
+        Action<string>? onPendingUserInputInjected = null,
+        PermissionStore? store = null)
     {
         _llm = llm;
         _tools = tools;
@@ -90,9 +91,11 @@ public sealed class ConversationLoop : IDisposable
 
 
 
+            // ACP path: reuse the session's store so grants survive across loops.
+            // A fresh store keeps standalone (non-ACP) construction working.
             var adapter = new AcpInputReaderAdapter(interaction);
             _input = adapter;
-            _permissions = new PermissionEngine(config, output, adapter);
+            _permissions = new PermissionEngine(config, output, adapter, store: store);
         }
         _liveFeedback = liveFeedback;
         _config = config;
@@ -151,7 +154,7 @@ public sealed class ConversationLoop : IDisposable
         });
         if (imageParts is { Count: > 0 } && !_config.VisionEnabled)
         {
-            _output.WriteWarning("Image attached but vision is not enabled — re-run 'openmono setup'.");
+            _output.WriteWarning("Image attached but vision is not enabled — enable it with: openmono config set inference.vision_enabled true (the inference server must serve a vision-capable model). Re-run 'openmono setup' on the inference box to install the projector.");
             return;
         }
         _session.TurnCount++;
@@ -460,8 +463,20 @@ public sealed class ConversationLoop : IDisposable
             // Recompute the tool set EACH iteration so a mid-turn mode flip (e.g. ImplementPlan
             // switching Plan→Build) immediately changes which tools the model is offered — the
             // banner below and these defs always reflect the same, current mode.
-            var allowedToolNames = (_toolSubset?.Select(t => t.Name) ?? _tools.All.Select(t => t.Name)).ToArray();
-            var planModeToolNames = allowedToolNames.Where(n => _tools.Resolve(n)?.IsReadOnly == true).ToArray();
+            // HostExec is only offered while the session is paired with a host daemon
+            // (HostEnabled); when Host is off the tool is not in the model's tool set at all,
+            // so it cannot be called (enforced again by a hard gate in LocalToolExecutor).
+            var allowedToolNames = (_toolSubset?.Select(t => t.Name) ?? _tools.All.Select(t => t.Name))
+                .Where(n => _session.Meta.HostEnabled || !string.Equals(n, "HostExec", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            // Plan mode = read-only tools, PLUS HostExec when paired: planning requires
+            // inspecting host state (the container cannot see host paths), but the
+            // executor gate (PlanModePolicy.HostCommandAllowedInPlanMode) only lets
+            // read-only inspection commands through while planning.
+            var planModeToolNames = allowedToolNames
+                .Where(n => _tools.Resolve(n)?.IsReadOnly == true ||
+                            (_session.Meta.HostEnabled && string.Equals(n, "HostExec", StringComparison.OrdinalIgnoreCase)))
+                .ToArray();
             var toolDefs = _session.Meta.PlanMode
                 ? _tools.BuildToolDefinitionsFor(planModeToolNames)
                 : _tools.BuildToolDefinitionsFor(allowedToolNames);
@@ -476,9 +491,22 @@ public sealed class ConversationLoop : IDisposable
                 if (sysIdx >= 0)
                 {
                     var banner = ModeInstructions.CurrentModeBanner(_session.Meta.PlanMode, planModeToolNames);
+                    // Authoritative host-state banner: tells the model, fresh every
+                    // turn, whether Host mode is on and that host actions go through
+                    // the HostExec tool (never AskUser, never faked with Bash). When
+                    // Host is off it states the tool is unavailable so the model does
+                    // not smuggle a HOST_EXEC envelope or beg the user to run commands.
+                    // Host banner is MODE-AGNOSTIC: host mode only gates host ACCESS.
+                    // Whether a host command may actually run (read-only vs state-changing)
+                    // is the plan/build command-type gate's job — stated in the mode banner
+                    // and enforced in the executor — and it applies on the host exactly as
+                    // it does in the container. Keep these two banners independent.
+                    var hostBanner = _session.Meta.HostEnabled
+                        ? "[HOST MODE: ON — host actions go through the HostExec tool (a real tool call the user approves in their UI), never through AskUser and never faked with Bash.]"
+                        : "[HOST MODE: OFF — you have NO HostExec tool and CANNOT run anything on the host. Do not emit HOST_EXEC envelopes, do not ask the user to run host commands for you, and do not fake host actions with Bash. Your Bash/FileRead/Grep/Glob tools see only the container workspace. If a host action is truly needed, tell the user to turn Host on.]";
                     contextWindow[sysIdx] = contextWindow[sysIdx] with
                     {
-                        Content = banner + (contextWindow[sysIdx].Content ?? ""),
+                        Content = banner + hostBanner + "\n\n" + (contextWindow[sysIdx].Content ?? ""),
                     };
                 }
                 Log.Info($"[OMA_MODE] turn {_session.TurnCount}: PlanMode={_session.Meta.PlanMode}; " +
@@ -715,9 +743,19 @@ public sealed class ConversationLoop : IDisposable
                     continue;
                 }
             }
-            else
+            else if (assistantMsg.Content is not null || assistantMsg.ToolCalls is { Count: > 0 })
             {
                 _session.AddMessage(assistantMsg);
+            }
+            else
+            {
+                // Never store an assistant message with neither text nor tool
+                // calls: providers reject it with a 400 on the NEXT request
+                // ("must contain either content or tool_calls"), which surfaces
+                // as a mysterious turn error one turn later. The per-request
+                // sanitizer drops any already stored, so old sessions heal too.
+                Log.Warn("[OMA_LLM] Skipping empty assistant message (no text, no tool calls) — " +
+                    $"not storing it (thinking chars held: {thinkingBuffer.Length}).");
             }
 
             if (toolCalls.Count == 0)

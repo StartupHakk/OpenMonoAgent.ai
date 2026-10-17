@@ -54,10 +54,14 @@ public class CheckpointerTests
         var session = SessionManager.CreateSession();
         session.AddMessage(new Message { Role = MessageRole.System, Content = "sys" });
 
+        // Give the early turns enough substance to cross the checkpoint's min-fold token
+        // threshold (2% of context), so a checkpoint actually forms and the pending-call
+        // visibility rule below is exercised rather than short-circuited.
+        var filler = new string('x', 6000);
         for (var i = 0; i < 2; i++)
         {
             session.AddMessage(new Message { Role = MessageRole.User, Content = $"pre {i}" });
-            session.AddMessage(new Message { Role = MessageRole.Assistant, Content = $"pre-reply {i}" });
+            session.AddMessage(new Message { Role = MessageRole.Assistant, Content = $"pre-reply {i} {filler}" });
         }
 
         session.AddMessage(new Message { Role = MessageRole.User, Content = "delete the prod table" });

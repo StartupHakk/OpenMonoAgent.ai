@@ -44,6 +44,8 @@ OpenMono is a .NET 10 CLI that runs a local agentic loop against a llama.cpp inf
 
 The CLI and the VS Code/Cursor extension share the same agent core. The extension connects over ACP (Agent Client Protocol) on `:7475` — start the agent with `--acp-only --acp-port 7475` to expose this interface instead of the TUI.
 
+Host mode adds a second ACP client: the **HostBridge** daemon (`src/OpenMono.HostBridge`, loopback :7476) executes whole-machine commands on behalf of a sandbox session. The sandbox `HostGateway` pairs with it (shared secret, per-session token, idle-token expiry via `--idle-timeout`, `GET /status` for liveness); consent for each host command is forwarded up the ACP `user_input_request` pause with structured `host_exec` fields, so a remote client can approve or deny. The session-level toggle is `POST /api/v1/sessions/{id}/host` (`{"action":"on"|"off"}`). See [Deployment modes → Host mode](DEPLOYMENT-MODES.md).
+
 ---
 
 ## Inference-side web services (Caddy gateway)

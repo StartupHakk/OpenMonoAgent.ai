@@ -87,6 +87,7 @@ public sealed class AnsiTuiRenderer : IRenderer
     public void StartAssistantResponse()    => _painter.StartAssistantResponse();
     public void StreamText(string text)     => _painter.StreamText(text);
     public void EndAssistantResponse(TurnMetrics? metrics = null) => _painter.EndAssistantResponse(metrics);
+    public void CommitStreamSegment()         => _painter.CommitStreamSegment();
     public void AppendThinking(string text) => _painter.AppendThinking(text, null);
     public void AppendThinking(string text, string? agentLabel) => _painter.AppendThinking(text, agentLabel);
     public void CollapseThinking(int n)     => _painter.CollapseThinking(n, null);
@@ -130,6 +131,10 @@ public sealed class AnsiTuiRenderer : IRenderer
 
     public Task<string> AskUserAsync(string question, IReadOnlyList<string>? options, CancellationToken ct)
         => _inputReader.AskUserAsync(question, options, ct);
+
+    /// <summary>Masked secret prompt inside the TUI chat lane (no echo, no transcript).</summary>
+    public Task<char[]> AskSecretAsync(string question, CancellationToken ct)
+        => _inputReader.AskSecretAsync(question, ct);
 
     public Task<PermissionResponse> AskPermissionAsync(string toolName, string summary, CancellationToken ct)
         => _inputReader.AskPermissionAsync(toolName, summary, ct);

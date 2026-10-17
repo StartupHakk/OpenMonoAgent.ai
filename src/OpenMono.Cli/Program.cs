@@ -101,7 +101,7 @@ for (var i = 0; i < args.Length; i++)
             Console.WriteLine("  PgUp / PgDn        Scroll conversation");
             return 0;
         case "--version":
-            Console.WriteLine("OpenMono.ai v1.8.2");
+            Console.WriteLine("OpenMono.ai v1.9.0");
             return 0;
     }
 }
@@ -188,6 +188,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     tools.Register(new AgentTool());
     tools.Register(new TodoTool());
     tools.Register(new AskUserTool());
+    tools.Register(new HostExecTool());
     tools.Register(new MemorySaveTool(memoryStore));
     tools.Register(new WebFetchTool());
     tools.Register(new WebSearchTool());
@@ -219,6 +220,19 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     tools.Register(new PlaybookTool(playbookRegistry, playbookExecutor));
 
     var systemPrompt = await SystemPrompt.BuildAsync(config, memoryStore, playbookRegistry);
+
+    // Host mode: when the launcher injected the host-daemon env (openmono
+    // agent --host), pair now so HOST:ON + standing orders are live from the
+    // first turn. No env → stays sandboxed, HOST_EXEC falls through as a
+    // normal question and /host on can pair manually.
+    var hostGateway = await HostGatewayBootstrap.GetOrCreateAsync(session);
+    if (hostGateway is not null)
+    {
+        session.Meta.HostEnabled = true;
+        systemPrompt += "\n\n" + hostGateway.BuildStandingOrders();
+        renderer.WriteInfo($"HOST:ON — paired to {hostGateway.BaseUrl} (run as {hostGateway.RunAs}, sudo={hostGateway.Sudo}). Host actions ask a HOST EXECUTION card first.");
+    }
+
     session.AddMessage(new Message { Role = MessageRole.System, Content = systemPrompt });
 
     using var mcpManager = new McpServerManager(msg => renderer.WriteInfo(msg));
@@ -374,6 +388,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     commands.Register(new CheckpointCommand(checkpointer));
     commands.Register(new ThinkCommand());
     commands.Register(new ModeCommand());
+    commands.Register(new HostCommand());
     commands.Register(new PromptCommand());
     commands.Register(new ModelCommand());
     commands.Register(new BtwCommand());
@@ -1003,6 +1018,27 @@ static async Task TryDetectActualModelAsync(AppConfig config)
             EffortDefaultLevel = effortDefault,
         };
         Log.Debug($"Detected reasoning from /props: format={reasoningFormat ?? "n/a"} in_content={reasoningInContent} template_thinking={config.Llm.ServerReasoning.HasThinkingTemplate}");
+
+        // Vision is auto-detected from what the server actually loaded, via the
+        // "modalities.vision" capability llama.cpp reports in /props — no
+        // install-time guess to go stale. An explicit inference.vision_enabled
+        // in settings.json overrides the probe (e.g. to force-disable).
+        var reportedVision = OpenMono.Config.AppConfig.ParsePropsVision(root);
+        if (reportedVision.HasValue && !config.Inference.VisionEnabled.HasValue)
+        {
+            if (reportedVision.Value && !config.VisionEnabled)
+            {
+                config.VisionEnabled = true;
+                Log.Info("Vision enabled: the inference server reports image input support.");
+            }
+            else if (!reportedVision.Value && config.VisionEnabled)
+            {
+                // The server explicitly says it cannot take images — trust
+                // that over any env/default guess.
+                config.VisionEnabled = false;
+                Log.Debug("Vision disabled: the inference server reports no image input support.");
+            }
+        }
 
         var userConfiguredCtx = config.Llm.ContextSize;
         if (serverCtx is null or <= 0)

@@ -24,18 +24,39 @@ native_load_config() {
     LLAMA_NATIVE_PORT=$(jq -r '.inference.port // "7474"' "$settings" 2>/dev/null)
     LLAMA_INSTALL_DIR=$(jq -r '.inference.install_dir // empty' "$settings" 2>/dev/null)
     LLAMA_MMPROJ_PATH=$(jq -r '.inference.mmproj_path // empty' "$settings" 2>/dev/null)
+    LLAMA_BINARY=$(jq -r '.inference.binary // empty' "$settings" 2>/dev/null)
     LLAMA_INSTALL_DIR="${LLAMA_INSTALL_DIR:-$HOME/openmono.ai}"
     if [[ -z "$MODEL_NAME" ]]; then
         err "inference config not found in $settings"; err "Re-run: openmono setup"; return 1
     fi
 }
 
+# Resolve which llama-server binary to run. A Bonsai install records the
+# on-machine Prism fork build in settings (.inference.binary) and it wins;
+# otherwise fall back to the brew stock binary for the Qwen path.
+native_resolve_binary() {
+    if [[ -n "${LLAMA_BINARY:-}" ]]; then
+        if [[ -x "$LLAMA_BINARY" ]]; then
+            printf '%s' "$LLAMA_BINARY"
+            return 0
+        fi
+        err "Prism binary not found: $LLAMA_BINARY"
+        err "Rebuild it: OPENMONO_PRISM_FORCE_BUILD=1 openmono setup"
+        return 1
+    fi
+    if command -v llama-server &>/dev/null; then
+        command -v llama-server
+        return 0
+    fi
+    err "llama-server not found. Install: brew install llama.cpp"
+    return 1
+}
+
 # Start native llama-server in the background with Metal GPU.
 # Requires native_load_config to have been called first.
 native_start_llama() {
-    if ! command -v llama-server &>/dev/null; then
-        err "llama-server not found. Install: brew install llama.cpp"; return 1
-    fi
+    local server_bin
+    server_bin="$(native_resolve_binary)" || return 1
     local model_file="$LLAMA_INSTALL_DIR/models/$MODEL_NAME"
     if [[ ! -f "$model_file" ]]; then
         err "Model not found: $model_file"; return 1
@@ -54,7 +75,8 @@ native_start_llama() {
     fi
 
     info "Starting llama-server (Metal) — model: $MODEL_NAME"
-    nohup llama-server \
+    info "Binary: $server_bin"
+    nohup "$server_bin" \
         --model "$model_file" --alias "${MODEL_ALIAS:-${MODEL_NAME%.gguf}}" \
         --host 0.0.0.0 --port "${LLAMA_NATIVE_PORT:-7474}" \
         --n-gpu-layers 99 \
@@ -196,6 +218,11 @@ native_cmd_status() {
 
     printf "│ Port            : %s\n" "$port"
     printf "│ Model           : %s\n" "$MODEL_NAME"
+    if [[ -n "${LLAMA_BINARY:-}" ]]; then
+        printf "│ Backend         : prism-metal (%s)\n" "$LLAMA_BINARY"
+    else
+        printf "│ Backend         : stock (brew llama.cpp)\n"
+    fi
     printf "│ Context Size    : %s\n" "$LLAMA_CTX_SIZE"
     if [[ -n "$LLAMA_MMPROJ_PATH" ]]; then
         printf "│ Vision          : ${GREEN}enabled${NC} (%s)\n" "$(basename "$LLAMA_MMPROJ_PATH")"
@@ -262,6 +289,22 @@ native_cmd_tunnel_rotate_key() {
     chmod 0600 "$docker_env"
     ok "LLAMA_API_KEY rotated in docker/.env"
 
+    # Mirror the key into settings.json so this machine's agent never dials
+    # with a stale key after a rotation (native llama-server starts from
+    # docker/.env; the agent reads llm.api_key from settings.json).
+    local settings="$HOME/.openmono/settings.json"
+    if [[ -f "$settings" ]] && command -v jq &>/dev/null; then
+        local stmp
+        stmp="$(mktemp)"
+        if jq --arg k "$new_key" '.llm = (.llm // {}) | .llm.api_key = $k' "$settings" > "$stmp" 2>/dev/null; then
+            mv "$stmp" "$settings"
+            ok "llm.api_key updated in settings.json"
+        else
+            rm -f "$stmp"
+            warn "Could not update settings.json — run: openmono config set llm.api_key $new_key"
+        fi
+    fi
+
     # Stop and restart llama-server with new key
     local pid proc_name
     pid=$(lsof -ti ":${port}" 2>/dev/null | head -1 || true)
@@ -297,10 +340,12 @@ native_cmd_tunnel_rotate_key() {
     printf "${BLUE}${BOLD}  API Key Rotated${NC}\n"
     printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
     echo ""
-    echo "  Run the following on the agent box to apply the new key:"
+    echo "  Run the following on REMOTE agent boxes to apply the new key:"
     echo ""
     [[ -n "$endpoint" ]] && \
         printf "    ${BOLD}openmono config set llm.endpoint  %s${NC}\n" "$endpoint"
     printf "    ${BOLD}openmono config set llm.api_key   %s${NC}\n" "$new_key"
+    [[ -f "$HOME/.openmono/settings.json" ]] && \
+        echo "  (this machine's settings.json was updated automatically; the lines above are for other agent boxes)"
     echo ""
 }
