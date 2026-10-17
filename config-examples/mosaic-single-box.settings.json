@@ -1,0 +1,19 @@
+{
+  "llm": {
+    "endpoint": "http://localhost:8090/v1",
+    "model": "MiMo-V2.6-Flash",
+    "api_key": "",
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "context_size": 131072
+  },
+  "model_presets": {
+    "mimo": {
+      "active": true,
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 20,
+      "presence_penalty": 0.0
+    }
+  }
+}

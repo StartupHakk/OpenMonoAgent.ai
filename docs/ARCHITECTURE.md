@@ -1,6 +1,6 @@
 # Architecture
 
-OpenMono is a .NET 10 CLI that runs a local agentic loop against a llama.cpp inference server (or any OpenAI-compatible endpoint). Everything runs in Docker — your project folder bind-mounts in as `/workspace`, the agent can't escape it.
+OpenMono is a .NET 10 CLI that runs a local agentic loop against a llama.cpp inference server (or any OpenAI-compatible endpoint). On Linux the optional host-native engines are **Strata** (Qwen3.8-Flash-Next) and **Mosaic** (MiMo-V2.6-Flash; see [MIMO.md](MIMO.md)). Everything else runs in Docker — your project folder bind-mounts in as `/workspace`, the agent can't escape it.
 
 <p align="center">
   <picture>

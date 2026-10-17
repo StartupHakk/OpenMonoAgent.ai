@@ -11,11 +11,12 @@
     "  default                 id of the model chosen when nothing is specified.",
     "  models[]                one entry per selectable model.",
     "    id                    stable identifier; --model=<id> matches this or any alias.",
-    "    backend               'llama' (stock llama.cpp path) or 'strata' (custom script).",
+    "    backend               'llama' (stock llama.cpp path), 'strata' (Qwen3.8-Flash-Next),",
+    "                          or 'mosaic' (MiMo-V2.6-Flash via the Mosaic MoE engine).",
     "    prism                 true => uses the PrismML llama.cpp fork image (Bonsai).",
     "    aliases[]             extra --model= names that select this entry.",
     "    requires              capability flag that must be 1 to offer this model:",
-    "                          'CAN_BONSAI' or 'CAN_STRATA', or null for always-available.",
+    "                          'CAN_BONSAI', 'CAN_STRATA', or 'CAN_MOSAIC', or null.",
     "    deny                  message printed when an explicit --model=<id> is refused",
     "                          because its 'requires' gate fails.",
     "    menu{label,tag,line}  text shown in the interactive picker ('line' is the exact",
@@ -26,9 +27,9 @@
     "    accuracy              fixed accuracy label for file-identity models (Bonsai).",
     "    label                 fixed picker/download label for file-identity models",
     "                          (tiers[].label wins when a tier row exists).",
-    "    script                backend 'strata': path to the manager script to run instead of",
-    "                          the llama download path. port_env/port_default name the OpenAI",
-    "                          endpoint written to docker/.env.",
+    "    script                backend 'strata' or 'mosaic': path to the manager script to run",
+    "                          instead of the llama download path. port_env/port_default name",
+    "                          the OpenAI endpoint written to docker/.env.",
     "    platforms{linux,macos}  per-platform tier tables. The tier KEY differs by platform:",
     "                          linux keys on VRAM MB bucket (24/16/12/8/cpu), macOS keys on",
     "                          unified RAM GB (48/32/16/8). Same GGUF can map to a different",
@@ -220,6 +221,22 @@
       "script": "scripts/strata.sh",
       "port_env": "STRATA_PORT",
       "port_default": 8080
+    },
+    {
+      "id": "mimo-flash",
+      "backend": "mosaic",
+      "prism": false,
+      "aliases": ["mimo-flash", "mimo", "mimo-v2.6-flash"],
+      "requires": "CAN_MOSAIC",
+      "deny": "MiMo-V2.6-Flash (Mosaic) needs Linux + an NVIDIA GPU with 24GB+ VRAM and a 64GB-class RAM box. The recommended REAP50 pack is ~64GB and must sit in RAM+VRAM with no SSD in the hot path. Not available on this box. Re-run with --model=qwen or --model=flash-next.",
+      "menu": {
+        "label": "MiMo-V2.6-Flash via Mosaic (~64GB REAP50)",
+        "tag": "NVIDIA 24GB+ / 64GB RAM, experimental",
+        "line": "MiMo-V2.6-Flash via Mosaic (~64GB REAP50, NVIDIA 24GB+ / 64GB RAM, experimental)"
+      },
+      "script": "scripts/mosaic.sh",
+      "port_env": "MOSAIC_PORT",
+      "port_default": 8090
     }
   ],
   "context": {

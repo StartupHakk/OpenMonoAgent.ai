@@ -11,6 +11,7 @@ public sealed class ProviderRegistry
 
         Register(new LocalLlamaProvider());
         Register(new StrataProvider());
+        Register(new MosaicProvider());
         Register(new OpenAiProvider());
         Register(new AnthropicProvider());
         Register(new OllamaProvider());
@@ -94,6 +95,33 @@ internal sealed class StrataProvider : IProvider
         {
             Endpoint = config.Endpoint ?? DefaultEndpoint,
             Model = config.Model ?? "Qwen3.8-Flash-Next",
+        }) { ApiKey = config.ApiKey };
+
+    public bool ValidateConfig(ProviderConfig config, out string? error)
+    {
+        error = null;
+        return true;
+    }
+}
+
+/// <summary>
+/// Mosaic backend (Linux): MiMo-V2.6-Flash-RL served host-native by the
+/// OpenMono Mosaic engine at :8090/v1. Strata (Qwen3.8-Flash-Next) is a
+/// separate provider and stays on :8080. Managed via scripts/mosaic.sh;
+/// see docs/MIMO.md and docs/MOE-ENGINE.md.
+/// </summary>
+internal sealed class MosaicProvider : IProvider
+{
+    public const string DefaultEndpoint = "http://localhost:8090";
+
+    public string Name => "mosaic";
+    public string[] SupportedModels => ["MiMo-V2.6-Flash"];
+
+    public ILlmClient CreateClient(ProviderConfig config) =>
+        new OpenAiCompatClient(new LlmConfig
+        {
+            Endpoint = config.Endpoint ?? DefaultEndpoint,
+            Model = config.Model ?? "MiMo-V2.6-Flash",
         }) { ApiKey = config.ApiKey };
 
     public bool ValidateConfig(ProviderConfig config, out string? error)

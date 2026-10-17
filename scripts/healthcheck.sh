@@ -13,7 +13,12 @@ echo "========================"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/../docker/.env"
 BACKEND="$(grep '^INFERENCE_BACKEND=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true)"
-if [[ "$BACKEND" == "strata" ]] || [[ -z "$BACKEND" && -f "$HOME/.openmono/strata.env" ]]; then
+if [[ "$BACKEND" == "mosaic" ]] || [[ -z "$BACKEND" && -f "$HOME/.openmono/mosaic.env" && ! -f "$HOME/.openmono/strata.env" ]]; then
+    BACKEND="mosaic"
+    PORT="$(grep '^MOSAIC_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true)"
+    PORT="${PORT:-8090}"
+    LABEL="mosaic"
+elif [[ "$BACKEND" == "strata" ]] || [[ -z "$BACKEND" && -f "$HOME/.openmono/strata.env" ]]; then
     BACKEND="strata"
     PORT="$(grep '^STRATA_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true)"
     PORT="${PORT:-8080}"
@@ -63,7 +68,7 @@ if [[ "$BACKEND" == "llama" ]]; then
         MODELS=""
     fi
 fi
-if [[ "$BACKEND" == "strata" ]] || [[ -z "${MODEL_NAME:-}" && -z "${PROPS:-}" ]]; then
+if [[ "$BACKEND" == "strata" || "$BACKEND" == "mosaic" ]] || [[ -z "${MODEL_NAME:-}" && -z "${PROPS:-}" ]]; then
     # OpenAI-compatible /v1/models endpoint (both backends serve it)
     MODELS=$(hc_curl -sf "http://localhost:$PORT/v1/models" 2>/dev/null || true)
     if [ -n "$MODELS" ]; then

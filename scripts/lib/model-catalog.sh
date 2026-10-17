@@ -22,7 +22,7 @@
 #   mc_id_for <name-or-alias>   canonical id for a --model= value ("" if unknown)
 #   mc_meta <id> <field>        top-level entry field (backend, prism, accuracy,
 #                               script, port_env, port_default, deny, ...)
-#   mc_requires <id>            capability flag name (CAN_BONSAI/CAN_STRATA) or ""
+#   mc_requires <id>            capability flag name (CAN_BONSAI/CAN_STRATA/CAN_MOSAIC) or ""
 #   mc_flag <name>              resolve a capability flag name to 0/1 in this shell
 #   mc_menu <id> <field>        menu.label | menu.tag | menu.line
 #   mc_file_field <id> <field>  files.name|url|mmproj|mmproj_url (fixed-identity models)
@@ -145,7 +145,7 @@ mc_deny()     { mc_meta "${1:-}" deny; }
 mc_flag() {
     local name="${1:-}"
     case "$name" in
-        CAN_BONSAI|CAN_STRATA) printf '%s' "${!name:-0}" ;;
+        CAN_BONSAI|CAN_STRATA|CAN_MOSAIC) printf '%s' "${!name:-0}" ;;
         *)                     printf '0' ;;
     esac
 }

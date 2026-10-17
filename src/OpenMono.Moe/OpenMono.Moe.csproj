@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>OpenMono.Moe</RootNamespace>
+    <AssemblyName>OpenMono.Moe</AssemblyName>
+    <Description>Mosaic MoE runtime scaffold: family adapters, OMS1 packer, RAM arena, VRAM expert cache, doorbell. MiMo-V2.6-Flash is the first adapter; Qwen3.8-Flash-Next stays on Strata.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="OpenMono.Tests" />
+  </ItemGroup>
+
+</Project>

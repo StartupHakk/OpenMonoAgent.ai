@@ -34,6 +34,16 @@ public static class ConfigLoader
             RepetitionPenalty = 1.0,
         };
 
+        config.ModelPresets["mimo"] = new ModelPresetSettings
+        {
+            Temperature = 1.0,
+            TopP = 0.95,
+            TopK = 20,
+            PresencePenalty = 0.0,
+            MinP = 0.0,
+            RepetitionPenalty = 1.0,
+        };
+
         var userConfigPath = Path.Combine(config.DataDirectory, "settings.json");
         // OPENMONO_DATA_DIR must be applied BEFORE the merge below, otherwise a
         // relocated (or test-isolated) data directory is ignored for the user

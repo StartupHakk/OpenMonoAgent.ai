@@ -151,8 +151,10 @@ _sync_api_key_to_settings() {
 _inference_backend() {
     local b
     b="$(_env_get INFERENCE_BACKEND)"
-    if [[ "$b" == "strata" || "$b" == "llama" ]]; then
+    if [[ "$b" == "strata" || "$b" == "llama" || "$b" == "mosaic" ]]; then
         printf '%s' "$b"
+    elif [[ -f "$HOME/.openmono/mosaic.env" ]]; then
+        printf 'mosaic'
     elif [[ -f "$HOME/.openmono/strata.env" ]]; then
         printf 'strata'
     else
@@ -164,6 +166,12 @@ _strata_port() {
     local p
     p="$(_env_get STRATA_PORT)"
     printf '%s' "${p:-8080}"
+}
+
+_mosaic_port() {
+    local p
+    p="$(_env_get MOSAIC_PORT)"
+    printf '%s' "${p:-8090}"
 }
 
 # Reuse the existing LLAMA_API_KEY as the gateway's shared bearer; generate one
@@ -475,6 +483,7 @@ cmd_setup() {
             --bonsai-ptq1)  export OPENMONO_MODEL=bonsai-ptq1 ;;
             --qwen)         export OPENMONO_MODEL=qwen ;;
             --flash-next)   export OPENMONO_MODEL=flash-next ;;
+            --mimo-flash|--mimo) export OPENMONO_MODEL=mimo-flash ;;
             --verbose|-v)   export OPENMONO_VERBOSE=1 ;;
             --help|-h)
                 echo "Usage: openmono setup [--full|--inference|--agent] [--gpu|--cpu] [--model=NAME] [--vision=on|off] [--verbose]"
@@ -495,7 +504,8 @@ cmd_setup() {
                 echo "  --model=bonsai-pq2   Ternary-Bonsai-2-27B PQ2_0 (~7.2GB) [NVIDIA CUDA / 7940HS Vulkan / Apple Silicon 16GB+ experimental]"
                 echo "  --model=bonsai-ptq1  Ternary-Bonsai-2-27B PTQ1_0 (~5.9GB, small cards)"
                 echo "  --model=flash-next   Qwen3.8-Flash-Next via Strata (~70GB, Linux + NVIDIA / CUDA 13, 48GB-class RAM+)"
-                echo "  --bonsai / --bonsai-ptq1 / --qwen / --flash-next   shorthands for the above"
+                echo "  --model=mimo-flash   MiMo-V2.6-Flash via Mosaic (~64GB REAP50, Linux + NVIDIA 24GB+ / 64GB RAM, experimental)"
+                echo "  --bonsai / --bonsai-ptq1 / --qwen / --flash-next / --mimo-flash   shorthands for the above"
                 echo ""
                 echo "GPU mode (applies to --full and --inference):"
                 echo "  --gpu         Force GPU mode (requires NVIDIA + nvidia-container-toolkit)"
@@ -624,6 +634,8 @@ EOF
             _default_endpoint="http://localhost:7474"
             if [[ "${OPENMONO_INFERENCE_BACKEND:-}" == "strata" ]]; then
                 _default_endpoint="http://localhost:${STRATA_PORT:-8080}/v1"
+            elif [[ "${OPENMONO_INFERENCE_BACKEND:-}" == "mosaic" ]]; then
+                _default_endpoint="http://localhost:${MOSAIC_PORT:-8090}/v1"
             fi
             cat > "$settings_file" <<EOF
 {
@@ -651,6 +663,9 @@ EOF
             if [[ "${OPENMONO_INFERENCE_BACKEND:-}" == "strata" && "$NATIVE_INFERENCE" != "true" ]]; then
                 echo "  strata endpoint : http://localhost:${STRATA_PORT:-8080}/v1"
                 echo "  mode            : Strata (Qwen3.8-Flash-Next, host-native)"
+            elif [[ "${OPENMONO_INFERENCE_BACKEND:-}" == "mosaic" && "$NATIVE_INFERENCE" != "true" ]]; then
+                echo "  mosaic endpoint : http://localhost:${MOSAIC_PORT:-8090}/v1"
+                echo "  mode            : Mosaic (MiMo-V2.6-Flash, host-native, experimental)"
             else
                 echo "  llama-server port : ${LLAMA_PORT}"
                 if [[ "$NATIVE_INFERENCE" == "true" ]]; then
@@ -758,6 +773,15 @@ cmd_start() {
     # Strata backend: host-native server via scripts/strata.sh (no Docker).
     if [[ "$(_inference_backend)" == "strata" ]]; then
         bash "$REPO_DIR/scripts/strata.sh" start || return $?
+        _start_web_services || true
+        echo ""
+        echo "  Run the agent: openmono agent"
+        return 0
+    fi
+
+    # Mosaic backend: host-native MiMo path via scripts/mosaic.sh (no Docker).
+    if [[ "$(_inference_backend)" == "mosaic" ]]; then
+        bash "$REPO_DIR/scripts/mosaic.sh" start || return $?
         _start_web_services || true
         echo ""
         echo "  Run the agent: openmono agent"
@@ -938,6 +962,10 @@ cmd_stop() {
         if [[ "$sel_llama" == "true" ]]; then
             bash "$REPO_DIR/scripts/strata.sh" stop || { warn "Strata stop failed — continuing with containers."; rc=1; }
         fi
+    elif [[ "$backend" == "mosaic" ]]; then
+        if [[ "$sel_llama" == "true" ]]; then
+            bash "$REPO_DIR/scripts/mosaic.sh" stop || { warn "Mosaic stop failed — continuing with containers."; rc=1; }
+        fi
     else
         _ensure_docker
         if [[ "$sel_llama" == "true" ]]; then
@@ -953,7 +981,7 @@ cmd_stop() {
         # Explicit service names bypass compose profile filtering, so every
         # selected service is stopped regardless of which profiles started it.
         local svcs=()
-        [[ "$sel_llama" == "true" && "$backend" != "strata" ]] && svcs+=(llama-server)
+        [[ "$sel_llama" == "true" && "$backend" != "strata" && "$backend" != "mosaic" ]] && svcs+=(llama-server)
         [[ "$sel_gateway" == "true" ]] && svcs+=(caddy)
         [[ "$sel_search" == "true" ]] && svcs+=(searxng)
         [[ "$sel_scraper" == "true" ]] && svcs+=(scrapling)
@@ -1017,6 +1045,13 @@ cmd_restart() {
         info "Restarting Strata..."
         bash "$REPO_DIR/scripts/strata.sh" stop || true
         bash "$REPO_DIR/scripts/strata.sh" start
+        return $?
+    fi
+
+    if [[ "$(_inference_backend)" == "mosaic" ]]; then
+        info "Restarting Mosaic..."
+        bash "$REPO_DIR/scripts/mosaic.sh" stop || true
+        bash "$REPO_DIR/scripts/mosaic.sh" start
         return $?
     fi
 
@@ -1604,9 +1639,9 @@ cmd_agent_sandbox() {
             source "$REPO_DIR/scripts/macos/inference.sh" 2>/dev/null || true
             native_load_config || exit 1
             native_ensure_running || exit 1
-        elif [[ "$(_inference_backend)" == "strata" ]]; then
-            # Strata backend: the first auto-start block above (via cmd_start →
-            # scripts/strata.sh) already handled this. Nothing llama to do here.
+        elif [[ "$(_inference_backend)" == "strata" || "$(_inference_backend)" == "mosaic" ]]; then
+            # Host-native backend: the first auto-start block above already
+            # handled this. Nothing llama to do here.
             true
         else
             # Probe the port compose actually binds (resolved from docker/.env
@@ -1789,6 +1824,8 @@ cmd_logs() {
         native_cmd_logs || return $?
     elif [[ "$(_inference_backend)" == "strata" ]]; then
         bash "$REPO_DIR/scripts/strata.sh" logs "$@"
+    elif [[ "$(_inference_backend)" == "mosaic" ]]; then
+        bash "$REPO_DIR/scripts/mosaic.sh" logs "$@"
     else
         _ensure_docker
         cd "$DOCKER_DIR"
@@ -1802,6 +1839,29 @@ cmd_status() {
 
     if [[ "$NATIVE_INFERENCE" == "true" ]]; then
         native_cmd_status
+    elif [[ "$(_inference_backend)" == "mosaic" ]]; then
+        bash "$REPO_DIR/scripts/mosaic.sh" status || true
+
+        if docker info &>/dev/null 2>&1; then
+            echo ""
+            echo -e "${BLUE}── Gateway containers ───────────────────────────────${NC}"
+            docker ps \
+                --filter "name=openmono-gateway" \
+                --filter "name=openmono-agent" \
+                --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || true
+        fi
+
+        echo ""
+        echo -e "${BLUE}── GPU ──────────────────────────────────────────────${NC}"
+        if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null 2>&1; then
+            nvidia-smi \
+                --query-gpu=name,memory.used,memory.total,utilization.gpu \
+                --format=csv,noheader,nounits \
+                | awk -F', ' '{printf "  %s  VRAM: %s/%s MiB  GPU: %s%%\n", $1, $2, $3, $4}'
+        else
+            echo "  (nvidia-smi not available)"
+        fi
+        return 0
     elif [[ "$(_inference_backend)" == "strata" ]]; then
         # Strata backend: host-native server + optional gateway containers.
         bash "$REPO_DIR/scripts/strata.sh" status || true

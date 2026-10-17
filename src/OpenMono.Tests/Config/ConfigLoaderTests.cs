@@ -51,6 +51,10 @@ public class ConfigLoaderTests : IDisposable
         config.Llm.Endpoint.Should().Be("http://localhost:7474");
         config.Llm.Model.Should().Be("");
         config.Llm.ContextSize.Should().Be(196608);
+        config.ModelPresets.Should().ContainKey("mimo");
+        config.ModelPresets["mimo"].Temperature.Should().Be(1.0);
+        config.ModelPresets["mimo"].TopP.Should().Be(0.95);
+        config.ModelPresets.Should().ContainKey("qwen38");
     }
 
     [Fact]

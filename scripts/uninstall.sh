@@ -629,6 +629,13 @@ if [ -f "$INSTALL_DIR/scripts/strata.sh" ]; then
         bash "$INSTALL_DIR/scripts/strata.sh" stop || warn "Strata stop hit an issue — stop it manually (see docs/STRATA.md)"
     fi
 fi
+if [ -f "$INSTALL_DIR/scripts/mosaic.sh" ]; then
+    MOSAIC_PORT="$(grep '^MOSAIC_PORT=' "$INSTALL_DIR/docker/.env" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true)"
+    if curl -sf "http://127.0.0.1:${MOSAIC_PORT:-8090}/health" &>/dev/null; then
+        info "Stopping Mosaic inference server..."
+        bash "$INSTALL_DIR/scripts/mosaic.sh" stop || warn "Mosaic stop hit an issue - stop it manually (see docs/MIMO.md)"
+    fi
+fi
 
 next_step "Removing $HOME/.openmono/ state"
 

@@ -97,6 +97,19 @@ public sealed record ModelReasoningProfile
         PreserveThinking = true,
     };
 
+    // MiMo-V2.6-Flash: official chat template is a binary enable_thinking
+    // flag (empty <think></think> when false). Card/vLLM recipe: temp 1.0,
+    // top_p 0.95, thinking on for hard coding work.
+    private static readonly ModelReasoningProfile _mimo = new()
+    {
+        Kind = ReasoningKind.BinaryToggle,
+        DefaultEnabled = true,
+        DefaultLevel = "on",
+        ThinkingTemperature = 1.0,
+        ThinkingTopP = 0.95,
+        PreserveThinking = true,
+    };
+
     public static ModelReasoningProfile Resolve(string? modelName)
         => Resolve(modelName, serverInfo: null);
 
@@ -160,6 +173,9 @@ public sealed record ModelReasoningProfile
             return _qwen38;
         if (lower.StartsWith("qwen"))
             return _qwen3;
+        if (lower.Contains("mimo-v2.6") || lower.Contains("mimo-v2") || lower.Contains("mimo_v2")
+            || lower is "mimo" or "mimo-flash")
+            return _mimo;
 
         return null;
     }

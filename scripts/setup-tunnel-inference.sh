@@ -28,10 +28,14 @@ GATEWAY_PORT="${GATEWAY_PORT:-47480}"
 INFERENCE_BACKEND="$(grep '^INFERENCE_BACKEND=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true)"
 STRATA_PORT="$(grep '^STRATA_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true)"
 STRATA_PORT="${STRATA_PORT:-8080}"
+MOSAIC_PORT="$(grep '^MOSAIC_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true)"
+MOSAIC_PORT="${MOSAIC_PORT:-8090}"
 LLAMA_PORT_DIRECT="$(grep '^LLAMA_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true)"
 LLAMA_PORT_DIRECT="${LLAMA_PORT_DIRECT:-7474}"
 if [ "$INFERENCE_BACKEND" = "strata" ]; then
     DIRECT_PORT="$STRATA_PORT"
+elif [ "$INFERENCE_BACKEND" = "mosaic" ]; then
+    DIRECT_PORT="$MOSAIC_PORT"
 else
     DIRECT_PORT="$LLAMA_PORT_DIRECT"
 fi

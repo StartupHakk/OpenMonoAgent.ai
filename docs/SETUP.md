@@ -5,7 +5,8 @@
 > Fresh Linux installs use the Strata backend automatically — Strata serves an
 > OpenAI-compatible API at `http://127.0.0.1:8080/v1`. See [STRATA.md](STRATA.md)
 > for requirements, install/start/stop, dual-box relay, and switching back to
-> the legacy llama.cpp path (`OPENMONO_INFERENCE_BACKEND=llama`).
+> the legacy llama.cpp path (`OPENMONO_INFERENCE_BACKEND=llama`). MiMo-V2.6-Flash
+> is an experimental Mosaic backend (`--model=mimo-flash`); see [MIMO.md](MIMO.md).
 
 ## Requirements
 

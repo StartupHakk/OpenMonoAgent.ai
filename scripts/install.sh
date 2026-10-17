@@ -14,21 +14,26 @@ set -euo pipefail
 #                         inference = GPU box only: model + inference server, no agent tooling
 #                         agent     = laptop only: agent + code-review-graph, no model
 #   OPENMONO_INFERENCE_BACKEND
-#                         Inference engine on Linux: llama (default) or strata.
+#                         Inference engine on Linux: llama (default), strata, or mosaic.
 #                         llama  = standard bundled llama.cpp Docker path
 #                                  (Qwen stock; Bonsai adds the Prism image).
 #                         strata = Strata (Qwen3.8-Flash-Next, OpenAI-compatible
 #                                  :8080/v1) via scripts/strata.sh — no vendoring,
 #                                  needs Linux + NVIDIA + CUDA 13 (auto-installed),
 #                                  see docs/STRATA.md. Opt in with --model=flash-next.
+#                         mosaic = Mosaic MoE engine (MiMo-V2.6-Flash-RL) at
+#                                  :8090/v1 via scripts/mosaic.sh. Needs NVIDIA
+#                                  24GB+ VRAM and 64GB-class RAM. See docs/MIMO.md.
+#                                  Opt in with --model=mimo-flash.
 #                         (macOS Apple Silicon always uses its native path.)
 #   OPENMONO_GPU=1        Force GPU mode (writes GPU docker-compose override)
 #   OPENMONO_CPU=1        Force CPU mode (removes any GPU override)
 #   OPENMONO_VERBOSE=1    Show detailed command output
 #   LLAMA_PORT=7474       llama-server host port (default 7474)
-#   OPENMONO_MODEL        Model engine: auto (default), qwen, bonsai-pq2, bonsai-ptq1, flash-next
+#   OPENMONO_MODEL        Model engine: auto (default), qwen, bonsai-pq2, bonsai-ptq1,
+#                         flash-next, mimo-flash
 #                         auto = analyze hardware, then pick (default Qwen on llama.cpp;
-#                                Bonsai/Strata offered only when the box can run them)
+#                                Bonsai/Strata/Mosaic offered only when the box can run them)
 #   OPENMONO_PRISM_IMAGE_CUDA   Prism CUDA image ref (default startuphakk/prism-llama.cpp_cuda:latest)
 #   OPENMONO_PRISM_IMAGE_VULKAN Prism Vulkan image ref (default startuphakk/prism-llama.cpp_vulkan:latest)
 #   OPENMONO_PRISM_IMAGE        Legacy single-ref override (wins over both when set)
@@ -51,6 +56,14 @@ source "$SCRIPT_DIR/lib/prism.sh"
 source "$SCRIPT_DIR/lib/model-catalog.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/vision.sh"
+
+# Host-native engines skip the llama.cpp Docker download/build/start path.
+is_host_native_backend() {
+    case "${1:-${INFERENCE_BACKEND:-}}" in
+        strata|mosaic) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 # ── Context size presets (tokens) — edit here to change globally ─────────────
 CTX_24G=196608       # GPU 24GB+  q8_0 KV  (~8GB KV + 15GB weights ≈ 23GB)
@@ -78,12 +91,13 @@ select_model() {
 
 # Unified model + engine picker. ALWAYS defaults to Qwen on stock llama.cpp —
 # the same default as main. Bonsai (Prism CUDA/Vulkan) and Qwen3.8-Flash-Next
-# (Strata, NVIDIA/CUDA 13) are offered ONLY when the caller's CAN_BONSAI /
-# CAN_STRATA capability flags say this box can run them. Honors OPENMONO_MODEL
-# (auto|qwen|bonsai-pq2|bonsai-ptq1|flash-next) and an explicit
-# OPENMONO_INFERENCE_BACKEND=strata. Sets INFERENCE_BACKEND; for llama choices
-# also MODEL_* / IS_BONSAI (via select_bonsai_model). Requires _GPU_TIER,
-# GPU_MODE/AMD_IGPU_MODE and CAN_BONSAI/CAN_STRATA set by the caller.
+# (Strata, NVIDIA/CUDA 13; Mosaic, NVIDIA 24GB+ / 64GB RAM) are offered ONLY
+# when the caller's CAN_BONSAI / CAN_STRATA / CAN_MOSAIC flags say this box
+# can run them. Honors OPENMONO_MODEL (auto|qwen|bonsai-pq2|bonsai-ptq1|
+# flash-next|mimo-flash) and an explicit OPENMONO_INFERENCE_BACKEND=strata|mosaic.
+# Sets INFERENCE_BACKEND; for llama choices also MODEL_* / IS_BONSAI
+# (via select_bonsai_model). Requires _GPU_TIER, GPU_MODE/AMD_IGPU_MODE and
+# CAN_* set by the caller.
 prompt_model_choice() {
     IS_BONSAI=0
     local choice="${OPENMONO_MODEL:-auto}"
@@ -99,6 +113,16 @@ prompt_model_choice() {
         return 0
     fi
 
+    # Explicit Mosaic / MiMo opt-in. 24GB+ VRAM and 64GB-class RAM required.
+    if [ "$choice" = "mimo-flash" ] || [ "$choice" = "mimo" ] || [ "$choice" = "mimo-v2.6-flash" ] \
+        || [ "$explicit_backend" = "mosaic" ]; then
+        if [ "$(mc_flag "$(mc_requires mimo-flash)")" != "1" ]; then
+            die "$(mc_deny mimo-flash)"
+        fi
+        INFERENCE_BACKEND=mosaic
+        return 0
+    fi
+
     # Explicit llama-family selection: honor it (Bonsai hardware re-checked later).
     case "$choice" in
         bonsai-pq2|bonsai|pq2) select_bonsai_model pq2; INFERENCE_BACKEND=llama; return 0 ;;
@@ -109,7 +133,7 @@ prompt_model_choice() {
     # choice == auto. Non-interactive: safe default = Qwen on stock llama.cpp.
     if [ ! -t 0 ]; then
         INFERENCE_BACKEND=llama
-        info "Model: Qwen on stock llama.cpp (default). For another engine: --model=flash-next (Strata, NVIDIA) or --model=bonsai-pq2|bonsai-ptq1."
+        info "Model: Qwen on stock llama.cpp (default). For another engine: --model=flash-next (Strata, NVIDIA), --model=mimo-flash (Mosaic, NVIDIA 24GB+/64GB), or --model=bonsai-pq2|bonsai-ptq1."
         return 0
     fi
 
@@ -119,7 +143,7 @@ prompt_model_choice() {
     echo "  Which model + engine for this box? (GPU tier: ${_GPU_TIER:-CPU})"
     echo ""
     printf '  1) %s\n' "$(mc_menu qwen line)"
-    local bonsai_pq2=0 bonsai_ptq1=0 strata_n=0 n=1 _ln
+    local bonsai_pq2=0 bonsai_ptq1=0 strata_n=0 mosaic_n=0 n=1 _ln
     _ln="$(mc_menu bonsai-pq2 line)"
     if [ -n "$_ln" ] && [ "$(mc_flag "$(mc_requires bonsai-pq2)")" = "1" ]; then
         bonsai_pq2=$(( n + 1 ));  printf '  %s) %s\n' "$bonsai_pq2"  "$_ln"
@@ -130,6 +154,11 @@ prompt_model_choice() {
     _ln="$(mc_menu flash-next line)"
     if [ -n "$_ln" ] && [ "$(mc_flag "$(mc_requires flash-next)")" = "1" ]; then
         strata_n=$(( n + 1 )); printf '  %s) %s\n' "$strata_n" "$_ln"
+        n=$strata_n
+    fi
+    _ln="$(mc_menu mimo-flash line)"
+    if [ -n "$_ln" ] && [ "$(mc_flag "$(mc_requires mimo-flash)")" = "1" ]; then
+        mosaic_n=$(( n + 1 )); printf '  %s) %s\n' "$mosaic_n" "$_ln"
     fi
     echo ""
     printf "  Enter choice [default: 1]: "
@@ -137,6 +166,10 @@ prompt_model_choice() {
     _mc="${_mc:-1}"
     if [ "$strata_n" != "0" ] && [ "$_mc" = "$strata_n" ]; then
         INFERENCE_BACKEND=strata
+        return 0
+    fi
+    if [ "$mosaic_n" != "0" ] && [ "$_mc" = "$mosaic_n" ]; then
+        INFERENCE_BACKEND=mosaic
         return 0
     fi
     if [ "$bonsai_pq2" != "0" ] && [ "$_mc" = "$bonsai_pq2" ]; then
@@ -220,12 +253,16 @@ else
     INFERENCE_BACKEND="${OPENMONO_INFERENCE_BACKEND:-none}"
 fi
 case "$INFERENCE_BACKEND" in
-    strata|llama|none) ;;
-    *) echo "ERROR: Invalid OPENMONO_INFERENCE_BACKEND='$INFERENCE_BACKEND' (expected: strata, llama)" >&2; exit 1 ;;
+    strata|llama|mosaic|none) ;;
+    *) echo "ERROR: Invalid OPENMONO_INFERENCE_BACKEND='$INFERENCE_BACKEND' (expected: strata, llama, mosaic)" >&2; exit 1 ;;
 esac
 if [ "${OPENMONO_INFERENCE_BACKEND:-}" = "strata" ]; then
     info "Inference backend: Strata (Qwen3.8-Flash-Next) — explicitly selected via OPENMONO_INFERENCE_BACKEND"
     info "Docs: docs/STRATA.md — Strata is MIT-licensed upstream (github.com/Niko1221/Strata)"
+fi
+if [ "${OPENMONO_INFERENCE_BACKEND:-}" = "mosaic" ]; then
+    info "Inference backend: Mosaic (MiMo-V2.6-Flash) — explicitly selected via OPENMONO_INFERENCE_BACKEND"
+    info "Docs: docs/MIMO.md — experimental; Strata/Qwen stays the published SWE-Verified default at this budget"
 fi
 
 # Step counts vary by role. We keep numbering stable per-role rather than
@@ -354,6 +391,7 @@ MODEL_MMPROJ_URL=""
 IS_BONSAI=0
 CAN_BONSAI=0
 CAN_STRATA=0
+CAN_MOSAIC=0
 # Analyze the box, keep only the options it can actually run, then pick
 # (default Qwen on stock llama.cpp). Sets INFERENCE_BACKEND + MODEL_* that every
 # downstream step (download, docker env, start) reads. Runs for EVERY
@@ -413,12 +451,22 @@ if [ "$OPENMONO_ROLE" != "agent" ]; then
             info "RAM: ${_MEM_GB}GB — Strata (Qwen3.8-Flash-Next, ~70GB weights) not offered; it needs a 48GB-class box."
         fi
     fi
+    # Mosaic / MiMo-V2.6-Flash: 24GB+ VRAM and 64GB-class RAM so the REAP50
+    # pack (~64GB) can sit in RAM+VRAM with no SSD in the hot path.
+    if [ "$(uname -s)" = "Linux" ] && [ "$_has_nvidia_hw" = true ] && [ "${AMD_IGPU_MODE:-0}" != "1" ]; then
+        _MEM_GB_MOSAIC=$(awk '/^MemTotal:/{printf "%d", $2/1048576}' /proc/meminfo 2>/dev/null || echo 0)
+        if [ "${_VRAM_MB:-0}" -ge 24000 ] && [ "${_MEM_GB_MOSAIC:-0}" -ge 60 ]; then
+            CAN_MOSAIC=1
+        else
+            info "Mosaic (MiMo-V2.6-Flash) not offered — need 24GB+ VRAM and 64GB-class RAM (saw ${_VRAM_MB:-0} MiB / ${_MEM_GB_MOSAIC:-0} GiB)."
+        fi
+    fi
     # Unified picker: defaults to Qwen on stock llama.cpp; Bonsai / Strata are
     # offered only when this box supports them. Sets INFERENCE_BACKEND.
     prompt_model_choice
     # Bonsai / Prism model plumbing below applies only to the llama.cpp backend;
     # Strata owns its own weights and engine, so skip it entirely for strata.
-    if [ "$INFERENCE_BACKEND" != "strata" ]; then
+    if ! is_host_native_backend; then
     # Bonsai gate: needs an accelerated backend (NVIDIA/CUDA or 7940HS/Vulkan).
     # Fail BEFORE the multi-GB model download, not after it.
     if [ "${IS_BONSAI:-0}" = "1" ] && [ "${GPU_MODE:-0}" != "1" ] && [ "${AMD_IGPU_MODE:-0}" != "1" ]; then
@@ -542,7 +590,16 @@ if [ "$INFERENCE_BACKEND" = "strata" ] && [ "$OPENMONO_ROLE" != "agent" ]; then
     ok "Strata model ready (server starts in the final step)"
 fi
 
-if [ "$OPENMONO_ROLE" != "agent" ] && [ "$INFERENCE_BACKEND" != "strata" ]; then
+if [ "$INFERENCE_BACKEND" = "mosaic" ] && [ "$OPENMONO_ROLE" != "agent" ]; then
+    next_step "Mosaic model setup (MiMo-V2.6-Flash)"
+    info "Mosaic pins a REAP50-class pack in RAM+VRAM. No SSD in the hot path (docs/MIMO.md)."
+    if ! bash "$SCRIPT_DIR/mosaic.sh" install; then
+        die "Mosaic install failed — retry: bash scripts/mosaic.sh install (see docs/MIMO.md)"
+    fi
+    ok "Mosaic state ready (real GPU decode is a follow-up; see docs/MIMO.md checklist)"
+fi
+
+if [ "$OPENMONO_ROLE" != "agent" ] && ! is_host_native_backend; then
     MODEL_DIR="$INSTALL_DIR/models"
 
     next_step "Downloading $_MODEL_LABEL"
@@ -720,7 +777,25 @@ if [ "$OPENMONO_ROLE" != "agent" ] && [ "$INFERENCE_BACKEND" = "strata" ]; then
     detail "Caddy gateway (optional) can front it via docker/docker-compose.strata.yml"
 fi
 
-if [ "$OPENMONO_ROLE" != "agent" ] && [ "$INFERENCE_BACKEND" != "strata" ]; then
+if [ "$OPENMONO_ROLE" != "agent" ] && [ "$INFERENCE_BACKEND" = "mosaic" ]; then
+    next_step "Recording Mosaic backend configuration"
+
+    OVERRIDE_FILE="$INSTALL_DIR/docker/docker-compose.override.yml"
+    if [ -f "$OVERRIDE_FILE" ]; then
+        info "Removing stale llama-server override ($OVERRIDE_FILE) — Mosaic serves on the host."
+        rm -f "$OVERRIDE_FILE"
+    fi
+    if [ -f "$DOCKER_ENV_FILE" ]; then
+        grep -v -E "^INFERENCE_BACKEND=|^MOSAIC_PORT=|^OPENMONO_VISION_ENABLED=" "$DOCKER_ENV_FILE" > "${DOCKER_ENV_FILE}.tmp" || true
+        mv "${DOCKER_ENV_FILE}.tmp" "$DOCKER_ENV_FILE"
+    fi
+    printf "INFERENCE_BACKEND=mosaic\nMOSAIC_PORT=%s\nOPENMONO_VISION_ENABLED=0\n" "${MOSAIC_PORT:-8090}" >> "$DOCKER_ENV_FILE"
+    om_persist_vision false
+    detail "Persisted INFERENCE_BACKEND=mosaic MOSAIC_PORT=${MOSAIC_PORT:-8090} to $DOCKER_ENV_FILE"
+    detail "Mosaic endpoint: http://127.0.0.1:${MOSAIC_PORT:-8090}/v1 (host-native, OpenAI-compatible)"
+fi
+
+if [ "$OPENMONO_ROLE" != "agent" ] && ! is_host_native_backend; then
     next_step "Configuring GPU / CPU mode"
 
     if [ "${GPU_MODE:-0}" = "1" ]; then
@@ -1080,6 +1155,8 @@ if [ "$OPENMONO_ROLE" != "agent" ]; then
     [ -f "$SETTINGS_FILE" ] || echo '{}' > "$SETTINGS_FILE"
     if [ "${INFERENCE_BACKEND:-llama}" = "strata" ]; then
         _ep="http://127.0.0.1:${STRATA_PORT:-8080}/v1"
+    elif [ "${INFERENCE_BACKEND:-llama}" = "mosaic" ]; then
+        _ep="http://127.0.0.1:${MOSAIC_PORT:-8090}/v1"
     else
         _ep="http://127.0.0.1:${LLAMA_PORT:-7474}"
     fi
@@ -1104,7 +1181,7 @@ run docker compose down || true
 
 # Only build the images this role actually needs. Skip the llama-server build for
 # the agent role, the host-native Strata backend, and Bonsai (prebuilt Prism image).
-if [ "$OPENMONO_ROLE" != "agent" ] && [ "$INFERENCE_BACKEND" != "strata" ]; then
+if [ "$OPENMONO_ROLE" != "agent" ] && ! is_host_native_backend; then
     if [ "${IS_BONSAI:-0}" = "1" ]; then
         _PRISM_BACKEND="$(prism_backend)"
         info "Bonsai selected — using prebuilt Prism image from Docker Hub (no llama-server build)"
@@ -1265,6 +1342,23 @@ ok "Docker images built"
 
 # ── Step 8: Start inference backend (inference + full only) ──────────────────
 
+if [ "$OPENMONO_ROLE" != "agent" ] && [ "$INFERENCE_BACKEND" = "mosaic" ]; then
+    next_step "Starting Mosaic inference server"
+
+    export MOSAIC_PORT="${MOSAIC_PORT:-8090}"
+    if [ -f "$DOCKER_ENV_FILE" ]; then
+        grep -v -E "^MOSAIC_PORT=" "$DOCKER_ENV_FILE" > "${DOCKER_ENV_FILE}.tmp" || true
+        mv "${DOCKER_ENV_FILE}.tmp" "$DOCKER_ENV_FILE"
+    fi
+    echo "MOSAIC_PORT=${MOSAIC_PORT}" >> "$DOCKER_ENV_FILE"
+    detail "Persisted MOSAIC_PORT=${MOSAIC_PORT} to $DOCKER_ENV_FILE"
+
+    if ! bash "$SCRIPT_DIR/mosaic.sh" start; then
+        warn "Mosaic did not become healthy — this milestone is a CPU scaffold."
+        warn "On a 24GB+ / 64GB+ NVIDIA box follow docs/MIMO.md. Check: bash scripts/mosaic.sh status"
+    fi
+fi
+
 if [ "$OPENMONO_ROLE" != "agent" ] && [ "$INFERENCE_BACKEND" = "strata" ]; then
     next_step "Starting Strata inference server"
 
@@ -1282,7 +1376,7 @@ if [ "$OPENMONO_ROLE" != "agent" ] && [ "$INFERENCE_BACKEND" = "strata" ]; then
     fi
 fi
 
-if [ "$OPENMONO_ROLE" != "agent" ] && [ "$INFERENCE_BACKEND" != "strata" ]; then
+if [ "$OPENMONO_ROLE" != "agent" ] && ! is_host_native_backend; then
     next_step "Starting llama-server"
 
     LLAMA_PORT="${LLAMA_PORT:-7474}"

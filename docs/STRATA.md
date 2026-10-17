@@ -166,6 +166,14 @@ and path preserved, while plain `:7474`-style endpoints keep the legacy
 Strata engine detail lives in `~/strata/strata-*.log`; the wrapper log is
 `~/.openmono/strata-server.log`.
 
+## Related: Mosaic / MiMo-V2.6-Flash
+
+MiMo-V2.6-Flash does not run on Strata (pack format and kernels are
+Qwen3.8-Flash-Next specific). That path is **Mosaic** (`--model=mimo-flash`,
+`scripts/mosaic.sh`, port 8090). Strata is unchanged. See [MIMO.md](MIMO.md)
+and [MOE-ENGINE.md](MOE-ENGINE.md). At a 24 GB + 64 GB budget, Strata Coder
+remains the published SWE-bench Verified quality default.
+
 ## What still needs a real GPU box to verify
 
 - [ ] End-to-end `openmono setup` (Strata path) on a 12 GB+ VRAM Linux box, including the ~70 GB model download.
