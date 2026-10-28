@@ -265,4 +265,106 @@ public class WebSearchToolTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
             => throw new HttpRequestException("connection refused");
     }
+
+    // --- Wikipedia anchor --------------------------------------------------
+
+    private const string WikiJson =
+        """
+        {"pages":[
+          {"title":"Coroutine","key":"Coroutine","excerpt":"A <span class=\"searchmatch\">Coroutine</span> is a callable computation that can be paused."},
+          {"title":"Asynchronous programming","key":"Asynchronous_programming","excerpt":"Asynchronous programming is a form of computer programming."}
+        ]}
+        """;
+
+    private static WebSearchTool ToolWithWiki(Func<HttpRequestMessage, HttpResponseMessage> ddg, string? wiki = WikiJson)
+    {
+        var tool = new WebSearchTool(new FakeHttpHandler(req =>
+        {
+            if (req.RequestUri!.Host == "en.wikipedia.org")
+                return wiki is null
+                    ? Response(500, "boom")
+                    : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(wiki, Encoding.UTF8, "application/json") };
+            return ddg(req);
+        }));
+        return tool;
+    }
+
+    [Fact]
+    public async Task BlockedDdgWithWikiResults_MergesAnchorAndSucceeds()
+    {
+        var tool = ToolWithWiki(_ => Response(202, ChallengeHtml));
+
+        var result = await tool.ExecuteAsync(Input("python asyncio"), CreateContext(), CancellationToken.None);
+
+        result.IsError.Should().BeFalse();
+        result.Class.Should().Be(ResultClass.Success);
+        result.Content.Should().Contain("Coroutine");
+        result.Content.Should().Contain("https://en.wikipedia.org/wiki/Coroutine");
+        result.Content.Should().Contain("Asynchronous_programming");
+        // The honest web-search outcome stays visible.
+        result.Content.Should().Contain("blocked");
+    }
+
+    [Fact]
+    public async Task EmptyDdgWithWikiResults_MergesAnchorAndSucceeds()
+    {
+        var tool = ToolWithWiki(_ => Response(200, EmptyHtml));
+
+        var result = await tool.ExecuteAsync(Input("qwertyuiop"), CreateContext(), CancellationToken.None);
+
+        result.IsError.Should().BeFalse();
+        result.Content.Should().Contain("No results found for: qwertyuiop");
+        result.Content.Should().Contain("https://en.wikipedia.org/wiki/Coroutine");
+    }
+
+    [Fact]
+    public async Task BlockedDdgWithWikiFailure_KeepsOriginalError()
+    {
+        // Wiki endpoint 500s — the anchor must not mask the real blocked error.
+        var tool = ToolWithWiki(_ => Response(202, ChallengeHtml), wiki: null);
+
+        var result = await tool.ExecuteAsync(Input("python asyncio"), CreateContext(), CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        result.Class.Should().Be(ResultClass.InvalidInput);
+        result.ErrorMessage.Should().Contain("blocked");
+        result.ErrorMessage.Should().NotContain("wikipedia");
+    }
+
+    [Fact]
+    public async Task SuccessDdg_DoesNotConsultWikipedia()
+    {
+        var hitWiki = false;
+        var tool = new WebSearchTool(new FakeHttpHandler(req =>
+        {
+            if (req.RequestUri!.Host == "en.wikipedia.org")
+            {
+                hitWiki = true;
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(WikiJson, Encoding.UTF8, "application/json") };
+            }
+            return Response(200, LiteHtml);
+        }));
+
+        var result = await tool.ExecuteAsync(Input("test query"), CreateContext(), CancellationToken.None);
+
+        result.IsError.Should().BeFalse();
+        result.Content.Should().Contain("Example Page");
+        result.Content.Should().NotContain("wikipedia");
+        hitWiki.Should().BeFalse("a successful web search must not consult the anchor");
+    }
+
+    [Fact]
+    public async Task WikiAnchorDisabled_BlockedDdgStaysError()
+    {
+        var ctx = CreateContext();
+        ctx.Config.Web.WikipediaAnchor = "false";
+
+        var tool = ToolWithWiki(_ => Response(202, ChallengeHtml));
+
+        var result = await tool.ExecuteAsync(Input("python asyncio"), ctx, CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        result.ErrorMessage.Should().Contain("blocked");
+        result.ErrorMessage.Should().NotContain("wikipedia");
+    }
 }

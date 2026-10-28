@@ -1,6 +1,7 @@
 # WebSearch — Findings & Improvement Plan
 
-**Status:** Investigation complete (2026-10-22). Root cause reproduced and confirmed.
+**Status:** Phase 1 (detect + fallback + honest reporting) and Phase 2 (Wikipedia
+anchor tier) implemented and tested (2026-10-28).
 
 ## TL;DR
 
@@ -137,3 +138,128 @@ Touch only `src/OpenMono.Cli/Tools/WebSearchTool.cs`:
 - `src/OpenMono.Cli/Tools/GatewayCapabilities.cs` — read-only (routing).
 - `docker/Caddyfile`, `docker/searxng/settings.yml` — no change needed.
 - `src/OpenMono.Tests/Tools/` — new unit tests.
+
+---
+---
+
+# Phase 2 — Reliability-chain research (no API keys)
+
+**Date:** 2026-10-28. **Constraint:** no API keys / no paid services. **Goal:** pick the
+best no-key tool as **primary**, with others as **fallbacks** in a reliability chain.
+
+> ⚠️ **VANTAGE-POINT CAVEAT (correction):** The probes in the table below were run
+> **from the agent's Docker container**, not from the inference box. But `WebSearch`
+> normally routes through the **Caddy gateway beside the inference server** (in
+> dual-box mode, a *different machine*), so the egress IP that actually matters for
+> the SearXNG primary path is the **inference box's** IP — which could differ
+> (residential vs. datacenter) and was **not** measured. The "bot-walled" conclusion
+> below therefore only holds for the **DuckDuckGo fallback path** (which egresses from
+> the agent container when the gateway is unreachable). It must be re-verified from the
+> correct box before it is used to pick the primary.
+
+## Candidate constraint: egress IP may be bot-walled (unverified for the real path)
+
+The agent container's outbound IP is challenged by virtually every general
+web-search provider. Probed live on 2026-10-28 **from the container**:
+
+| Provider | Path | Result from this egress IP |
+|----------|------|----------------------------|
+| DuckDuckGo | `html.duckduckgo.com/html/` + `lite.duckduckgo.com/lite/` | 202 bot-challenge (already handled in Phase 1) |
+| Mojeek | `mojeek.com/search` | JS captcha |
+| Marginalia | `search.marginalia.nu` | "wait a moment" JS gate + aggressive-bot notice |
+| SearXNG (anonsearch.win) | `/search?format=json` | HTTP 429 |
+| SearXNG (baresearch.org) | `/search?format=json` | Anubis proof-of-work (JS) |
+| SearXNG (searx.be) | `/search?format=json` | browser-verify JS challenge |
+| SearXNG (paulgo.io, opnxng.com) | `/search?format=json` | HTTP 429 |
+
+**Implication:** from a datacenter IP, a *pure keyless general-web* chain is fragile by
+its nature — the providers that don't need keys are the same ones that wall datacenter
+ranges. A keyless chain is only robust when it either (a) runs its own metasearch engine
+(own egress identity), or (b) leans on a keyless source that is *not* a general web search
+engine (Wikipedia).
+
+## What still works keyless from here
+
+- **Wikipedia REST search** — `GET /w/rest.php/v1/search/page?q=...&limit=N` returns clean
+  JSON `pages[]` with `title`, `key`, `description`, `excerpt`, `thumbnail`. No auth, no
+  rate-limit observed, **no bot wall**. Good for reference/technical/entity queries; weak
+  for news or "latest X" content. A reliable **anchor** tier, not a general-web substitute.
+- **Self-hosted SearXNG** — the existing `openmono setup search` + Caddy gateway path
+  (`http://localhost:7474/search?format=json`). Runs under our own identity/IP, so it is
+  the only keyless path that is *not* subject to the egress-IP wall the same way. **This
+  is the strongest primary.** (Not currently running on this host: gateway `/services`
+  returned 000.)
+
+## What is out (no-key)
+
+- **MetaGer JSON API** — moved to a **paid token model** ("~500 tokens (5 €) ≈ 2 months").
+  Not keyless. Excluded.
+- **Public SearXNG instance pool** (discovered via `searx.space/data/instances.json`, a
+  canonical, live, machine-readable list — e.g. anonsearch.win, baresearch.org, searx.be,
+  opnxng.com, all recently A+/100% uptime). Two blockers for a generic fallback:
+  1. **`format=json` is opt-in** in an instance's `settings.yml`; many defaults ship
+     `formats: [html]` only, so JSON requests 406.
+  2. **Most instances sit behind a bot wall** (Anubis PoW / rate-limiter / JS verify),
+     which a non-browser HTTP client cannot pass — i.e. the same wall as DDG.
+  So a pool can only be a *best-effort* low-priority tier with per-instance
+  probe-then-prune, not a dependable primary.
+
+## Recommended no-key chain (ranked)
+
+1. **Primary — self-hosted SearXNG via the local gateway** (`openmono setup search`).
+   Most reliable keyless path because it uses our own egress identity; rich JSON
+   (title/url/content/engine/score) already parsed by `SearxngSearchAsync`.
+2. **Secondary — DuckDuckGo `html/` → `lite/`** (Phase 1: browser UA, bot-challenge
+   detection, `Error`/`Empty` reporting). Zero setup, works on residential IPs.
+3. **Tertiary (best-effort) — curated public SearXNG pool**, `format=json`. Pull
+   `searx.space` instance list at runtime (cache + TTL), probe each for a clean
+   JSON response (prune on 429/PoW/406), first clean hit wins. Expect high variance;
+   treat as a long shot, cap the probe budget so it can't blow the tool timeout.
+4. **Anchor (always-on, keyless) — Wikipedia REST search.** Deterministically clean JSON
+   from this IP; guarantees a *real* (possibly empty) answer rather than a false success
+   for reference/technical queries. Merge/append as `provider=wiki` results.
+
+## Implemented (2026-10-28): Wikipedia anchor tier
+
+**Decision (user-approved):** keep the SearXNG-if-present + DuckDuckGo chain; add a
+**Wikipedia anchor** so the agent has a reliable keyless source it can lean on for
+general info — *in conjunction with* (not only as a last resort to) web search, and
+defending against the IP wall. The user confirmed no API keys anywhere in the chain.
+
+**Design:** `WebSearchTool` runs the existing gateway → DuckDuckGo chain unchanged.
+Only when that path yields no usable result (blocked / error / true-empty — i.e.
+`ResultClass.Empty` or `InvalidInput`, **never** a `Success`) does it merge up to 3
+keyless Wikipedia REST results, each tagged `(wikipedia)`, into a single `Success`
+whose text keeps the honest web-search outcome above the merged results. On a
+successful web search the anchor is never consulted. The anchor is best-effort: a
+Wikipedia failure is swallowed and the original honest result is returned, so it can
+never turn an error into a false success.
+
+- **Endpoint:** `GET https://en.wikipedia.org/w/rest.php/v1/search/page?q=…&limit=3`
+  (keyless JSON: `pages[].title`, `pages[].key`, `pages[].excerpt`; HTML match spans
+  stripped; URL = `https://en.wikipedia.org/wiki/<key>`).
+- **Config:** `web.wikipedia_anchor` / `OPENMONO_WEB_WIKI_ANCHOR` (default **on**;
+  `false` disables — also the hook the unit tests use to assert DDG-only behaviour).
+- **Files:** `WebSearchTool.cs` (anchor + merge), `AppConfig.cs` (`WebConfig` flag),
+  `ConfigLoader.cs` + `AgentContainer.cs` (env wiring), `WebSearchToolTests.cs` (+5 tests).
+
+**Live verification on this machine** (a scratch harness driving the real
+`WebSearchTool.ExecuteAsync` with this machine's real config — dead
+`host.docker.internal:7480` gateway, `web.search=true` — and the real network):
+DuckDuckGo is bot-walled from this egress (one intermittent slip-through was observed
+on a single query, confirming rate-limit behaviour). In every blocked case the anchor
+merged 3 Wikipedia results and the tool returned a usable `Success`:
+
+```
+=== query: C# Roslyn compiler API
+1. Roslyn (compiler) (wikipedia)   https://en.wikipedia.org/wiki/Roslyn_(compiler)
+2. List of compilers (wikipedia)
+3. Java compiler (wikipedia)
+(Live probe: 5/5 PASS — anchor merged exactly when DuckDuckGo was blocked.)
+```
+
+**Not built (deliberately, for now):** the tier-3 public SearXNG pool — high runtime
+complexity (instance discovery/probing/pruning/TTL) for a fragile benefit, and every
+probed instance was bot-walled from this IP. Revisit only if a real SearXNG gateway
+isn't available. A local SearXNG gateway remains the strongest keyless primary and is
+unchanged; standing one up here requires host mode (`openmono setup search`).

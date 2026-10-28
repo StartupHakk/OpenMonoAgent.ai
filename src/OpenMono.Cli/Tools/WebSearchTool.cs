@@ -59,6 +59,7 @@ public sealed partial class WebSearchTool : ToolBase
         new NetworkEgressCap("duckduckgo.com", 443, "https"),
         new NetworkEgressCap("html.duckduckgo.com", 443, "https"),
         new NetworkEgressCap("lite.duckduckgo.com", 443, "https"),
+        new NetworkEgressCap("en.wikipedia.org", 443, "https"),
     ];
 
     protected override async Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
@@ -80,7 +81,104 @@ public sealed partial class WebSearchTool : ToolBase
             }
         }
 
-        return await DuckDuckGoSearchAsync(query, maxResults, context.OnDebug, ct);
+        return await FallbackWithWikipediaAnchorAsync(query, maxResults, context, ct);
+    }
+
+    /// <summary>
+    /// The no-key fallback path. Runs the DuckDuckGo search, and — when it yields
+    /// nothing useful (blocked / error / true-empty) — merges a few keyless Wikipedia
+    /// REST results so the model still gets a real answer instead of a dead end. The
+    /// anchor is best-effort: any failure is swallowed and the original (honest) result
+    /// is returned, so it can never turn an error into a false success.
+    /// </summary>
+    private async Task<ToolResult> FallbackWithWikipediaAnchorAsync(
+        string query, int maxResults, ToolContext context, CancellationToken ct)
+    {
+        var result = await DuckDuckGoSearchAsync(query, maxResults, context.OnDebug, ct);
+
+        if (result.Class == ResultClass.Success)
+            return result;
+
+        // Only merge the anchor into a genuine web-search failure/empty — never into a
+        // success. A success already has real results to surface.
+        if (result.Class is not (ResultClass.Empty or ResultClass.InvalidInput))
+            return result;
+
+        if (!context.Config.Web.WikipediaAnchorEnabled)
+            return result;
+
+        List<SearchResult>? wiki;
+        try
+        {
+            wiki = await WikipediaSearchAsync(query, WikiResultLimit, ct);
+        }
+        catch
+        {
+            // The anchor is optional enrichment; a failure must not mask the real result.
+            context.OnDebug?.Invoke("WebSearch: Wikipedia anchor unavailable");
+            return result;
+        }
+
+        if (wiki is { Count: > 0 })
+        {
+            // Keep the honest web-search outcome (blocked/empty message) and append the
+            // anchor results below it, so the model still sees a real answer.
+            var combined = new System.Text.StringBuilder()
+                .Append(result.ModelPreview.TrimEnd())
+                .AppendLine()
+                .AppendLine()
+                .Append(RenderResults(query, wiki).ModelPreview)
+                .AppendLine()
+                .Append("(Wikipedia results are added because the web search returned no usable results; they are a reliable keyless fallback.)");
+            return ToolResult.Success(combined.ToString().TrimEnd());
+        }
+
+        return result;
+    }
+
+    private static int WikiResultLimit => 3;
+
+    /// <summary>
+    /// Keyless Wikipedia REST search. The only no-key general source that is never
+    /// bot-walled from a datacenter IP, so it anchors the fallback. Returns real
+    /// article titles, canonical URLs, and short excerpts (HTML match spans stripped).
+    /// </summary>
+    private async Task<List<SearchResult>> WikipediaSearchAsync(string query, int maxResults, CancellationToken ct)
+    {
+        var url = "https://en.wikipedia.org/w/rest.php/v1/search/page?q=" +
+                  Uri.EscapeDataString(query) + "&limit=" + maxResults;
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.Add("User-Agent", AgentUserAgent);
+
+        using var response = await _http.SendAsync(request, ct);
+        response.EnsureSuccessStatusCode();
+
+        var json = await response.Content.ReadAsStringAsync(ct);
+        using var doc = JsonDocument.Parse(json);
+
+        if (!doc.RootElement.TryGetProperty("pages", out var pages) || pages.ValueKind != JsonValueKind.Array)
+            return [];
+
+        var results = new List<SearchResult>();
+        foreach (var page in pages.EnumerateArray())
+        {
+            if (results.Count >= maxResults) break;
+
+            var title = page.TryGetProperty("title", out var t) ? t.GetString() : null;
+            var key = page.TryGetProperty("key", out var k) ? k.GetString() : null;
+            if (string.IsNullOrEmpty(title) || string.IsNullOrEmpty(key)) continue;
+
+            var excerpt = page.TryGetProperty("excerpt", out var e) ? e.GetString() : null;
+            var clean = string.IsNullOrWhiteSpace(excerpt) ? null
+                : WebUtility.HtmlDecode(StripTags().Replace(excerpt, "")).Trim();
+
+            var urlValue = $"https://en.wikipedia.org/wiki/{key}";
+            results.Add(new SearchResult { Title = $"{title} (wikipedia)", Url = urlValue, Snippet = clean });
+        }
+
+        return results;
     }
 
     private async Task<ToolResult> SearxngSearchAsync(

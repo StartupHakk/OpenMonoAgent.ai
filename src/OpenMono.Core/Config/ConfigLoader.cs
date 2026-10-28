@@ -247,6 +247,10 @@ public static class ConfigLoader
         if (!string.IsNullOrEmpty(webScrape))
             config.Web.Scrape = webScrape;
 
+        var webWikiAnchor = Environment.GetEnvironmentVariable("OPENMONO_WEB_WIKI_ANCHOR");
+        if (!string.IsNullOrEmpty(webWikiAnchor))
+            config.Web.WikipediaAnchor = webWikiAnchor;
+
         var workspace = Environment.GetEnvironmentVariable("OPENMONO_WORKSPACE");
         if (!string.IsNullOrEmpty(workspace))
             config.WorkingDirectory = workspace;

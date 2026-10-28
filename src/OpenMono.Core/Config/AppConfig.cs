@@ -130,14 +130,24 @@ public sealed class WebConfig
     [JsonConverter(typeof(FlexibleBoolToStringConverter))]
     public string? Scrape { get; set; }
 
+    // Optional Wikipedia anchor tier: WebSearch merges a few Wikipedia REST
+    // results into its output when the web-search path yields nothing useful.
+    // On by default; set false to disable (e.g. tests without network).
+    [JsonConverter(typeof(FlexibleBoolToStringConverter))]
+    public string? WikipediaAnchor { get; set; }
+
     public bool? SearchEnabled => Truthy(Search);
     public bool? ScrapeEnabled => Truthy(Scrape);
+
+    // Null (unset) means default-on; only an explicit truthy-false disables it.
+    public bool WikipediaAnchorEnabled => Truthy(WikipediaAnchor) ?? true;
 
     public void MergeFrom(WebConfig source)
     {
         if (!string.IsNullOrEmpty(source.Gateway)) Gateway = source.Gateway;
         if (!string.IsNullOrEmpty(source.Search)) Search = source.Search;
         if (!string.IsNullOrEmpty(source.Scrape)) Scrape = source.Scrape;
+        if (!string.IsNullOrEmpty(source.WikipediaAnchor)) WikipediaAnchor = source.WikipediaAnchor;
     }
 
     private static bool? Truthy(string? value) =>
