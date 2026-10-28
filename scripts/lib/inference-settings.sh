@@ -148,3 +148,66 @@ om_warn_parallel_slots() {
     fi
     return 0
 }
+
+# ── Model-config persistence (settings.json is the single source of truth) ───
+#
+# These write the model knobs into ~/.openmono/settings.json so that
+# scripts/apply_settings.sh (and thus `openmono upgrade`) can re-materialize
+# them into docker/.env across every launch path (Docker llama, native Metal,
+# Strata). They only write settings.json — never backend files — matching the
+# port/parallel helpers above.
+#
+# Usage:
+#   om_persist_model_name  "Ternary-Bonsai-2-27B-PQ2_0.gguf"
+#   om_persist_model_alias "Ternary-Bonsai-2-27B-PQ2_0"
+#   om_persist_mmproj      "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf"   # empty ok
+#   om_persist_ctx_size    98304
+#   om_persist_gpu_tier    16
+#   om_persist_model_accuracy full|lower
+
+om_persist_model_name() {
+    local name="$1"
+    [[ -n "$name" ]] || return 0
+    _om_settings_set '.inference = (.inference // {}) | .inference.model_name = $n' \
+        --arg n "$name"
+}
+
+om_persist_model_alias() {
+    local alias="$1"
+    [[ -n "$alias" ]] || return 0
+    _om_settings_set '.inference = (.inference // {}) | .inference.model_alias = $n' \
+        --arg n "$alias"
+}
+
+om_persist_mmproj() {
+    local proj="$1"
+    # Empty string is valid (vision off) — always persist it so the value is
+    # explicit rather than left to a stale value.
+    _om_settings_set '.inference = (.inference // {}) | .inference.mmproj = $n' \
+        --arg n "$proj"
+}
+
+om_persist_ctx_size() {
+    local n="$1"
+    [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 )) || return 0
+    _om_settings_set '.inference = (.inference // {}) | .inference.ctx_size = $n' \
+        --argjson n "$n"
+}
+
+om_persist_gpu_tier() {
+    local tier="$1"
+    [[ "$tier" =~ ^[0-9]+$ ]] || return 0
+    _om_settings_set '.inference = (.inference // {}) | .inference.gpu_tier = $n' \
+        --argjson n "$tier"
+}
+
+om_persist_model_accuracy() {
+    local acc="$1"
+    case "$acc" in
+        full|lower)
+            _om_settings_set '.inference = (.inference // {}) | .inference.model_accuracy = $n' \
+                --arg n "$acc"
+            ;;
+        *) return 0 ;;
+    esac
+}

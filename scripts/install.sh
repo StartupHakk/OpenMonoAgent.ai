@@ -1157,6 +1157,16 @@ if [ -f "$DOCKER_ENV_FILE" ]; then
     mv "${DOCKER_ENV_FILE}.tmp" "$DOCKER_ENV_FILE"
 fi
 printf "INFERENCE_BACKEND=llama\nINFERENCE_PORT=%s\nLLAMA_UPSTREAM=llama-server:7474\nMODEL_NAME=%s\nMODEL_ALIAS=%s\nMODEL_MMPROJ=%s\nCTX_SIZE=%s\nINFERENCE_PARALLEL=%s\n" "${INFERENCE_PORT:-7474}" "$MODEL_NAME" "$MODEL_ALIAS" "${MODEL_MMPROJ:-}" "${_CTX:-$CTX_CPU}" "${PARALLEL_SLOTS:-1}" >> "$DOCKER_ENV_FILE"
+# Mirror the model config into settings.json so it is the single source of
+# truth. `openmono upgrade` (and `openmono start`) re-apply it from here into
+# docker/.env, so a model swap or ctx change survives a git pull + image
+# rebuild.
+om_persist_model_name "$MODEL_NAME"
+om_persist_model_alias "$MODEL_ALIAS"
+om_persist_mmproj "${MODEL_MMPROJ:-}"
+om_persist_ctx_size "${_CTX:-$CTX_CPU}"
+om_persist_gpu_tier "${_GPU_TIER:-0}"
+om_persist_model_accuracy "${MODEL_ACCURACY:-full}"
 if [ -n "${MODEL_MMPROJ:-}" ]; then
     printf "OPENMONO_VISION_ENABLED=1\n" >> "$DOCKER_ENV_FILE"
     om_persist_vision true

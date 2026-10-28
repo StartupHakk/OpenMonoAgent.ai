@@ -2091,6 +2091,9 @@ cmd_upgrade() {
             echo "Updates OpenMono.ai to the latest version:"
             echo "  1. Fast-forwards the checkout in $REPO_DIR to the latest commit"
             echo "  2. Rebuilds the .NET agent Docker image (llama-server is left untouched)"
+            echo "  3. Re-applies the unified inference config (model, ctx, slots,"
+            echo "     vision, backend) from settings.json so a model swap or ctx"
+            echo "     change survives the pull + image rebuild"
             echo ""
             echo "  --check   Report whether an update is available without applying it"
             echo ""
@@ -2182,6 +2185,24 @@ cmd_upgrade() {
         err "Agent image build failed — code is updated but the image is stale."
         err "Retry manually: cd \"$DOCKER_DIR\" && docker compose build agent"
         return 1
+    fi
+
+    # Re-apply the unified inference config. The pull may have changed how
+    # settings.json is read, or a fresh install may have migrated model config
+    # into settings.json; either way, push the single source of truth (model,
+    # ctx, slots, vision, backend) back into the applied state so the server
+    # picks up a model swap or ctx change without a re-install.
+    if _has_local_inference; then
+        info "Re-applying inference config from settings.json..."
+        if _inference_settings_drift; then
+            info "Config drifted since last apply — syncing to docker/.env and the override."
+            _apply_inference_settings
+            ok "Inference config re-applied."
+        else
+            ok "Inference config already in sync."
+        fi
+    else
+        warn "No local inference backend detected — skipping config re-application."
     fi
 
     echo ""

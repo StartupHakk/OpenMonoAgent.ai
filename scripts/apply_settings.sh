@@ -33,6 +33,11 @@ STRATA_ENV="$STATE_DIR/strata.env"
 DEFAULT_PORT=7474
 DEFAULT_PARALLEL=1
 
+# Shared model-config resolver (settings.json → docker/.env fallback).
+# MC_* symbols are read-only; the model knobs are persisted by
+# scripts/lib/inference-settings.sh (om_persist_*).
+source "$SCRIPT_DIR/lib/model-config.sh"
+
 MODE="check"
 QUIET=0
 
@@ -113,6 +118,16 @@ _settings_update() {
         warn "Could not update $SETTINGS_FILE"
         return 1
     fi
+}
+
+# True (0) when the jq path $1 resolves to a non-empty value. Used to detect
+# whether a model knob is already recorded in settings.json before migrating
+# from docker/.env.
+_settings_has() {
+    [[ -f "$SETTINGS_FILE" ]] || return 1
+    local v
+    v="$(jq -r "$1 // empty" "$SETTINGS_FILE" 2>/dev/null || true)"
+    [[ -n "$v" ]]
 }
 
 _is_native() {
@@ -392,6 +407,13 @@ _check() {
     vision="$(_desired_vision)"
     ep="$(_desired_endpoint "$port")"
     upstream="$(_caddy_upstream "$port")"
+    # Model config (settings.json is canonical; mc_* falls back to .env so
+    # pre-unification installs report no drift against their applied state).
+    model_name="$(mc_model_name)"
+    model_alias="$(mc_model_alias)"
+    proj="$(mc_mmproj)"
+    tier="$(mc_gpu_tier)"
+    acc="$(mc_model_accuracy)"
     case "$vision" in
         true)  vision_env=1 ;;
         false) vision_env=0 ;;
@@ -400,6 +422,7 @@ _check() {
     info "desired: backend=$backend port=$port slots=$parallel"
     if [[ -n "$ctx" ]]; then info "desired: ctx=$ctx"; fi
     if [[ -n "$vision" ]]; then info "desired: vision=$vision"; fi
+    info "desired: $(mc_model_summary)"
 
     _check_env() {
         local file="$1" key="$2" want="$3" got
@@ -434,6 +457,14 @@ _check() {
     fi
     _check_env "$DOCKER_ENV" LLAMA_UPSTREAM "$upstream"
     _check_env "$DOCKER_ENV" CTX_SIZE "$ctx"
+    # Model config drift (settings.json is canonical; mc_* falls back to .env).
+    if [[ -n "$model_name" ]]; then
+        _check_env "$DOCKER_ENV" MODEL_NAME "$model_name"
+    fi
+    if [[ -n "$model_alias" ]]; then
+        _check_env "$DOCKER_ENV" MODEL_ALIAS "$model_alias"
+    fi
+    _check_env "$DOCKER_ENV" MODEL_MMPROJ "$proj"
     _check_env "$DOCKER_ENV" OPENMONO_VISION_ENABLED "$vision_env"
 
     case "$backend" in
@@ -476,6 +507,12 @@ _apply() {
     vision="$(_desired_vision)"
     ep="$(_desired_endpoint "$port")"
     upstream="$(_caddy_upstream "$port")"
+    # Model config (settings.json is canonical; mc_* falls back to .env).
+    model_name="$(mc_model_name)"
+    model_alias="$(mc_model_alias)"
+    proj="$(mc_mmproj)"
+    tier="$(mc_gpu_tier)"
+    acc="$(mc_model_accuracy)"
 
     _need_jq
     mkdir -p "$STATE_DIR"
@@ -495,6 +532,40 @@ _apply() {
         _settings_update '.llm = (.llm // {}) | .llm.endpoint = $e' --arg e "$ep" || true
     fi
 
+    # Model-config migration: pre-unification installs recorded model config
+    # only in docker/.env. Backfill it into settings.json (the new source of
+    # truth) exactly once — only when the key is absent, so a user's explicit
+    # `openmono config set inference.model_name …` is never clobbered.
+    if ! _settings_has '.inference.model_name' && [[ -n "$model_name" ]]; then
+        _settings_update '.inference = (.inference // {}) | .inference.model_name = $n' \
+            --arg n "$model_name" || true
+    fi
+    if ! _settings_has '.inference.model_alias' && [[ -n "$model_alias" ]]; then
+        _settings_update '.inference = (.inference // {}) | .inference.model_alias = $n' \
+            --arg n "$model_alias" || true
+    fi
+    if ! _settings_has '.inference.mmproj' && [[ -n "$proj" ]]; then
+        _settings_update '.inference = (.inference // {}) | .inference.mmproj = $n' \
+            --arg n "$proj" || true
+    fi
+    # ctx_size uses mc_ctx_size (falls back to .env) rather than $ctx, which
+    # reads settings.json only — otherwise a pre-unification install whose ctx
+    # lives only in .env would never be backfilled.
+    local ctx_source
+    ctx_source="$(mc_ctx_size || true)"
+    if ! _settings_has '.inference.ctx_size' && [[ -n "$ctx_source" ]]; then
+        _settings_update '.inference = (.inference // {}) | .inference.ctx_size = $n' \
+            --argjson n "$ctx_source" || true
+    fi
+    if ! _settings_has '.inference.gpu_tier' && [[ -n "$tier" ]]; then
+        _settings_update '.inference = (.inference // {}) | .inference.gpu_tier = $n' \
+            --argjson n "$tier" || true
+    fi
+    if ! _settings_has '.inference.model_accuracy' && [[ -n "$acc" ]]; then
+        _settings_update '.inference = (.inference // {}) | .inference.model_accuracy = $n' \
+            --arg n "$acc" || true
+    fi
+
     _env_set INFERENCE_PORT "$port" "$DOCKER_ENV"
     # Migration cleanup: these were separate backend ports before the
     # unification; INFERENCE_PORT is now the only applied key.
@@ -510,6 +581,18 @@ _apply() {
     if [[ -n "$ctx" ]]; then
         _env_set CTX_SIZE "$ctx" "$DOCKER_ENV"
     fi
+    # Model config into docker/.env (applied state). The llama override template
+    # resolves MODEL_NAME / MODEL_ALIAS / MODEL_MMPROJ / CTX_SIZE from this file
+    # at compose time, so this is what makes the server pick up a model swap or
+    # ctx change without a re-install. mmproj is always written (empty = vision
+    # off) to match install.sh, which records an explicit empty value.
+    if [[ -n "$model_name" ]]; then
+        _env_set MODEL_NAME "$model_name" "$DOCKER_ENV"
+    fi
+    if [[ -n "$model_alias" ]]; then
+        _env_set MODEL_ALIAS "$model_alias" "$DOCKER_ENV"
+    fi
+    _env_set MODEL_MMPROJ "$proj" "$DOCKER_ENV"
     case "$vision" in
         true)  _env_set OPENMONO_VISION_ENABLED 1 "$DOCKER_ENV" ;;
         false) _env_set OPENMONO_VISION_ENABLED 0 "$DOCKER_ENV" ;;
