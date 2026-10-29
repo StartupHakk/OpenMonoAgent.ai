@@ -9,7 +9,12 @@ namespace OpenMono.Tools;
 public sealed partial class WebSearchTool : ToolBase
 {
     public override string Name => "WebSearch";
-    public override string Description => "Search the web. Returns titles, URLs, and snippets for the top results.";
+    public override string Description =>
+        "Search the web. Returns titles, URLs, and snippets for the top results. " +
+        "If the web search is blocked or returns no results, keyless Wikipedia results are " +
+        "automatically appended (tagged '(wikipedia)') so you still get a real answer. " +
+        "For stable reference/encyclopedic content, you can also fetch a specific article " +
+        "directly with WebFetch (e.g. https://en.wikipedia.org/wiki/<topic>).";
     public override bool IsConcurrencySafe => true;
     public override bool IsReadOnly => true;
 
