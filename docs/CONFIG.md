@@ -193,6 +193,10 @@ These always write to `~/.openmono/settings.json`. Project-level `.openmono/sett
 
 Controls the active LLM connection and sampling parameters. At startup, `model` and `context_size` are overridden automatically from the llama.cpp `/props` endpoint.
 
+For multiple inference endpoints with runtime switching, see **Backends** in
+[`MODELS.md`](MODELS.md#backends-multiple-inference-endpoints) — configured in
+`~/.openmono/backends.json`, switched per session with `/models`.
+
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `endpoint` | string | `http://localhost:7474` | OpenAI-compatible chat endpoint |

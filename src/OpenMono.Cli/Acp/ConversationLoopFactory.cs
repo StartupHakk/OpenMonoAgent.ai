@@ -8,14 +8,8 @@ using OpenMono.Tools;
 namespace OpenMono.Acp;
 
 
-
-
-
-
-
 public sealed class ConversationLoopFactory
 {
-    private readonly ILlmClient _llm;
     private readonly ToolRegistry _tools;
     private readonly AppConfig _config;
     private readonly IOutputSink _output;
@@ -27,7 +21,6 @@ public sealed class ConversationLoopFactory
     public AppConfig Config => _config;
 
     public ConversationLoopFactory(
-        ILlmClient llm,
         ToolRegistry tools,
         AppConfig config,
         IOutputSink output,
@@ -36,7 +29,6 @@ public sealed class ConversationLoopFactory
         Playbooks.PlaybookRegistry? playbookRegistry = null,
         Memory.MemoryStore? memoryStore = null)
     {
-        _llm = llm;
         _tools = tools;
         _config = config;
         _output = output;
@@ -47,17 +39,16 @@ public sealed class ConversationLoopFactory
     }
 
 
-
-
-
-
-
-
-    public ConversationLoop Create(SessionState session, IAcpEventSink sink, IAcpUserInteraction interaction, PermissionStore store)
+    public ConversationLoop Create(
+        ILlmClient llm,
+        SessionState session,
+        IAcpEventSink sink,
+        IAcpUserInteraction interaction,
+        PermissionStore store)
     {
         var placeholderPermissions = new PermissionEngine(_config, _output, _input, store: store);
         return new ConversationLoop(
-            _llm,
+            llm,
             _tools,
             placeholderPermissions,
             _output,

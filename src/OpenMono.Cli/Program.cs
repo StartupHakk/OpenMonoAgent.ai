@@ -27,6 +27,14 @@ var acpOnly = false;
 if (EnvFlag_Truthy(Environment.GetEnvironmentVariable("OPENMONO_ACP_ONLY")))
     acpOnly = true;
 
+// Top-level `config` subcommand — non-interactive, edits settings/backends and exits.
+if (args.Length > 0 && args[0].Equals("config", StringComparison.OrdinalIgnoreCase))
+{
+    var (output, exitCode) = ConfigCommand.Run(args[1..]);
+    Console.WriteLine(output);
+    return exitCode;
+}
+
 for (var i = 0; i < args.Length; i++)
 {
     var arg = args[i];
@@ -72,6 +80,11 @@ for (var i = 0; i < args.Length; i++)
             Console.WriteLine("                     Without the flag, ACP stays off unless acpServer.enabled = true in config.");
             Console.WriteLine("  --help, -h         Show this help message");
             Console.WriteLine("  --version          Show version");
+            Console.WriteLine();
+            Console.WriteLine("Subcommands:");
+            Console.WriteLine("  config get [key]   Read settings.json (or a dotted key)");
+            Console.WriteLine("  config set k v     Set a settings.json key (e.g. llm.endpoint)");
+            Console.WriteLine("  config backends    Manage inference backends (list/add/remove/set-key)");
             Console.WriteLine();
             Console.WriteLine("Slash commands (type / inside the REPL, or use Ctrl+P):");
             Console.WriteLine("  /help              List all commands");
@@ -165,6 +178,48 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
         openAiClient.OnModelReported = m => config.Llm.Model = m;
     }
     if (llm is AnthropicClient anthropicClient) anthropicClient.OnDebug = debugCallback;
+
+    // ── Backend (inference endpoint) registry + per-backend client pool ─────────
+    // Backends are defined (persisted to backends.json without secrets) and their keys live
+    // in-memory only. The interactive path uses a routing client that resolves the active
+    // backend per LLM request; the ACP path resolves per turn via AcpTurnRunner.
+    var backendRegistry = new BackendRegistry();
+    var backendsFile = Path.Combine(config.DataDirectory, "backends.json");
+    backendRegistry.LoadFromFile(backendsFile);
+    // Inside the sandbox container the host's loopback is unreachable; point local
+    // backends at the Docker host-gateway alias so localhost endpoints in backends.json
+    // keep working unchanged.
+    if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("OPENMONO_HOST_WORKSPACE")))
+        backendRegistry.RemapLoopbackEndpoints("host.docker.internal");
+    if (!backendRegistry.Has(BackendRegistry.DefaultBackendName))
+    {
+        backendRegistry.Add(new BackendDefinition
+        {
+            Name = BackendRegistry.DefaultBackendName,
+            Endpoint = config.Llm.Endpoint,
+            DefaultModel = config.Llm.Model,
+            IsLocal = true,
+        });
+    }
+    foreach (var (providerName, ps) in config.Providers)
+    {
+        if (string.IsNullOrWhiteSpace(ps.Endpoint)) continue;
+        if (!backendRegistry.Has(providerName))
+        {
+            backendRegistry.Add(new BackendDefinition
+            {
+                Name = providerName,
+                Endpoint = ps.Endpoint,
+                DefaultModel = ps.Model,
+                IsLocal = providerName is "local" or "strata",
+            });
+        }
+    }
+    var clientPool = new LlmClientPool();
+    // Seed the routing client with the process-wide key so the default backend (when no
+    // per-backend key has been supplied at runtime) keeps working exactly as before.
+    var routingLlm = new RoutingLlmClient(session, backendRegistry, clientPool, llm);
+    ansiTui?.SetBackendsProvider(() => backendRegistry.All);
 
     var fileHistory = new FileHistory(config);
     session.Meta.FileHistory = fileHistory;
@@ -309,8 +364,9 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
         acpServices.AddSingleton(lockFileWriter);
         acpServices.AddSingleton(playbookRegistry);
         acpServices.AddSingleton(memoryStore);
+        acpServices.AddSingleton(backendRegistry);
+        acpServices.AddSingleton(clientPool);
         acpServices.AddSingleton(sp => new ConversationLoopFactory(
-            sp.GetRequiredService<ILlmClient>(),
             sp.GetRequiredService<ToolRegistry>(),
             sp.GetRequiredService<AppConfig>(),
             sp.GetRequiredService<IOutputSink>(),
@@ -322,7 +378,9 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
             sp.GetRequiredService<ConversationLoopFactory>(),
             sp.GetRequiredService<AcpServerSettings>(),
             sp.GetRequiredService<PlaybookRegistry>(),
-            sp.GetRequiredService<MemoryStore>()));
+            sp.GetRequiredService<MemoryStore>(),
+            sp.GetRequiredService<BackendRegistry>(),
+            sp.GetRequiredService<LlmClientPool>()));
 
         acpCts = new CancellationTokenSource();
         acpHost = new AcpHostedService(acp, acpServices, lockFileWriter);
@@ -373,7 +431,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
         return;
     }
 
-    var checkpointer = new Checkpointer(llm, config.Llm.ContextSize);
+    var checkpointer = new Checkpointer(routingLlm, config.Llm.ContextSize);
 
     var commands = new CommandRegistry();
     commands.Register(new HelpCommand());
@@ -391,10 +449,11 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     commands.Register(new HostCommand());
     commands.Register(new PromptCommand());
     commands.Register(new ModelCommand());
+    commands.Register(new ModelsCommand());
     commands.Register(new BtwCommand());
 
-    var compactor = new Compactor(llm, config.Llm.ContextSize);
-    var loop = new ConversationLoop(llm, tools, permissions, renderer, renderer, renderer, config, session, compactor, memoryStore,
+    var compactor = new Compactor(routingLlm, config.Llm.ContextSize);
+    var loop = new ConversationLoop(routingLlm, tools, permissions, renderer, renderer, renderer, config, session, compactor, memoryStore,
         checkpointer: checkpointer,
         dequeuePendingUserInput: () => ansiTui?.DequeueMessage(),
         onPendingUserInputInjected: text => ansiTui?.AddUserMessage(text));
@@ -431,6 +490,8 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
                     Renderer = renderer,
                     WorkingDirectory = config.WorkingDirectory,
                     Llm = llm,
+                    BackendRegistry = backendRegistry,
+                    LlmClientPool = clientPool,
                 };
                 await cmd.ExecuteAsync(cmdArgs, ctx, CancellationToken.None);
             }
@@ -569,6 +630,8 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
                     Renderer = renderer,
                     WorkingDirectory = config.WorkingDirectory,
                     Llm = llm,
+                    BackendRegistry = backendRegistry,
+                    LlmClientPool = clientPool,
                 };
                 try
                 {

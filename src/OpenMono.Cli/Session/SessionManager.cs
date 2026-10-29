@@ -74,7 +74,7 @@ public sealed class SessionManager
             ? JsonSerializer.Deserialize<SessionHeader>(headerLine, JsonOptions.Default)
             : null;
         var session = header is not null
-            ? new SessionState { Id = header.SessionId, StartedAt = header.StartedAt, Model = header.Model }
+            ? new SessionState { Id = header.SessionId, StartedAt = header.StartedAt, Model = header.Model, ActiveBackend = header.ActiveBackend }
             : new SessionState { Id = sessionId };
 
         if (header is not null)
@@ -232,6 +232,7 @@ public sealed class SessionManager
             StartedAt = session.StartedAt,
             WorkingDirectory = _workingDirectory,
             Model = session.Model,
+            ActiveBackend = session.ActiveBackend,
             TurnCount = session.TurnCount,
             TotalTokens = session.TotalTokensUsed,
             PlanMode = session.Meta.PlanMode,
@@ -273,6 +274,11 @@ public sealed record SessionHeader
     public required DateTime StartedAt { get; init; }
     public required string WorkingDirectory { get; init; }
     public string? Model { get; init; }
+
+    /// <summary>Name of the inference backend the session points at (see
+    /// <c>BackendRegistry</c>). Null → the "default" backend.</summary>
+    public string? ActiveBackend { get; init; }
+
     public int TurnCount { get; init; }
     public int TotalTokens { get; init; }
     public bool PlanMode { get; init; }

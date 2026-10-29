@@ -41,13 +41,14 @@ public sealed class AcpSessionStore : IDisposable
     internal ModelReasoningProfile ResolveReasoning(string? modelName)
         => ModelReasoningProfile.Resolve(modelName, _config.Llm.ServerReasoning);
 
-    public AcpSession Create(string? model, AppConfig cfg)
+    public AcpSession Create(string? model, AppConfig cfg, string? backendName = null)
     {
         var now = DateTime.UtcNow;
         var state = new SessionState
         {
             Id = NewSessionId(),
             Model = model ?? cfg.Llm.Model,
+            ActiveBackend = backendName,
         };
         state.Meta.TokenTracker ??= new TokenTracker();
         // Default to plan mode (read-only). The extension UI also defaults to "plan", but it

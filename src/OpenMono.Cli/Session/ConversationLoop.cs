@@ -49,6 +49,15 @@ public sealed class ConversationLoop : IDisposable
     private readonly int _maxIterations;
     private readonly int _agentDepth;
 
+    /// <summary>
+    /// The model name for this session: the session's explicit model (set by <c>/model</c> or
+    /// <c>/models</c> when a backend is chosen) if present, else the process-wide config model.
+    /// This is what is sent to the LLM and what token estimates / reasoning profiles key off, so
+    /// a per-session backend/model switch takes effect immediately.
+    /// </summary>
+    private string ActiveModel =>
+        string.IsNullOrWhiteSpace(_session.Model) ? _config.Llm.Model : _session.Model;
+
     public ConversationLoop(
         ILlmClient llm,
         ToolRegistry tools,
@@ -345,12 +354,12 @@ public sealed class ConversationLoop : IDisposable
         var parentMsgId = _session.Messages.Count > 1
             ? _session.Messages[^2].ToolCallId ?? $"msg_{_session.Messages.Count - 2}"
             : null;
-        _journal.StartTurn(_session.TurnCount, parentMsgId, _config.Llm.Model);
+        _journal.StartTurn(_session.TurnCount, parentMsgId, ActiveModel);
         _turnUsageReported = false;
 
         _output.WriteDebug($"[Turn] #{_session.TurnCount} — {_session.Messages.Count} messages, ~{_session.TotalTokensUsed} tokens used");
 
-        var preForwardEstimate = TokenEstimate.EstimatePayload(_checkpointer.BuildContextWindow(_session), _tools.BuildToolDefinitionsFor(_tools.All.Select(t => t.Name)), _config.Llm.Model);
+        var preForwardEstimate = TokenEstimate.EstimatePayload(_checkpointer.BuildContextWindow(_session), _tools.BuildToolDefinitionsFor(_tools.All.Select(t => t.Name)), ActiveModel);
         _output.WriteDebug($"[OMA_TRIGGER] pre-turn forward={preForwardEstimate} contextSize={_config.Llm.ContextSize}");
 
         if (_checkpointer.NeedsCheckpoint(_session, preForwardEstimate))
@@ -385,11 +394,11 @@ public sealed class ConversationLoop : IDisposable
 
         var thinking = _session.Meta.ThinkingEnabled;
         var thinkingLevel = _session.Meta.ThinkingLevel ?? "off";
-        var profile = Utils.ModelReasoningProfile.Resolve(_config.Llm.Model, _config.Llm.ServerReasoning);
+        var profile = Utils.ModelReasoningProfile.Resolve(ActiveModel, _config.Llm.ServerReasoning);
 
         var options = new LlmOptions
         {
-            Model = _config.Llm.Model,
+            Model = ActiveModel,
             MaxTokens = _config.Llm.MaxOutputTokens,
             TopP = thinking && profile.ThinkingTopP is { } ttp ? ttp : _config.Llm.TopP,
             TopK = _config.Llm.TopK,
@@ -421,7 +430,7 @@ public sealed class ConversationLoop : IDisposable
                     }
                 }
 
-                var iterForwardEstimate = TokenEstimate.EstimatePayload(_checkpointer.BuildContextWindow(_session), _tools.BuildToolDefinitionsFor(_tools.All.Select(t => t.Name)), _config.Llm.Model);
+                var iterForwardEstimate = TokenEstimate.EstimatePayload(_checkpointer.BuildContextWindow(_session), _tools.BuildToolDefinitionsFor(_tools.All.Select(t => t.Name)), ActiveModel);
                 _output.WriteDebug($"[OMA_TRIGGER] mid-turn forward={iterForwardEstimate} contextSize={_config.Llm.ContextSize}");
                 if (_checkpointer.NeedsCheckpoint(_session, iterForwardEstimate))
                 {
@@ -523,7 +532,7 @@ public sealed class ConversationLoop : IDisposable
 
             {
                 var estTools = _tools.BuildToolDefinitionsFor(allowedToolNames);
-                var estTokens = TokenEstimate.EstimatePayload(contextWindow, estTools, _config.Llm.Model);
+                var estTokens = TokenEstimate.EstimatePayload(contextWindow, estTools, ActiveModel);
                 var ctxSize = _config.Llm.ContextSize;
                 var pct = ctxSize > 0 ? (double)estTokens / ctxSize : 0;
                 Log.Info($"[OMA_TOKENEST] forward={estTokens} contextSize={ctxSize} pct={pct:P0} " +
@@ -669,7 +678,7 @@ public sealed class ConversationLoop : IDisposable
                 overflowRecoveredThisTurn = true;
                 Log.Warn($"[OMA_OVERFLOW] context overflow detected — compacting and retrying once: {overflow.Message}");
                 _output.WriteWarning("Context overflow — compacting and retrying…");
-                var preRetryEstimate = TokenEstimate.EstimatePayload(contextWindow, toolDefs, _config.Llm.Model);
+                var preRetryEstimate = TokenEstimate.EstimatePayload(contextWindow, toolDefs, ActiveModel);
                 await RunCompactionAsync(preRetryEstimate, customInstructions: null, ct, reason: "auto");
                 _doomLoop.Reset();
                 i = -1;
@@ -1074,7 +1083,7 @@ public sealed class ConversationLoop : IDisposable
         var estimate = TokenEstimate.EstimatePayload(
             _checkpointer.BuildContextWindow(_session),
             _tools.BuildToolDefinitionsFor(_tools.All.Select(t => t.Name)),
-            _config.Llm.Model);
+            ActiveModel);
 
         if (estimate <= _config.Llm.ContextSize)
             return false;
@@ -1086,7 +1095,7 @@ public sealed class ConversationLoop : IDisposable
         var baseEstimate = TokenEstimate.EstimatePayload(
             systemMessages,
             _tools.BuildToolDefinitionsFor(_tools.All.Select(t => t.Name)),
-            _config.Llm.Model);
+            ActiveModel);
 
         _output.WriteError(
             $"Context still exceeds the window after compaction: ~{estimate} of " +

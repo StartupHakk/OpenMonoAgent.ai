@@ -12,9 +12,13 @@ public sealed class ResumeCommand : ICommand
     {
         var sessionManager = new SessionManager(context.Config);
 
-        string? sessionId = args.Length > 0 ? args[0].Trim() : null;
+        string sessionId;
 
-        if (sessionId is null)
+        if (args.Length > 0)
+        {
+            sessionId = args[0].Trim();
+        }
+        else
         {
             var sessions = await sessionManager.ListSessionsAsync(10, ct);
 
@@ -24,38 +28,31 @@ public sealed class ResumeCommand : ICommand
                 return;
             }
 
-            context.Renderer.WriteInfo("");
-            context.Renderer.WriteInfo("Recent sessions:");
-            context.Renderer.WriteInfo("");
-
-            for (var i = 0; i < sessions.Count; i++)
+            var choices = sessions.Select(s =>
             {
-                var s = sessions[i];
                 var title = !string.IsNullOrWhiteSpace(s.Title) ? s.Title : s.FirstMessage;
-                if (title.Length > 60) title = title[..60] + "...";
-                var model = string.IsNullOrWhiteSpace(s.Model) ? "" : $"  model={s.Model}";
-                context.Renderer.WriteInfo(
-                    $"  [{i + 1}] {s.LastActivityAt:yyyy-MM-dd HH:mm} UTC  " +
-                    $"turns={s.TurnCount}  msgs={s.MessageCount}{model}  id={s.Id}");
-                if (!string.IsNullOrWhiteSpace(title))
-                    context.Renderer.WriteInfo($"      \"{title}\"");
+                if (!string.IsNullOrWhiteSpace(title) && title.Length > 40) title = title[..40] + "...";
+                var model = string.IsNullOrWhiteSpace(s.Model) ? "" : $"  {s.Model}";
+                var t = string.IsNullOrWhiteSpace(title) ? "" : $"  \"{title}\"";
+                return $"{s.LastActivityAt:yyyy-MM-dd HH:mm}  {s.TurnCount}t/{s.MessageCount}m  {s.Id}{model}{t}";
+            }).ToList();
+
+            var picked = await context.Renderer.SelectOptionAsync("Resume session", choices, 0, ct);
+            if (picked is null)
+            {
+                context.Renderer.WriteInfo("Session selection cancelled.");
+                return;
             }
 
-            context.Renderer.WriteInfo("");
-            var answer = await context.Renderer.AskUserAsync(
-                "Enter session number or ID (Enter to cancel):", ct);
-
-            if (string.IsNullOrWhiteSpace(answer))
-                return;
-
-            var cleaned = answer.Trim();
-            if (cleaned.StartsWith('/'))
-                cleaned = cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? cleaned;
-
-            if (int.TryParse(cleaned, out var idx) && idx >= 1 && idx <= sessions.Count)
-                sessionId = sessions[idx - 1].Id;
-            else
-                sessionId = cleaned;
+            sessionId = sessions[0].Id;
+            for (var i = 0; i < sessions.Count; i++)
+            {
+                if (string.Equals(choices[i], picked, StringComparison.Ordinal))
+                {
+                    sessionId = sessions[i].Id;
+                    break;
+                }
+            }
         }
 
         var loaded = await sessionManager.LoadAsync(sessionId, ct);

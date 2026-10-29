@@ -1,5 +1,6 @@
 using OpenMono.Commands;
 using OpenMono.Config;
+using OpenMono.Llm;
 using OpenMono.Permissions;
 using OpenMono.Playbooks;
 using OpenMono.Session;
@@ -35,6 +36,10 @@ public sealed class AnsiTuiRenderer : IRenderer
     public char ReadMenuKey(params char[] allowed) => _inputReader.ReadMenuKey(allowed);
 
     public void OnTokensUpdated() => _painter.OnTokensUpdated();
+
+    /// <summary>Enables the <c>/models</c> overlay to complete to a configured backend name.</summary>
+    public void SetBackendsProvider(Func<IReadOnlyCollection<BackendDefinition>?>? provider)
+        => _overlay.SetBackendsProvider(provider);
 
     public string? DequeueMessage() => _painter.DequeueMessage();
     public int QueuedCount => _painter.QueuedCount;
@@ -131,6 +136,10 @@ public sealed class AnsiTuiRenderer : IRenderer
 
     public Task<string> AskUserAsync(string question, IReadOnlyList<string>? options, CancellationToken ct)
         => _inputReader.AskUserAsync(question, options, ct);
+
+    /// <summary>Standardized selection menu (input-lane overlay, ↑/↓ + Enter, Esc cancels).</summary>
+    public Task<string?> SelectOptionAsync(string title, IReadOnlyList<string> options, int initial, CancellationToken ct)
+        => _inputReader.SelectOptionAsync(title, options, initial, ct);
 
     /// <summary>Masked secret prompt inside the TUI chat lane (no echo, no transcript).</summary>
     public Task<char[]> AskSecretAsync(string question, CancellationToken ct)

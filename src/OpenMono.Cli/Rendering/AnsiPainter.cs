@@ -612,6 +612,49 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         lock (_writeLock) { W(_laneOverlay); Flush(); }
     }
 
+    /// <summary>
+    /// Standard selection menu in the input lane (like the <c>@</c> overlay): a title, a
+    /// scrollable window of options (max 6 rows, following the selection), and a hint row.
+    /// Pure selection — no free-text entry. <paramref name="selected"/> is an absolute index.
+    /// </summary>
+    internal void PaintSelectMenu(string title, IReadOnlyList<string> options, int selected)
+    {
+        Sz();
+        var w  = _tw - _sideW;
+        var sb = new StringBuilder(512);
+        var n  = Math.Min(options.Count, 6);
+
+        void Row(int offset, string text)
+        {
+            sb.Append($"{E}[{Math.Max(1, _th - offset)};1H");
+            sb.Append($"{BgInput} {PadR(text, Math.Max(0, w - 2))}{R}");
+        }
+
+        // Keep the selection in the window.
+        var first = selected;
+        if (first > Math.Max(0, options.Count - n)) first = options.Count - n;
+        first = Math.Clamp(first, 0, Math.Max(0, options.Count - n));
+
+        var titleLines = Wrap($"{B}{Fbb}? {R}{BgInput}{title}", Math.Max(1, w - 2));
+        var shownTitle = Math.Min(titleLines.Count, 2);
+        for (var i = 0; i < shownTitle; i++)
+            Row(n + 2 + (shownTitle - 1 - i), titleLines[i]);
+
+        for (var i = 0; i < n; i++)
+        {
+            var idx = first + i;
+            if (idx >= options.Count) break;
+            var marker = i + first == selected ? $"{B}{Fbb}❯ {R}{BgInput}" : "  ";
+            Row((n - i) + 1, $"{marker}[{idx + 1}] {options[idx]}");
+        }
+
+        Row(1, $"  {Fk}1-9 select · ↑/↓ navigate · Enter select · Esc cancel{R}");
+
+        _laneOverlay = sb.ToString();
+        _laneActive  = true;
+        lock (_writeLock) { W(_laneOverlay); Flush(); }
+    }
+
     internal void ClearLane()
     {
         _laneActive  = false;

@@ -24,4 +24,12 @@ public sealed class CommandContext
     public required Rendering.IRenderer Renderer { get; init; }
     public required string WorkingDirectory { get; init; }
     public required Llm.ILlmClient Llm { get; init; }
+
+    /// <summary>In-memory backend definitions (see <c>BackendRegistry</c>). Null in tests
+    /// where the command doesn't need it.</summary>
+    public Llm.BackendRegistry? BackendRegistry { get; init; }
+
+    /// <summary>Per-backend client cache (see <c>LlmClientPool</c>). Null in tests where
+    /// the command doesn't need it.</summary>
+    public Llm.LlmClientPool? LlmClientPool { get; init; }
 }

@@ -58,6 +58,16 @@ public sealed class AcpInputReaderAdapter : IInputReader
     public string ReadInput() => string.Empty;
     public string? ShowCommandPicker(CommandRegistry registry) => null;
 
+    public async Task<string?> SelectOptionAsync(string title, IReadOnlyList<string> options, int initial, CancellationToken ct)
+    {
+        if (options.Count == 0) return null;
+        var numbered = string.Join("\n", options.Select((o, i) => $"  [{i + 1}] {o}"));
+        var value = await _interaction.RequestUserInputAsync($"{title}\n{numbered}\n\nSelect number (blank to cancel):", ct);
+        var a = value?.Trim() ?? "";
+        if (a.Length == 0) return null;
+        return int.TryParse(a, out var idx) && idx >= 1 && idx <= options.Count ? options[idx - 1] : a;
+    }
+
 
 
 

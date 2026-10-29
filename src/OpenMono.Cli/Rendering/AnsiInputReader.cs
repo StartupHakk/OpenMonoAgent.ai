@@ -1122,6 +1122,77 @@ internal sealed class AnsiInputReader(
         finally { Console.TreatControlCAsInput = prev; }
     }
 
+    /// <summary>
+    /// Standardized selection menu: renders <paramref name="options"/> in the input lane
+    /// (like the <c>@</c> overlay) and lets the user navigate with ↑/↓, select with Enter,
+    /// or cancel with Esc. Returns the chosen option, or <c>null</c> on cancel.
+    /// </summary>
+    public Task<string?> SelectOptionAsync(string title, IReadOnlyList<string> options, int initial, CancellationToken ct)
+    {
+        if (options.Count == 0) return Task.FromResult<string?>(null);
+
+        var saved = _bgInputBuf.ToString();
+        StopBackgroundInput();
+
+        string? ans;
+        try { ans = ReadSelectMenu(title, options, initial, ct); }
+        finally { painter.ClearLane(); StartBackgroundInput(saved); }
+        return Task.FromResult(ans);
+    }
+
+    private string? ReadSelectMenu(string title, IReadOnlyList<string> options, int initial, CancellationToken ct)
+    {
+        var count = options.Count;
+        var selected = Math.Clamp(initial, 0, count - 1);
+
+        void Repaint() => painter.PaintSelectMenu(title, options, selected);
+        Repaint();
+
+        var prev = Console.TreatControlCAsInput;
+        Console.TreatControlCAsInput = true;
+        try
+        {
+            while (true)
+            {
+                if (ct.IsCancellationRequested) return null;
+
+                var result = terminal.TryReadKey();
+                if (result is null) { Thread.Sleep(20); continue; }
+                var k = result.Value;
+
+                if (k.Key == ConsoleKey.Escape)
+                {
+                    if (!Console.KeyAvailable) { var ms = 0; while (!Console.KeyAvailable && ms < 50) { Thread.Sleep(1); ms++; } }
+                    if (Console.KeyAvailable) { TryReadEscapeSequence(); continue; }
+                    return null;
+                }
+
+                if (k.Key == ConsoleKey.C && k.Modifiers.HasFlag(ConsoleModifiers.Control))
+                {
+                    ProcessWatchdog.ScheduleHardKill();
+                    OnSafeExit();
+                    Environment.Exit(0);
+                }
+
+                if (k.Key is ConsoleKey.UpArrow or ConsoleKey.LeftArrow)
+                { selected = (selected - 1 + count) % count; Repaint(); continue; }
+                if (k.Key is ConsoleKey.DownArrow or ConsoleKey.RightArrow or ConsoleKey.Tab)
+                { selected = (selected + 1) % count; Repaint(); continue; }
+
+                if (k.Key == ConsoleKey.Enter)
+                    return options[selected];
+
+                // Digit keys (matching the [N] labels) jump-and-confirm.
+                if (k.KeyChar is >= '1' and <= '9')
+                {
+                    var idx = k.KeyChar - '0' - 1;
+                    if (idx < count) return options[idx];
+                }
+            }
+        }
+        finally { Console.TreatControlCAsInput = prev; }
+    }
+
     private PermissionResponse ReadPermissionMenu(string title, string summary)
     {
         var options = new (string Label, PermissionResponse Resp)[]

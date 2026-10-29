@@ -1,10 +1,13 @@
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using OpenMono.Config;
 using OpenMono.HostBridge;
+using OpenMono.Llm;
 using OpenMono.Session;
 using OpenMono.Utils;
 
@@ -32,6 +35,12 @@ public static class AcpEndpoints
         app.MapGet("/api/v1/sessions/{id}/diffs/{toolCallId}", GetDiff);
         app.MapPost("/api/v1/sessions/{id}/diffs/undo", UndoDiff);
         app.MapPost("/api/v1/sessions/{id}/diffs/redo", RedoDiff);
+
+        // Backend (inference endpoint) management — session-scoped hot-swap.
+        app.MapGet("/api/v1/backends", GetBackends);
+        app.MapPost("/api/v1/backends", PostBackend);
+        app.MapDelete("/api/v1/backends/{name}", DeleteBackend);
+        app.MapPost("/api/v1/sessions/{id}/backend", SetSessionBackend);
     }
 
 
@@ -87,8 +96,13 @@ public static class AcpEndpoints
             return Results.BadRequest(new { error = "invalid_json", detail = ex.Message });
         }
 
-        var session = store.Create(body?.Model, config);
-        return Results.Ok(new { session_id = session.Id, model = session.Model });
+        var session = store.Create(body?.Model, config, backendName: body?.Backend);
+        return Results.Ok(new
+        {
+            session_id = session.Id,
+            model = session.Model,
+            active_backend = session.State.ActiveBackend,
+        });
     }
 
 
@@ -107,6 +121,7 @@ public static class AcpEndpoints
         {
             session_id = session.Id,
             model = session.Model,
+            active_backend = session.State.ActiveBackend,
             started_at = session.StartedAt.ToString("o"),
             turn_count = session.TurnCount,
             plan_mode = session.PlanMode,
@@ -441,6 +456,199 @@ public static class AcpEndpoints
         return Results.Ok(new { ok = path is not null, file_path = path ?? "" });
     }
 
+    // ── Backend (inference endpoint) management ──────────────────────────────
+
+    /// <summary>
+    /// Lists all configured inference backends. Returns names, endpoints, default
+    /// models, and whether a key is currently stored in memory. Never exposes key values.
+    /// </summary>
+    private static IResult GetBackends(BackendRegistry registry)
+    {
+        var list = registry.All
+            .Select(b => new
+            {
+                name = b.Name,
+                endpoint = b.Endpoint,
+                nickname = b.Nickname,
+                default_model = b.DefaultModel,
+                provider_type = b.ProviderType,
+                is_local = b.IsLocal,
+                has_key = registry.HasKey(b.Name),
+            })
+            .ToList();
+
+        return Results.Ok(new { backends = list });
+    }
+
+    /// <summary>
+    /// Creates or updates a backend. The body may include <c>api_key</c>; if present it is
+    /// stored in-memory only (never persisted to disk). Wire contract: 200 with
+    /// <c>{ ok, name, has_key }</c>; 400 malformed body.
+    /// </summary>
+    private static async Task<IResult> PostBackend(
+        HttpContext ctx,
+        BackendRegistry registry,
+        LlmClientPool clientPool,
+        AppConfig config,
+        CancellationToken ct)
+    {
+        try
+        {
+            using var doc = await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ct);
+            var root = doc.RootElement;
+
+            var name = root.TryGetProperty("name", out var nEl) ? nEl.GetString() ?? "" : "";
+            var endpoint = root.TryGetProperty("endpoint", out var eEl) ? eEl.GetString() ?? "" : "";
+            var apiKey = root.TryGetProperty("api_key", out var kEl) ? kEl.GetString() : null;
+            var defaultModel = root.TryGetProperty("default_model", out var dmEl) ? dmEl.GetString() : null;
+            var providerType = root.TryGetProperty("provider_type", out var ptEl) ? ptEl.GetString() ?? "openai-compat" : "openai-compat";
+            var isLocal = root.TryGetProperty("is_local", out var ilEl) ? ilEl.GetBoolean() : false;
+            var nickname = root.TryGetProperty("nickname", out var nkEl) ? nkEl.GetString() : null;
+
+            if (string.IsNullOrWhiteSpace(name))
+                return Results.BadRequest(new { error = "invalid_name", detail = "name is required" });
+            if (string.IsNullOrWhiteSpace(endpoint))
+                return Results.BadRequest(new { error = "invalid_endpoint", detail = "endpoint is required" });
+
+            registry.Add(new BackendDefinition
+            {
+                Name = name,
+                Endpoint = endpoint,
+                DefaultModel = defaultModel,
+                ProviderType = providerType,
+                IsLocal = isLocal,
+                Nickname = string.IsNullOrEmpty(nickname) ? null : nickname,
+            });
+
+            if (!string.IsNullOrEmpty(apiKey))
+            {
+                registry.SetKey(name, apiKey);
+            }
+
+            // Invalidate any cached client so the new config takes effect on the next turn.
+            clientPool.Invalidate(name);
+
+            // Persist so the backend (and any supplied key) survives a restart.
+            TrySaveBackends(registry, config);
+
+            return Results.Ok(new
+            {
+                ok = true,
+                name = name,
+                endpoint = endpoint,
+                has_key = registry.HasKey(name),
+            });
+        }
+        catch (JsonException ex)
+        {
+            return Results.BadRequest(new { error = "invalid_json", detail = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Removes a backend and its in-memory key. 204 on success; 404 if unknown.
+    /// </summary>
+    private static IResult DeleteBackend(string name, BackendRegistry registry, LlmClientPool clientPool, AppConfig config)
+    {
+        if (!registry.Has(name)) return Results.NotFound();
+        registry.Remove(name);
+        clientPool.Invalidate(name);
+        TrySaveBackends(registry, config);
+        return Results.NoContent();
+    }
+
+    /// <summary>
+    /// Persists the registry to <c>backends.json</c> best-effort — a write failure must not
+    /// fail a live API request, so errors are logged, not thrown.
+    /// </summary>
+    private static void TrySaveBackends(BackendRegistry registry, AppConfig config)
+    {
+        try
+        {
+            registry.SaveToFile(Path.Combine(config.DataDirectory, "backends.json"));
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"BackendRegistry: could not persist backends.json: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Switches a session's active backend. The body may include <c>api_key</c>; if present
+    /// it is stored in-memory only. The backend name must exist (or be "default").
+    /// Wire contract: 200 with <c>{ ok, backend, has_key }</c>; 404 unknown session;
+    /// 400 unknown backend.
+    /// </summary>
+    private static async Task<IResult> SetSessionBackend(
+        HttpContext ctx,
+        string id,
+        AcpSessionStore store,
+        BackendRegistry registry,
+        LlmClientPool clientPool,
+        CancellationToken ct)
+    {
+        var session = store.TryGet(id);
+        if (session is null) return Results.NotFound();
+
+        string backendName;
+        string? apiKey;
+        try
+        {
+            using var doc = await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ct);
+            var root = doc.RootElement;
+
+            backendName = root.TryGetProperty("backend", out var bEl) ? bEl.GetString() ?? "" : "";
+            apiKey = root.TryGetProperty("api_key", out var kEl) ? kEl.GetString() : null;
+        }
+        catch (JsonException ex)
+        {
+            return Results.BadRequest(new { error = "invalid_json", detail = ex.Message });
+        }
+
+        if (string.IsNullOrWhiteSpace(backendName))
+            return Results.BadRequest(new { error = "invalid_backend", detail = "backend is required" });
+
+        var name = backendName.Trim();
+
+        // The backend must already exist (created via POST /api/v1/backends or seeded at
+        // startup). Accepts a backend name or its nickname.
+        var resolved = registry.Resolve(name);
+        if (resolved is null)
+            return Results.BadRequest(new { error = "unknown_backend", detail = $"backend '{name}' not found. Use GET /api/v1/backends to list." });
+        name = resolved.Name;
+
+        var def = registry.Get(name)!;
+
+        // If a key was provided, store it in memory.
+        if (!string.IsNullOrEmpty(apiKey))
+        {
+            registry.SetKey(name, apiKey);
+        }
+
+        // If no key is stored and the backend is not local, reject.
+        if (!registry.HasKey(name) && !def.IsLocal)
+        {
+            return Results.Ok(new { ok = false, backend = name, has_key = false, error = "no_api_key" });
+        }
+
+        clientPool.Invalidate(name);
+
+        session.State.ActiveBackend = name;
+        // Adopt the backend's default model only if the session has no explicit model yet.
+        if (string.IsNullOrWhiteSpace(session.State.Model))
+            session.State.Model = def.DefaultModel;
+
+        store.Save(session);
+
+        return Results.Ok(new
+        {
+            ok = true,
+            backend = name,
+            model = session.State.Model,
+            has_key = registry.HasKey(name),
+        });
+    }
+
     private static DiffDto ToDiffDto(OpenMono.Session.DiffRecord r) => new()
     {
         ToolCallId = r.ToolCallId,
@@ -597,5 +805,6 @@ public static class AcpEndpoints
     private sealed class CreateSessionBody
     {
         [JsonPropertyName("model")] public string? Model { get; set; }
+        [JsonPropertyName("backend")] public string? Backend { get; set; }
     }
 }

@@ -377,9 +377,19 @@ public sealed class AcpTurnRunnerTests
         Directory.CreateDirectory(config.DataDirectory);
         var renderer = new TerminalRenderer();
         var llm = new ScriptedLlm(llmRounds);
-        var factory = new ConversationLoopFactory(llm, tools, config, renderer, renderer, renderer);
+        var factory = new ConversationLoopFactory(tools, config, renderer, renderer, renderer);
         var settings = new AcpServerSettings { PendingUserResponseTimeoutMinutes = 1 };
-        var runner = new AcpTurnRunner(session, writer, factory, settings);
+        var registry = new OpenMono.Llm.BackendRegistry();
+        registry.Add(new OpenMono.Llm.BackendDefinition
+        {
+            Name = OpenMono.Llm.BackendRegistry.DefaultBackendName,
+            Endpoint = config.Llm.Endpoint,
+            DefaultModel = config.Llm.Model,
+            IsLocal = true,
+        });
+        var pool = new OpenMono.Llm.LlmClientPool();
+        pool.Set(OpenMono.Llm.BackendRegistry.DefaultBackendName, llm);
+        var runner = new AcpTurnRunner(session, writer, factory, settings, registry, pool);
         return (runner, session, body);
     }
 

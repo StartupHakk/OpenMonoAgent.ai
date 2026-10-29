@@ -313,6 +313,125 @@ For a single-user setup (typical), keep `--parallel 1` to maximise context. To a
 
 ---
 
+## Backends (multiple inference endpoints)
+
+A **backend** is a named inference endpoint (e.g. your local llama.cpp server, a remote relay,
+Ollama, OpenAI). You can configure several and switch between them **at runtime, per session,
+without restarting the agent.**
+
+Backends live in `~/.openmono/backends.json` (0600). The `default` entry is what a new session
+starts on; every other entry is reachable via `/models`.
+
+### Config file format
+
+```jsonc
+{
+  "default": {
+    "name": "default",
+    "endpoint": "http://relay.example:10422",   // OpenAI-compatible endpoint
+    "default_model": "Qwen3.8-27B-UD-Q4_K_M",  // model used when switching to this backend
+    "provider_type": "openai-compat",           // only "openai-compat" is supported
+    "is_local": false,
+    "api_key": "..."                            // optional; 0600 file, never logged
+  },
+  "local": {
+    "name": "local",
+    "endpoint": "http://localhost:7474",
+    "default_model": "Ternary-Bonsai-2-27B-PQ2_0",
+    "is_local": true
+  },
+  "echo15": {
+    "name": "echo15",
+    "nickname": "echo15",                        // optional display name shown in menus
+    "endpoint": "http://relay.example:10070",
+    "default_model": "qwen3.8-flash-next-iq3_s",
+    "api_key": "..."
+  }
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `name` | yes | Stable registry key. Switching uses this name (or the nickname). |
+| `endpoint` | yes | OpenAI-compatible base URL. |
+| `nickname` | no | Human-friendly label; menus show `[nickname] <model>`. Falls back to `name` when absent. |
+| `default_model` | no | Model adopted when you switch to this backend. Leave unset and the backend's own `/v1/models` response is the truth. |
+| `is_local` | no | `true` for on-box servers (no API key required, endpoint reachable via loopback on the host). |
+| `api_key` | no | Persisted in the 0600 file so the backend survives restarts. Can also be supplied at runtime (kept in memory only). |
+
+### Runtime commands (TUI / terminal)
+
+| Command | What it does |
+|---------|--------------|
+| `/models` | Interactive backend menu. Probes every backend's `/v1/models` (5 s timeout, in parallel); unreachable ones render as **`offline`** instead of a model name. Select with 1–9 or ↑/↓ + Enter. |
+| `/models list` | Non-interactive listing, same offline annotation. |
+| `/models set NAME` | Switch the current session to `NAME` (name or nickname). Takes effect on the next message. |
+| `/models NAME` | Shorthand for `set`. |
+| `/models add NAME endpoint [--model=X] [--nickname=N]` | Add a backend (prompts for the API key, stored in memory). |
+| `/models remove NAME` | Remove a backend from the registry. |
+
+Switching is **session-scoped**: other sessions keep their own backend. The active backend's
+default model is adopted automatically (you can still override the model name with `/model`).
+
+### Non-interactive CLI (scripts, setup)
+
+```
+openmono config backends list
+openmono config backends add <name> --endpoint <url> [--model <m>] [--nickname <n>] [--key <k>] [--local true]
+openmono config backends remove <name>
+openmono config backends set-key <name> <key>     # omit <key> to clear
+```
+
+Writes directly to `~/.openmono/backends.json` (0600) — useful for provisioning relays from
+setup scripts. A running agent picks up file changes on its next restart.
+
+### Two-level model selection
+
+A backend is a *server*; a model is what the server serves. The two commands map to that:
+
+- `/models` — pick the **server** (endpoint + its key)
+- `/model` — pick the **model** the active server serves (`/model refresh` re-queries it)
+
+Most relays serve exactly one model, so `/models` is usually all you need.
+
+### Container networking
+
+When the agent runs in its sandbox container, `localhost` is the container — not the host.
+Loopback endpoints on backends marked `is_local` are therefore rewritten in-memory to
+`host.docker.internal` (e.g. `http://localhost:7474` → `http://host.docker.internal:7474`).
+`backends.json` itself is never modified, so the same file works on-box and in-container.
+
+### ACP HTTP API (for the VS Code / Cursor extension)
+
+The ACP server (the same process the extension talks to) exposes the full backend surface, so
+the extension can list, create, remove, and switch backends — including by nickname:
+
+| Method & path | Purpose | Body / response |
+|---------------|---------|-----------------|
+| `GET /api/v1/backends` | List backends | `{ backends: [{ name, endpoint, nickname, default_model, provider_type, is_local, has_key }] }` — keys are never exposed. |
+| `POST /api/v1/backends` | Create/update a backend | `{ name, endpoint, default_model?, nickname?, provider_type?, is_local?, api_key? }` → `{ ok, name, endpoint, has_key }`. `api_key` is in-memory only. |
+| `DELETE /api/v1/backends/{name}` | Remove a backend | 204 / 404. |
+| `POST /api/v1/sessions/{id}/backend` | Switch a session's backend | `{ backend, api_key? }` — `backend` is a name **or nickname** → `{ ok, backend, model, has_key }`. 404 unknown session, 400 unknown backend, `ok: false, error: "no_api_key"` when a remote backend has no key. |
+
+Notes for the extension:
+
+- `POST /api/v1/sessions` accepts a `backend` field to start a session on a specific backend.
+- `GET /api/v1/sessions/{id}` returns `active_backend`.
+- The menu's **offline** annotation is computed client-side by probing `/v1/models` (5 s
+timeout per backend, in parallel); the extension can do the same to badge dead relays.
+- `has_key` is advisory: a persisted key in `backends.json` loads at startup; a key supplied
+via `POST` lives in memory until process exit.
+
+### Key handling
+
+- Keys are kept **in memory** while the process runs. A persisted `api_key` in
+  `backends.json` is the only on-disk form, and the file is written 0600.
+- `/models add` and the TUI prompt store the key in memory for the session lifetime;
+  re-entering it after a restart is only needed if it was never persisted.
+- Keys are never logged and never returned by `GET /api/v1/backends` (only `has_key`).
+
+---
+
 ## Using cloud models instead
 
 > [!CAUTION]

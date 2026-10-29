@@ -59,11 +59,12 @@ public sealed class AcpEndpointsTests : IAsyncLifetime
         services.AddSingleton<IOutputSink>(renderer);
         services.AddSingleton<IInputReader>(renderer);
         services.AddSingleton<ILiveFeedback>(renderer);
+        services.AddSingleton(new OpenMono.Llm.BackendRegistry());
+        services.AddSingleton(new OpenMono.Llm.LlmClientPool());
 
         services.AddSingleton(sp => new AcpSessionStore(sp.GetRequiredService<AppConfig>(), sp.GetRequiredService<AcpServerSettings>(), startReaper: false));
         services.AddSingleton(sp => new AcpLockFileWriter(sp.GetRequiredService<AcpServerSettings>(), "/workspace"));
         services.AddSingleton(sp => new ConversationLoopFactory(
-            sp.GetRequiredService<ILlmClient>(),
             sp.GetRequiredService<ToolRegistry>(),
             sp.GetRequiredService<AppConfig>(),
             sp.GetRequiredService<IOutputSink>(),

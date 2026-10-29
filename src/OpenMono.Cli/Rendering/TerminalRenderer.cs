@@ -371,6 +371,23 @@ public sealed class TerminalRenderer : IRenderer
         return Task.FromResult(answer);
     }
 
+    /// <summary>
+    /// Terminal-mode standardized selection menu: numbered list in the transcript, then a
+    /// prompt for the number (a free-text answer that isn't a valid index is returned as-is,
+    /// empty cancels).
+    /// </summary>
+    public async Task<string?> SelectOptionAsync(string title, IReadOnlyList<string> options, int initial, CancellationToken ct)
+    {
+        if (options.Count == 0) return null;
+
+        var numbered = string.Join("\n", options.Select((o, i) => $"  [dim][{i + 1}] {Markup.Escape(o)}[/]"));
+        var question = $"{title}\n{numbered}\n\nSelect number (Enter to cancel):";
+        var answer = await AskUserAsync(question, ct);
+        var a = answer?.Trim() ?? "";
+        if (a.Length == 0) return null;
+        return int.TryParse(a, out var idx) && idx >= 1 && idx <= options.Count ? options[idx - 1] : a;
+    }
+
     public Task<PermissionResponse> AskPermissionAsync(
         string toolName, string summary, CancellationToken ct)
     {

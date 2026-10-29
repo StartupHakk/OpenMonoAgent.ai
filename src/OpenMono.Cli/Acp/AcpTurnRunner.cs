@@ -1,6 +1,7 @@
 using System.Text.Json;
 using OpenMono.Config;
 using OpenMono.HostBridge;
+using OpenMono.Llm;
 using OpenMono.Memory;
 using OpenMono.Permissions;
 using OpenMono.Playbooks;
@@ -44,6 +45,8 @@ public sealed class AcpTurnRunner : IAcpEventSink
     private readonly IAcpUserInteraction _interaction;
     private readonly PlaybookRegistry? _playbookRegistry;
     private readonly MemoryStore? _memoryStore;
+    private readonly BackendRegistry _backendRegistry;
+    private readonly LlmClientPool _clientPool;
     private string? _cachedSystemPrompt;
 
     public AcpTurnRunner(
@@ -51,6 +54,8 @@ public sealed class AcpTurnRunner : IAcpEventSink
         SseWriter writer,
         ConversationLoopFactory loopFactory,
         AcpServerSettings settings,
+        BackendRegistry backendRegistry,
+        LlmClientPool clientPool,
         PlaybookRegistry? playbookRegistry = null,
         MemoryStore? memoryStore = null)
     {
@@ -60,6 +65,8 @@ public sealed class AcpTurnRunner : IAcpEventSink
         _settings = settings;
         _playbookRegistry = playbookRegistry;
         _memoryStore = memoryStore;
+        _backendRegistry = backendRegistry;
+        _clientPool = clientPool;
         _interaction = new AcpUserInteractionForwarder(session, writer, settings.PendingUserResponseTimeout);
 
         // Log system prompt availability on first turn for this session
@@ -67,6 +74,33 @@ public sealed class AcpTurnRunner : IAcpEventSink
         {
             Log.Info($"[OMA_INIT] ACP session {session.Id} initialized. PlaybookRegistry available: {(playbookRegistry?.All.Count ?? 0)} playbooks. MemoryStore available: {(memoryStore is not null)}");
         }
+    }
+
+    /// <summary>
+    /// Resolves the LLM client for the current session. The client is derived from the
+    /// session's active backend (falling back to the "default" backend), so a mid-session
+    /// backend switch takes effect on the very next turn. The client is cached in the
+    /// <see cref="LlmClientPool"/> and invalidated when the backend's key/endpoint changes.
+    /// </summary>
+    private ILlmClient ResolveLlmClient()
+    {
+        var backendName = string.IsNullOrWhiteSpace(_acpSession.State.ActiveBackend)
+            ? BackendRegistry.DefaultBackendName
+            : _acpSession.State.ActiveBackend;
+
+        var backend = _backendRegistry.Get(backendName)
+            ?? _backendRegistry.Get(BackendRegistry.DefaultBackendName)
+            ?? throw new InvalidOperationException($"Unknown backend '{backendName}' and no 'default' backend configured.");
+
+        var apiKey = _backendRegistry.GetKey(backendName);
+        // The default backend's key comes from settings.json (config.Llm.ApiKey) — it is
+        // never pushed into the in-memory registry, so fall back to the process-wide key
+        // or a named backend (e.g. "local") would hit the endpoint unauthenticated.
+        if (apiKey is null && backend.Name.Equals(BackendRegistry.DefaultBackendName, StringComparison.OrdinalIgnoreCase))
+            apiKey = _loopFactory.Config.Llm.ApiKey;
+        var model = _acpSession.State.Model;
+
+        return _clientPool.GetOrCreate(backend, apiKey, model);
     }
 
 
@@ -161,7 +195,8 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
             case "/compact":
             {
-                var loop = _loopFactory.Create(_acpSession.State, this, _interaction, _acpSession.Store);
+                var llm = ResolveLlmClient();
+                var loop = _loopFactory.Create(llm, _acpSession.State, this, _interaction, _acpSession.Store);
                 var before = _acpSession.State.Messages.Count;
                 await loop.RunManualCompactionAsync(string.IsNullOrWhiteSpace(args) ? null : args, ct);
                 var after = _acpSession.State.Messages.Count;
@@ -285,7 +320,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
         var sessionState = _acpSession.State;
         sessionState.Meta.TokenTracker ??= new TokenTracker();
-        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction, store: _acpSession.Store);
+        using var loop = _loopFactory.Create(ResolveLlmClient(), sessionState, sink: this, interaction: _interaction, store: _acpSession.Store);
         try
         {
             var result = await loop.ExecutePlaybookDirectAsync(name, playbookArgs, resume, ct);
@@ -354,7 +389,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
         // Uses shared session state; modifications are persisted automatically.
         var sessionState = _acpSession.State;
         sessionState.Meta.TokenTracker ??= new TokenTracker();
-        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction, store: _acpSession.Store);
+        using var loop = _loopFactory.Create(ResolveLlmClient(), sessionState, sink: this, interaction: _interaction, store: _acpSession.Store);
         try
         {
             try
@@ -537,7 +572,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
         var sessionState = _acpSession.State;
         sessionState.Meta.TokenTracker ??= new TokenTracker();
-        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction, store: _acpSession.Store);
+        using var loop = _loopFactory.Create(ResolveLlmClient(), sessionState, sink: this, interaction: _interaction, store: _acpSession.Store);
         try
         {
             await loop.ResolvePendingToolCallsAsync(true, ct);
@@ -596,7 +631,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
         // pause icon → cog → check.
         var sessionState = _acpSession.State;
         sessionState.Meta.TokenTracker ??= new TokenTracker();
-        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction, store: _acpSession.Store);
+        using var loop = _loopFactory.Create(ResolveLlmClient(), sessionState, sink: this, interaction: _interaction, store: _acpSession.Store);
         try
         {
             try
@@ -638,7 +673,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
         var sessionState = _acpSession.State;
         sessionState.Meta.TokenTracker ??= new TokenTracker();
 
-        using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction, store: _acpSession.Store);
+        using var loop = _loopFactory.Create(ResolveLlmClient(), sessionState, sink: this, interaction: _interaction, store: _acpSession.Store);
 
         try
         {

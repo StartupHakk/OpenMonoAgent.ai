@@ -21,4 +21,11 @@ public interface IInputReader
 
     Task<PermissionResponse> AskPermissionAsync(string toolName, string summary, CancellationToken ct);
     Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct);
+
+    /// <summary>
+    /// Standardized selection menu: present a list of options, navigate with the user's
+    /// choice, return the selected option or <c>null</c> to cancel. Every renderer must
+    /// implement this explicitly (TUI: input-lane overlay; terminal: numbered prompt).
+    /// </summary>
+    Task<string?> SelectOptionAsync(string title, IReadOnlyList<string> options, int initial, CancellationToken ct);
 }

@@ -96,4 +96,31 @@ public static class ModelCatalog
         }
         return Models;
     }
+
+    /// <summary>
+    /// Outcome of a reachability probe against a single backend's <c>/v1/models</c> endpoint.
+    /// </summary>
+    public sealed record BackendProbe(bool Ok, IReadOnlyList<string> Models)
+    {
+        /// <summary>True when the backend advertises more than one model (a "multi-model" server).</summary>
+        public bool IsMulti => Models.Count > 1;
+    }
+
+    /// <summary>
+    /// Probes a set of backends in parallel (each with a short timeout) and returns their
+    /// reachability + advertised model ids. Used by <c>/models</c> to mark unreachable
+    /// backends as offline in the menu.
+    /// </summary>
+    public static async Task<Dictionary<string, BackendProbe>> ProbeAsync(
+        IEnumerable<(string Name, string Endpoint, string? Key)> backends, CancellationToken ct)
+    {
+        var list = backends.ToList();
+        var tasks = list.Select(async b =>
+        {
+            var models = await FetchAsync(b.Endpoint, b.Key, ct);
+            return (Name: b.Name, Probe: new BackendProbe(models.Count > 0, models));
+        }).ToList();
+        var done = await Task.WhenAll(tasks);
+        return done.ToDictionary(r => r.Name, r => r.Probe, StringComparer.OrdinalIgnoreCase);
+    }
 }
