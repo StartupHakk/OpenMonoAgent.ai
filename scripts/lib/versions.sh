@@ -158,6 +158,30 @@ vp_box_record() {
     fi
 }
 
+# Record the version actually installed for a component but KEEP its status as
+# "latest" (i.e. it still tracks the repo catalog pin). Used when the reconciler
+# auto-refreshes a component to the current catalog pin: we want to show what is
+# on the box, but the user did not pin it, so a future upgrade must still track
+# the catalog. (Contrast vp_box_record, which marks a concrete value "pinned"
+# and would therefore lock the component forever.)
+vp_box_record_latest() {
+    local comp="$1" ver="$2" f
+    command -v jq &>/dev/null || return 0
+    [[ -n "$ver" ]] || return 0
+    f="$(_vp_box_file)"
+    [[ -f "$f" ]] || vp_box_ensure
+    local tmp="$f.tmp"
+    if jq --arg c "$comp" --arg v "$ver" '
+        .[$c] = (if (.[$c] // null) == null then { version: $v, status: "latest" }
+                 elif (.[$c] | type) == "string" then { version: $v, status: "latest" }
+                 else (.[$c] + { version: $v, status: (.[$c].status // "latest") }) end)
+    ' "$f" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$f"; chmod 0600 "$f" 2>/dev/null || true
+    else
+        rm -f "$tmp"
+    fi
+}
+
 # Record the install role (full|inference|agent) in the box file.
 vp_box_set_role() {
     local role="$1" f

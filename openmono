@@ -2180,7 +2180,12 @@ _om_upgrade_refresh_frpc() {
     elif command -v systemctl &>/dev/null && systemctl list-unit-files 2>/dev/null | grep -q '^frpc\.service'; then
         sudo systemctl restart frpc >/dev/null 2>&1 || warn "Restart frpc manually: openmono tunnel restart"
     fi
-    vp_box_record frp "$target"
+    # frpc tracks the catalog pin unless the user locked a different one.
+    if [[ -n "$(vp_box_version frp)" && "$(vp_box_version frp)" != "$target" ]]; then
+        vp_box_record frp "$target"
+    else
+        vp_box_record_latest frp "$target"
+    fi
     return 0
 }
 
@@ -2232,19 +2237,28 @@ _om_upgrade_llama_catalog_key() {
 # Refresh the llama-server image to the effective pin (pull + recreate).
 # Returns 0 when it did something, 1 when nothing was needed.
 _om_upgrade_refresh_llama() {
-    local flavor target key current_img
+    local flavor target key current_img catalog_box
     flavor="$(_om_upgrade_llama_flavor)"
     [[ -n "$flavor" ]] || return 1
     key="$(_om_upgrade_llama_catalog_key "$flavor")"
     target="$(vp_effective_image "$key" llama)"
     [[ -n "$target" ]] || return 1
+    # What the user locked llama to (if anything). When it matches the catalog
+    # pin, the target came from the catalog (not a user pin), so recording it
+    # must keep status "latest" — otherwise every auto-refresh would lock the
+    # component forever and it would stop tracking the catalog.
+    catalog_box="$(vp_box_version llama)"
     # The image the container is currently running (empty when stopped/absent).
     current_img="$(docker ps -a --filter "name=llama-server" --format '{{.Image}}' 2>/dev/null | head -1 || true)"
     if [[ -n "$current_img" && "$current_img" == "$target" ]]; then
         # Already at the target — but record the concrete pin in the box file so
         # a freshly-seeded box (no prior lock) is not left at "latest" and
         # exposed to a future flavor mis-detection.
-        vp_box_record llama "$target"
+        if [[ -n "$catalog_box" && "$catalog_box" != "$target" ]]; then
+            vp_box_record llama "$target"      # user pinned a (different) value
+        else
+            vp_box_record_latest llama "$target"  # catalog pin → keep tracking
+        fi
         return 1
     fi
     # Guard: never downgrade a live Prism (Bonsai) server to a stock llama.cpp
@@ -2266,7 +2280,11 @@ _om_upgrade_refresh_llama() {
         (cd "$DOCKER_DIR" && docker compose up -d --force-recreate llama-server >/dev/null 2>&1) \
             || warn "llama-server recreate failed — run: openmono start"
     fi
-    vp_box_record llama "$target"
+    if [[ -n "$catalog_box" && "$catalog_box" != "$target" ]]; then
+        vp_box_record llama "$target"          # user pinned a (different) value
+    else
+        vp_box_record_latest llama "$target"   # catalog pin → keep tracking
+    fi
     return 0
 }
 
@@ -2286,9 +2304,14 @@ _om_upgrade_set_llama_image_env() {
 # Refresh a pinned docker image for a service if it is installed and the pin
 # changed. $1 = service name, $2 = catalog key, $3 = box component id.
 _om_upgrade_refresh_image_service() {
-    local service="$1" key="$2" comp="$3" target current_img
+    local service="$1" key="$2" comp="$3" target current_img box_val
     target="$(vp_effective_image "$key" "$comp")"
     [[ -n "$target" ]] || return 1
+    # The user-locked value for this component (if any). When it differs from
+    # the catalog pin the target came from the user, so record it "pinned";
+    # otherwise it is the catalog pin and we keep status "latest" so the
+    # component keeps tracking the catalog on future upgrades.
+    box_val="$(vp_box_version "$comp")"
     current_img="$(docker ps -a --filter "name=${service}" --format '{{.Image}}' 2>/dev/null | head -1 || true)"
     if [[ -n "$current_img" && "$current_img" == "$target" ]]; then
         return 1
@@ -2297,7 +2320,11 @@ _om_upgrade_refresh_image_service() {
     (cd "$DOCKER_DIR" && docker pull "$target" >/dev/null 2>&1) \
         && (cd "$DOCKER_DIR" && docker compose up -d --force-recreate "$service" >/dev/null 2>&1) \
         || warn "${service} refresh incomplete — run: openmono start"
-    vp_box_record "$comp" "$target"
+    if [[ -n "$box_val" && "$box_val" != "$target" ]]; then
+        vp_box_record "$comp" "$target"
+    else
+        vp_box_record_latest "$comp" "$target"
+    fi
     return 0
 }
 
@@ -2458,6 +2485,10 @@ cmd_upgrade() {
         esac
     }
 
+    # Report components the user explicitly locked (status: "pinned").
+    # Auto-refreshed components (frp/caddy/searxng) keep status "latest" after
+    # the reconciler records the catalog pin, so they are NOT listed here —
+    # only a user-pinned value has status "pinned".
     for comp in frp llama strata agent caddy searxng scrapling; do
         if vp_box_locked "$comp" && _om_upgrade_present "$comp"; then
             _r_locked+=("$comp")
