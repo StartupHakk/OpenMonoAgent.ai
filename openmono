@@ -2346,40 +2346,46 @@ cmd_upgrade() {
     local_rev="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)"
     upstream_rev="$(git -C "$REPO_DIR" rev-parse '@{u}' 2>/dev/null || true)"
 
+    # Whether there are commits to pull. When the code is already at upstream we
+    # do NOT exit: the component reconciler (below) must still run so the per-box
+    # lock file seeds and any drifted component is updated. We only skip the pull.
+    local code_changed=false
     if [[ -n "$local_rev" && "$local_rev" == "$upstream_rev" ]]; then
-        ok "Already up to date (v${current_version}, branch ${branch})."
-        return 0
-    fi
+        ok "Code already up to date (v${current_version}, branch ${branch})."
+    else
+        code_changed=true
+        local behind
+        behind="$(git -C "$REPO_DIR" rev-list --count HEAD..@{u} 2>/dev/null || echo '?')"
+        info "Update available: ${behind} new commit(s) on ${upstream_ref}"
+        git -C "$REPO_DIR" log --oneline --no-decorate HEAD..@{u} 2>/dev/null | head -10 | sed 's/^/    /' || true
 
-    local behind
-    behind="$(git -C "$REPO_DIR" rev-list --count HEAD..@{u} 2>/dev/null || echo '?')"
-    info "Update available: ${behind} new commit(s) on ${upstream_ref}"
-    git -C "$REPO_DIR" log --oneline --no-decorate HEAD..@{u} 2>/dev/null | head -10 | sed 's/^/    /' || true
+        if [[ "$check_only" == "true" ]]; then
+            echo ""
+            info "Run 'openmono upgrade' to apply."
+            return 0
+        fi
+        if [[ -n "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]]; then
+            err "Local changes in $REPO_DIR would block a clean update."
+            err "Stash or discard them, then retry:"
+            err "  git -C \"$REPO_DIR\" stash    # or: git -C \"$REPO_DIR\" checkout -- ."
+            return 1
+        fi
 
-    if [[ "$check_only" == "true" ]]; then
-        echo ""
-        info "Run 'openmono upgrade' to apply."
-        return 0
-    fi
-    if [[ -n "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]]; then
-        err "Local changes in $REPO_DIR would block a clean update."
-        err "Stash or discard them, then retry:"
-        err "  git -C \"$REPO_DIR\" stash    # or: git -C \"$REPO_DIR\" checkout -- ."
-        return 1
-    fi
+        info "Pulling latest changes..."
+        if ! git -C "$REPO_DIR" pull --ff-only --quiet; then
+            err "git pull failed. Resolve the issue above and retry."
+            return 1
+        fi
 
-    info "Pulling latest changes..."
-    if ! git -C "$REPO_DIR" pull --ff-only --quiet; then
-        err "git pull failed. Resolve the issue above and retry."
-        return 1
+        chmod +x "$REPO_DIR/openmono" 2>/dev/null || true
+        chmod +x "$REPO_DIR/scripts/"*.sh 2>/dev/null || true
     fi
-
-    chmod +x "$REPO_DIR/openmono" 2>/dev/null || true
-    chmod +x "$REPO_DIR/scripts/"*.sh 2>/dev/null || true
 
     local new_version
     new_version="$(cat "$REPO_DIR/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "$current_version")"
-    ok "Code updated: v${current_version} → v${new_version}"
+    if [[ "$code_changed" == "true" ]]; then
+        ok "Code updated: v${current_version} → v${new_version}"
+    fi
 
     # ── Reconcile components ─────────────────────────────────────────────────
     # Seed/refresh the per-box lock file (self-heals pre-lock-file installs) and
@@ -2450,8 +2456,9 @@ cmd_upgrade() {
         fi
     fi
 
-    # Agent image — rebuilt from the pulled code, then restarted.
-    if command -v docker &>/dev/null; then
+    # Agent image — rebuilt only when code actually changed, then restarted.
+    # (Rebuilding on every upgrade would be needlessly disruptive.)
+    if [[ "$code_changed" == "true" ]] && command -v docker &>/dev/null; then
         _ensure_docker
         info "Rebuilding the agent image from the new code..."
         (cd "$DOCKER_DIR" && docker compose stop agent >/dev/null 2>&1 || true)
@@ -2463,7 +2470,7 @@ cmd_upgrade() {
             err "Retry manually: cd \"$DOCKER_DIR\" && docker compose build agent"
             return 1
         fi
-    else
+    elif [[ "$code_changed" == "true" ]]; then
         warn "docker not found — code is updated but the agent image was not rebuilt."
         warn "Install Docker, then run: cd \"$DOCKER_DIR\" && docker compose build agent"
     fi
