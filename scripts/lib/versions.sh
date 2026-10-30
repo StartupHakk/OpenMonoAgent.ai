@@ -78,35 +78,36 @@ vp_box_status() {
     printf '%s' "${s:-latest}"
 }
 
-# 0 when the component is locked: status "pinned" OR a non-"latest" version
-# string. Locked components are left untouched by `openmono upgrade`.
+# 0 when the component is locked by the user: status is "pinned".
+# A concrete version string alone does NOT lock a component — the reconciler
+# records the installed ref for every auto-refreshed component, keeping
+# status "latest" so it keeps tracking the catalog. Only an explicit user pin
+# (status "pinned") causes `openmono upgrade` to skip the component.
 vp_box_locked() {
-    local comp="$1" v
-    v="$(vp_box_version "$comp")"
-    if [[ -n "$v" && "$v" != "latest" ]]; then
-        return 0
-    fi
-    [[ "$(vp_box_status "$comp")" == "pinned" ]]
+    [[ "$(vp_box_status "$1")" == "pinned" ]]
 }
 
-# Effective frp version to install: locked box value, else catalog default.
+# Effective frp version to install: the user-locked box value (status
+# "pinned"), else the catalog default. An auto-recorded concrete version
+# (status "latest") does NOT override the catalog — it is informational only.
 vp_effective_frp() {
-    local v
-    v="$(vp_box_version frp)"
-    if [[ -n "$v" && "$v" != "latest" ]]; then
-        printf '%s' "$v"
+    if vp_box_locked frp; then
+        printf '%s' "$(vp_box_version frp)"
         return 0
     fi
     vp_catalog_frp
 }
 
-# Effective docker image ref for a catalog key, honoring a box lock.
+# Effective docker image ref for a catalog key, honoring a user lock.
 # $1 = catalog key (llama_cpu|caddy|...), $2 = box component id (for locking).
+# When the component is user-locked (status "pinned"), the box value is the
+# target. Otherwise the catalog pin is the target — an auto-recorded concrete
+# version (status "latest") is informational only and does not override the
+# catalog.
 vp_effective_image() {
-    local key="$1" comp="${2:-$1}" v
-    v="$(vp_box_version "$comp")"
-    if [[ -n "$v" && "$v" != "latest" ]]; then
-        printf '%s' "$v"
+    local key="$1" comp="${2:-$1}"
+    if vp_box_locked "$comp"; then
+        printf '%s' "$(vp_box_version "$comp")"
         return 0
     fi
     vp_catalog_image "$key"
