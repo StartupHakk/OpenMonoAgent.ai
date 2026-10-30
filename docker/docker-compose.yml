@@ -1,5 +1,7 @@
 services:
   llama-server:
+    # Base fallback ref; install.sh generates docker-compose.override.yml with
+    # the pinned image from versions.json (${LLAMA_IMAGE:-...}).
     image: ghcr.io/ggml-org/llama.cpp:server
     container_name: llama-server
     profiles: ["full", "server"]
@@ -54,7 +56,9 @@ services:
   # repoint LLAMA_UPSTREAM at host.docker.internal:7474. No llama-server
   # container is started in that mode.
   caddy:
-    image: caddy:2-alpine
+    # Pinned in versions.json (images.caddy); docker-compose.override.yml may
+    # set CADDY_IMAGE to a different ref.
+    image: ${CADDY_IMAGE:-caddy:2-alpine}
     container_name: openmono-gateway
     profiles: ["full", "server", "search", "scraper"]
     volumes:
@@ -79,7 +83,8 @@ services:
       start_period: 10s
 
   searxng:
-    image: searxng/searxng:latest
+    # Pinned in versions.json (images.searxng); no longer tracks :latest.
+    image: ${SEARXNG_IMAGE:-searxng/searxng:1.6.1}
     container_name: openmono-searxng
     profiles: ["full", "server", "search"]
     volumes:

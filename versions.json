@@ -1,0 +1,11 @@
+{
+  "frp": "0.71.1",
+  "images": {
+    "llama_cpu": "ghcr.io/ggml-org/llama.cpp:server",
+    "llama_cuda": "ghcr.io/ggml-org/llama.cpp:server-cuda",
+    "llama_vulkan": "ghcr.io/ggml-org/llama.cpp:server-vulkan-b9070",
+    "caddy": "caddy:2-alpine",
+    "searxng": "searxng/searxng:1.6.1",
+    "scrapling": "openmono-scrapling:latest"
+  }
+}

@@ -10,9 +10,12 @@ set -euo pipefail
 # Usage: openmono tunnel setup
 # ─────────────────────────────────────────────────────────────────────
 
-FRP_VERSION="${FRP_VERSION:-0.61.0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
+# shellcheck source=lib/versions.sh
+source "$SCRIPT_DIR/lib/versions.sh"
+# Built-in default, used only when the repo catalog is absent.
+FRP_VERSION_DEFAULT="$(vp_catalog_frp)"; FRP_VERSION_DEFAULT="${FRP_VERSION_DEFAULT:-0.71.1}"
 ENV_FILE="$REPO_DIR/docker/.env"
 RELAY_CACHE="$HOME/.openmono/relay.json"
 API_BASE="https://app.openmonoagent.ai"
@@ -36,6 +39,18 @@ INFERENCE_PORT="$(grep '^INFERENCE_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-
 [[ -n "$INFERENCE_PORT" ]] || INFERENCE_PORT="$(grep '^STRATA_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true)"
 [[ -n "$INFERENCE_PORT" ]] || INFERENCE_PORT="$(grep '^LLAMA_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true)"
 INFERENCE_PORT="${SETTINGS_PORT:-${INFERENCE_PORT:-7474}}"
+# frp client version, resolved per the lock-file rule (box lock file wins over
+# the repo catalog; settings.json frp.version is honored as an explicit lock):
+#   box lock file (explicit value)  -> locked version
+#   settings.json frp.version       -> explicit user choice
+#   FRP_VERSION env var             -> override
+#   repo versions.json              -> catalog default
+SETTINGS_FRP_VERSION=""
+if command -v jq &>/dev/null && [[ -f "$SETTINGS" ]]; then
+    SETTINGS_FRP_VERSION="$(jq -r '.frp.version // empty' "$SETTINGS" 2>/dev/null || true)"
+fi
+FRP_VERSION="${FRP_VERSION:-${SETTINGS_FRP_VERSION:-$(vp_effective_frp)}}"
+[[ -n "$FRP_VERSION" ]] || FRP_VERSION="$FRP_VERSION_DEFAULT"
 DIRECT_PORT="$INFERENCE_PORT"
 # Tunnel the gateway (which fronts the inference backend + any web services)
 # whenever it's installed; otherwise fall back to tunneling the backend directly.
@@ -320,6 +335,11 @@ else
     sudo chmod 0755 /usr/local/bin/frpc
     ok "Installed /usr/local/bin/frpc"
 fi
+
+# Record the installed frpc version in the per-box lock file so `openmono
+# upgrade` can compare against it.
+vp_box_ensure
+vp_box_record frp "$FRP_VERSION"
 
 # ── Write frpc.toml ──────────────────────────────────────────────────
 

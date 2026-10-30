@@ -34,12 +34,24 @@ OPENMONO_VERSION="$(cat "$REPO_DIR/VERSION" 2>/dev/null | tr -d '[:space:]' || e
 source "$REPO_DIR/scripts/lib/dotnet.sh"
 dotnet_activate_best || true
 
+# Version-pin resolution (repo versions.json + ~/.openmono/versions.json locks).
+# shellcheck source=scripts/lib/versions.sh
+source "$REPO_DIR/scripts/lib/versions.sh"
+
 # On macOS Apple Silicon, llama-server runs natively via Homebrew (Metal GPU).
 # It is never started/stopped via Docker on this platform.
 _OPENMONO_OS=$(uname -s)
 _OPENMONO_ARCH=$(uname -m)
-NATIVE_INFERENCE=false
-[[ "$_OPENMONO_OS" == "Darwin" && "$_OPENMONO_ARCH" == "arm64" ]] && NATIVE_INFERENCE=true
+# Derived default: true only on Apple Silicon Macs.
+_OPENMONO_NATIVE_DEFAULT=false
+[[ "$_OPENMONO_OS" == "Darwin" && "$_OPENMONO_ARCH" == "arm64" ]] && _OPENMONO_NATIVE_DEFAULT=true
+# NATIVE_INFERENCE: whether llama runs natively (no docker/.env rewrite, frpc
+# managed via Homebrew). OPENMONO_NATIVE overrides for tests.
+NATIVE_INFERENCE="${OPENMONO_NATIVE:-$_OPENMONO_NATIVE_DEFAULT}"
+# _OM_NATIVE_FRP: whether frpc is installed/managed via Homebrew (true on
+# Apple Silicon by default; can be forced true on other platforms so the
+# native frpc path is testable without disabling docker component reconcile).
+_OM_NATIVE_FRP="${OPENMONO_NATIVE_FRP:-$_OPENMONO_NATIVE_DEFAULT}"
 
 # Source macOS native helpers for macOS Apple Silicon
 if [[ "$NATIVE_INFERENCE" == "true" ]]; then
@@ -2080,6 +2092,195 @@ cmd_graphify() {
     bash "$REPO_DIR/scripts/setup-graphify.sh" "${@}"
 }
 
+# ── Upgrade: component reconciliation ──────────────────────────────────────────
+#
+# `openmono upgrade` is a reconciler: for each component that is present on this
+# box, it compares the version actually installed against the *effective* pin
+# (repo versions.json, unless the user locked it in ~/.openmono/versions.json)
+# and updates only what changed. Config and credentials (settings.json,
+# relay.json, frpc.toml, API keys, model files) are never touched.
+
+# Print the frpc version string ("0.71.1"), empty when frpc is absent.
+_om_upgrade_frpc_installed() {
+    local bin="" v
+    if [[ "$_OM_NATIVE_FRP" == "true" ]]; then
+        command -v frpc &>/dev/null && bin="$(command -v frpc)"
+    elif [[ -x /usr/local/bin/frpc ]]; then
+        bin="/usr/local/bin/frpc"
+    elif command -v frpc &>/dev/null; then
+        bin="$(command -v frpc)"
+    fi
+    [[ -n "$bin" ]] || return 0
+    v="$("$bin" --version 2>/dev/null | head -1 || true)"
+    # frpc prints e.g. "0.71.1"; normalize to the bare semver token.
+    printf '%s' "$(echo "$v" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9.]*' | head -1 || true)"
+}
+
+# 0 when an frpc install exists on this box (macOS brew or Linux binary).
+_om_upgrade_has_frpc() {
+    [[ -n "$(_om_upgrade_frpc_installed)" ]]
+}
+
+# Refresh frpc to the effective pinned version, reinstalling + restarting.
+# No-op (returns 1) when there is nothing to install or the version already
+# matches. Returns 0 when it performed an update.
+_om_upgrade_refresh_frpc() {
+    local target current
+    target="$(vp_effective_frp)"
+    [[ -n "$target" ]] || return 1
+    current="$(_om_upgrade_frpc_installed)"
+    if [[ -n "$current" && "$current" == "$target" ]]; then
+        return 1
+    fi
+    info "Updating frpc: ${current:-not installed} → v$target"
+    if [[ "$_OM_NATIVE_FRP" == "true" ]]; then
+        if ! command -v brew &>/dev/null; then
+            warn "Homebrew not found — skipping frpc refresh. Install manually: brew install frpc"
+            return 1
+        fi
+        if ! brew install frpc >/dev/null 2>&1; then
+            warn "frpc refresh via Homebrew failed — run: brew install frpc"
+            return 1
+        fi
+    else
+        local os arch tmp
+        os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        case "$(uname -m)" in
+            aarch64|arm64) arch="arm64" ;;
+            x86_64)        arch="amd64" ;;
+            *) warn "Unsupported arch for frpc refresh: $(uname -m)"; return 1 ;;
+        esac
+        tmp="$(mktemp -d)"
+        if ! curl -fL "https://github.com/fatedier/frp/releases/download/v${target}/frp_${target}_${os}_${arch}.tar.gz" \
+                -o "$tmp/frp.tar.gz" 2>/dev/null; then
+            warn "frpc v$target download failed — keeping existing. Re-run: openmono tunnel setup"
+            rm -rf "$tmp"; return 1
+        fi
+        if ! tar xz -C "$tmp" -f "$tmp/frp.tar.gz" 2>/dev/null; then
+            warn "frpc archive extract failed — keeping existing."
+            rm -rf "$tmp"; return 1
+        fi
+        if [[ ! -f "$tmp/frp_${target}_${os}_${arch}/frpc" ]]; then
+            warn "frpc binary not found in v$target archive — keeping existing."
+            rm -rf "$tmp"; return 1
+        fi
+        if ! sudo cp "$tmp/frp_${target}_${os}_${arch}/frpc" /usr/local/bin/frpc 2>/dev/null \
+            && ! cp "$tmp/frp_${target}_${os}_${arch}/frpc" /usr/local/bin/frpc 2>/dev/null; then
+            warn "Could not install frpc to /usr/local/bin/frpc (needs root). Re-run: openmono tunnel setup"
+            rm -rf "$tmp"; return 1
+        fi
+        sudo chmod 0755 /usr/local/bin/frpc 2>/dev/null || chmod 0755 /usr/local/bin/frpc 2>/dev/null || true
+        rm -rf "$tmp"
+    fi
+    # Restart the service so the new binary takes effect (config untouched).
+    if [[ "$_OM_NATIVE_FRP" == "true" ]]; then
+        if brew services list 2>/dev/null | grep -q "^frpc"; then
+            brew services restart frpc >/dev/null 2>&1 || warn "Restart frpc manually: openmono tunnel restart"
+        fi
+    elif command -v systemctl &>/dev/null && systemctl list-unit-files 2>/dev/null | grep -q '^frpc\.service'; then
+        sudo systemctl restart frpc >/dev/null 2>&1 || warn "Restart frpc manually: openmono tunnel restart"
+    fi
+    vp_box_record frp "$target"
+    return 0
+}
+
+# The llama image flavor for this box: cuda|vulkan|cpu (empty when the box does
+# not run a llama-server container — i.e. Strata or native macOS).
+_om_upgrade_llama_flavor() {
+    local backend
+    backend="$(_inference_backend)"
+    if [[ "$NATIVE_INFERENCE" == "true" || "$backend" == "strata" ]]; then
+        printf ''
+        return 0
+    fi
+    if [[ -n "$(grep '^GPU_MODE=1' "$REPO_DIR/docker/.env" 2>/dev/null)" ]]; then
+        printf 'cuda'
+    elif grep -qE '^(AMD_IGPU_MODE|VULKAN_MODE)=1' "$REPO_DIR/docker/.env" 2>/dev/null; then
+        printf 'vulkan'
+    else
+        printf 'cpu'
+    fi
+}
+
+# Refresh the llama-server image to the effective pin (pull + recreate).
+# Returns 0 when it did something, 1 when nothing was needed.
+_om_upgrade_refresh_llama() {
+    local flavor target current_img
+    flavor="$(_om_upgrade_llama_flavor)"
+    [[ -n "$flavor" ]] || return 1
+    target="$(vp_effective_image "llama_$flavor" llama)"
+    [[ -n "$target" ]] || return 1
+    # The image the container is currently running (empty when stopped/absent).
+    current_img="$(docker ps -a --filter "name=llama-server" --format '{{.Image}}' 2>/dev/null | head -1 || true)"
+    if [[ -n "$current_img" && "$current_img" == "$target" ]]; then
+        return 1
+    fi
+    info "Updating llama-server image: ${current_img:-not installed} → $target"
+    if ! (cd "$DOCKER_DIR" && docker pull "$target" >/dev/null 2>&1); then
+        warn "Pull of $target failed — llama-server image left as-is."
+        return 1
+    fi
+    # Point the override at the new image, then recreate so it applies.
+    _om_upgrade_set_llama_image_env "$target"
+    if (cd "$DOCKER_DIR" && docker compose ps --services 2>/dev/null | grep -q '^llama-server$'); then
+        (cd "$DOCKER_DIR" && docker compose up -d --force-recreate llama-server >/dev/null 2>&1) \
+            || warn "llama-server recreate failed — run: openmono start"
+    fi
+    vp_box_record llama "$target"
+    return 0
+}
+
+# Write LLAMA_IMAGE into docker/.env so the override's ${LLAMA_IMAGE:-...}
+# resolves to the pinned ref (the override is generated at install with a
+# baked-in default; this overrides it without regenerating the file).
+_om_upgrade_set_llama_image_env() {
+    local img="$1"
+    local envf="$REPO_DIR/docker/.env"
+    mkdir -p "$(dirname "$envf")"; touch "$envf"
+    local tmp="$envf.tmp"
+    grep -v '^LLAMA_IMAGE=' "$envf" > "$tmp" 2>/dev/null || true
+    printf 'LLAMA_IMAGE=%s\n' "$img" >> "$tmp"
+    mv "$tmp" "$envf"; chmod 0600 "$envf" 2>/dev/null || true
+}
+
+# Refresh a pinned docker image for a service if it is installed and the pin
+# changed. $1 = service name, $2 = catalog key, $3 = box component id.
+_om_upgrade_refresh_image_service() {
+    local service="$1" key="$2" comp="$3" target current_img
+    target="$(vp_effective_image "$key" "$comp")"
+    [[ -n "$target" ]] || return 1
+    current_img="$(docker ps -a --filter "name=${service}" --format '{{.Image}}' 2>/dev/null | head -1 || true)"
+    if [[ -n "$current_img" && "$current_img" == "$target" ]]; then
+        return 1
+    fi
+    info "Updating ${service} image: ${current_img:-not installed} → $target"
+    (cd "$DOCKER_DIR" && docker pull "$target" >/dev/null 2>&1) \
+        && (cd "$DOCKER_DIR" && docker compose up -d --force-recreate "$service" >/dev/null 2>&1) \
+        || warn "${service} refresh incomplete — run: openmono start"
+    vp_box_record "$comp" "$target"
+    return 0
+}
+
+# Refresh the Caddy gateway image if it is installed and the pin changed.
+_om_upgrade_refresh_caddy() {
+    _om_upgrade_refresh_image_service "openmono-gateway" caddy caddy
+}
+
+# Refresh SearXNG if the search service is installed and the pin changed.
+_om_upgrade_refresh_searxng() {
+    (cd "$DOCKER_DIR" && docker compose ps --services 2>/dev/null | grep -q '^searxng$') || return 1
+    _om_upgrade_refresh_image_service "openmono-searxng" searxng searxng
+}
+
+# Restart the agent container after its image is rebuilt.
+_om_upgrade_restart_agent() {
+    (cd "$DOCKER_DIR" && docker compose ps --services 2>/dev/null | grep -q '^agent$') || return 0
+    info "Restarting the agent container with the rebuilt image..."
+    (cd "$DOCKER_DIR" && docker compose up -d --force-recreate agent >/dev/null 2>&1) \
+        || warn "Agent container restart failed — start it with: openmono agent"
+    return 0
+}
+
 cmd_upgrade() {
     local check_only=false
     case "${1:-}" in
@@ -2088,12 +2289,22 @@ cmd_upgrade() {
         --help|-h)
             echo "Usage: openmono upgrade [--check]"
             echo ""
-            echo "Updates OpenMono.ai to the latest version:"
+            echo "Updates OpenMono.ai and every component installed on this box:"
             echo "  1. Fast-forwards the checkout in $REPO_DIR to the latest commit"
-            echo "  2. Rebuilds the .NET agent Docker image (llama-server is left untouched)"
-            echo "  3. Re-applies the unified inference config (model, ctx, slots,"
+            echo "  2. Rebuilds + restarts the .NET agent Docker image"
+            echo "  3. Refreshes the pinned components present on this box (frpc,"
+            echo "     llama-server / Bonsai image, Caddy gateway, Strata) to the"
+            echo "     versions in versions.json — only what actually changed"
+            echo "  4. Re-applies the unified inference config (model, ctx, slots,"
             echo "     vision, backend) from settings.json so a model swap or ctx"
             echo "     change survives the pull + image rebuild"
+            echo ""
+            echo "Per-component locks: set a component's version to an explicit value in"
+            echo "$HOME/.openmono/versions.json and upgrade will leave it alone."
+            echo "'latest' (default) tracks the repo's versions.json."
+            echo ""
+            echo "Never touched: settings.json model choices, relay.json, frpc.toml,"
+            echo "API keys, model files."
             echo ""
             echo "  --check   Report whether an update is available without applying it"
             echo ""
@@ -2170,41 +2381,137 @@ cmd_upgrade() {
     new_version="$(cat "$REPO_DIR/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "$current_version")"
     ok "Code updated: v${current_version} → v${new_version}"
 
-    if ! command -v docker &>/dev/null; then
+    # ── Reconcile components ─────────────────────────────────────────────────
+    # Seed/refresh the per-box lock file (self-heals pre-lock-file installs) and
+    # then update only the components that are present and have changed.
+    vp_box_ensure
+    local role
+    role="$(vp_box_role)"
+
+    local _r_updated=() _r_current=() _r_locked=() _r_skipped=()
+    local comp
+
+    # A component the user has pinned is only reported when it is actually
+    # present on the box — pinning a component that isn't installed should not
+    # produce a line in the report.
+    _om_upgrade_present() {
+        case "$1" in
+            frp)      [[ "$role" != "agent" ]] && _om_upgrade_has_frpc ;;
+            llama)    [[ "$role" != "agent" && "$NATIVE_INFERENCE" != "true" ]] \
+                          && docker ps -a --filter "name=llama-server" --format '{{.Image}}' 2>/dev/null | grep -q . ;;
+            strata)   [[ "$role" != "agent" && "$(_inference_backend 2>/dev/null)" == "strata" ]] ;;
+            agent)    command -v docker &>/dev/null \
+                          && docker ps -a --filter "name=openmono-agent" --format '{{.Image}}' 2>/dev/null | grep -q . ;;
+            caddy)    [[ "$role" != "agent" && "$NATIVE_INFERENCE" != "true" ]] \
+                          && docker ps -a --filter "name=openmono-gateway" --format '{{.Image}}' 2>/dev/null | grep -q . ;;
+            searxng)  [[ "$role" != "agent" && "$NATIVE_INFERENCE" != "true" ]] \
+                          && docker ps -a --filter "name=openmono-searxng" --format '{{.Image}}' 2>/dev/null | grep -q . ;;
+            scrapling) [[ "$role" != "agent" && "$NATIVE_INFERENCE" != "true" ]] \
+                          && docker ps -a --filter "name=openmono-scrapling" --format '{{.Image}}' 2>/dev/null | grep -q . ;;
+            *) return 1 ;;
+        esac
+    }
+
+    for comp in frp llama strata agent caddy searxng scrapling; do
+        if vp_box_locked "$comp" && _om_upgrade_present "$comp"; then
+            _r_locked+=("$comp")
+        fi
+    done
+
+    # frpc — present on any box with a tunnel (macOS brew or Linux binary).
+    if [[ "$role" != "agent" ]] && _om_upgrade_has_frpc; then
+        if _om_upgrade_refresh_frpc; then
+            _r_updated+=("frpc")
+        else
+            _r_current+=("frpc")
+        fi
+    fi
+
+    # llama-server image — inference boxes running a llama.cpp container.
+    if [[ "$role" != "agent" && "$NATIVE_INFERENCE" != "true" ]]; then
+        if _om_upgrade_refresh_llama; then
+            _r_updated+=("llama-server")
+        else
+            _r_current+=("llama-server")
+        fi
+    fi
+
+    # Caddy gateway + SearXNG — present when those services exist.
+    if [[ "$role" != "agent" && "$NATIVE_INFERENCE" != "true" ]]; then
+        if _om_upgrade_refresh_caddy; then
+            _r_updated+=("caddy")
+        else
+            _r_current+=("caddy")
+        fi
+        if _om_upgrade_refresh_searxng; then
+            _r_updated+=("searxng")
+        else
+            _r_current+=("searxng")
+        fi
+    fi
+
+    # Agent image — rebuilt from the pulled code, then restarted.
+    if command -v docker &>/dev/null; then
+        _ensure_docker
+        info "Rebuilding the agent image from the new code..."
+        (cd "$DOCKER_DIR" && docker compose stop agent >/dev/null 2>&1 || true)
+        if (cd "$DOCKER_DIR" && docker compose build agent); then
+            _om_upgrade_restart_agent
+            _r_updated+=("agent")
+        else
+            err "Agent image build failed — code is updated but the image is stale."
+            err "Retry manually: cd \"$DOCKER_DIR\" && docker compose build agent"
+            return 1
+        fi
+    else
         warn "docker not found — code is updated but the agent image was not rebuilt."
         warn "Install Docker, then run: cd \"$DOCKER_DIR\" && docker compose build agent"
-        return 0
-    fi
-    _ensure_docker
-
-    info "Rebuilding the agent image (llama-server is left untouched)..."
-    (cd "$DOCKER_DIR" && docker compose stop agent >/dev/null 2>&1 || true)
-    if (cd "$DOCKER_DIR" && docker compose build agent); then
-        ok "Agent image rebuilt."
-    else
-        err "Agent image build failed — code is updated but the image is stale."
-        err "Retry manually: cd \"$DOCKER_DIR\" && docker compose build agent"
-        return 1
     fi
 
-    # Re-apply the unified inference config. The pull may have changed how
-    # settings.json is read, or a fresh install may have migrated model config
-    # into settings.json; either way, push the single source of truth (model,
-    # ctx, slots, vision, backend) back into the applied state so the server
-    # picks up a model swap or ctx change without a re-install.
-    if _has_local_inference; then
-        info "Re-applying inference config from settings.json..."
-        if _inference_settings_drift; then
-            info "Config drifted since last apply — syncing to docker/.env and the override."
-            _apply_inference_settings
-            ok "Inference config re-applied."
+    # Strata — host-native backend, refreshed via strata.sh update.
+    if [[ "$role" != "agent" ]] && [[ "$(_inference_backend 2>/dev/null)" == "strata" ]]; then
+        if bash "$REPO_DIR/scripts/strata.sh" update >/dev/null 2>&1; then
+            _r_updated+=("strata")
         else
-            ok "Inference config already in sync."
+            _r_skipped+=("strata")
+        fi
+    fi
+
+    # ── Re-apply the unified inference config (branch-aware) ─────────────────
+    # Native macOS reads settings.json directly — no docker/.env rewrite.
+    if [[ "$role" != "agent" ]] && _has_local_inference; then
+        if [[ "$NATIVE_INFERENCE" == "true" ]]; then
+            ok "Native macOS inference — settings.json is read directly; nothing to re-apply."
+        else
+            info "Re-applying inference config from settings.json..."
+            if _inference_settings_drift; then
+                info "Config drifted since last apply — syncing to docker/.env and the override."
+                _apply_inference_settings
+                ok "Inference config re-applied."
+            else
+                ok "Inference config already in sync."
+            fi
         fi
     else
         warn "No local inference backend detected — skipping config re-application."
     fi
 
+    # ── Report ───────────────────────────────────────────────────────────────
+    echo ""
+    echo "  Component report:"
+    local item
+    for item in "${_r_updated[@]}"; do
+        printf "    %-14s updated\n" "$item"
+    done
+    for item in "${_r_current[@]}"; do
+        printf "    %-14s up to date\n" "$item"
+    done
+    for item in "${_r_locked[@]}"; do
+        printf "    %-14s locked (skipped — see ~/.openmono/versions.json)\n" "$item"
+    done
+    for item in "${_r_skipped[@]}"; do
+        printf "    %-14s skipped (run manually)\n" "$item"
+    done
     echo ""
     ok "Upgrade complete — now on v${new_version}."
     echo "  Run the agent: openmono agent"
@@ -2267,6 +2574,7 @@ cmd_config() {
         echo "  openmono config set inference.vision_enabled true   # allow image input"
         echo "  openmono config set inference.port 7474             # local inference port"
         echo "  openmono config set inference.parallel_slots 2      # concurrent slots"
+        echo "  openmono config set frp.version 0.71.1              # frp client version (tunnel setup)"
         echo "  openmono config get llm.endpoint"
         echo "  openmono config set host.sudo_policy allow"
         echo "  openmono config set host.exec_default ask"
@@ -2321,6 +2629,16 @@ cmd_config() {
                     return 0
                 fi
                 err "host.timeout_ms must be a whole number of milliseconds (got: $value)"
+                return 1
+                ;;
+            frp.version)
+                # frp release tags look like 0.71.1 (or 0.71.1-rc.1) — keep as
+                # a string so tunnel setup can use it in the GitHub download URL.
+                if [[ "$value" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+                    printf '"%s"' "$value"
+                    return 0
+                fi
+                err "frp.version must look like a version number, e.g. 0.71.1 (got: $value)"
                 return 1
                 ;;
             host.exec_default|host.sudo_policy)

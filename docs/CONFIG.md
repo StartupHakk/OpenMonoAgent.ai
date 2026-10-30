@@ -41,6 +41,11 @@ Commands are grouped by which box they run on.
 | `openmono tunnel status` | Show tunnel state and configured target |
 | `openmono tunnel logs` | Tail frpc logs (`journalctl -u frpc`) |
 
+The frp client version used by `openmono tunnel setup` is configurable in
+settings.json at `frp.version` (e.g. `openmono config set frp.version 0.71.1`).
+It defaults to `0.71.1` when unset, and the `FRP_VERSION` environment variable
+overrides it for a single run.
+
 ### Global flags
 
 | Flag | Description |
@@ -182,6 +187,9 @@ These always write to `~/.openmono/settings.json`. Project-level `.openmono/sett
     "gateway": "http://localhost:47480",
     "search": true,
     "scrape": true
+  },
+  "frp": {
+    "version": "0.71.1"
   },
   "auto_detect_code_graph": true
 }
