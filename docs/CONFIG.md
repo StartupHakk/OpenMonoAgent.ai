@@ -46,6 +46,89 @@ settings.json at `frp.version` (e.g. `openmono config set frp.version 0.71.1`).
 It defaults to `0.71.1` when unset, and the `FRP_VERSION` environment variable
 overrides it for a single run.
 
+### Upgrade & component versioning
+
+| Command | Description |
+|---------|-------------|
+| `openmono upgrade` | Reconcile all installable components to their pinned versions |
+
+`openmono upgrade` is a **component-aware reconciler**. It checks the repo
+code for updates, then ensures every installable component on the box matches
+its pinned version. It only updates components that are actually installed;
+it never touches user state (settings.json, relay.json, frpc.toml, API keys,
+model GGUF files).
+
+**Pinned components:**
+
+| Component | Pinned in | What it controls |
+|-----------|-----------|------------------|
+| frp | `versions.json` → `frp` | frpc tunnel client version |
+| llama | `versions.json` → `llama_*` / `prism_*` | llama.cpp server image (cuda/vulkan/cpu) or Prism fork (Bonsai) |
+| strata | `versions.json` → `strata` | Strata inference backend image |
+| agent | `versions.json` → `agent` | Agent Docker image (rebuilt only when code changes) |
+| caddy | `versions.json` → `caddy` | Caddy gateway image |
+| searxng | `versions.json` → `searxng` | SearXNG private search image |
+| scrapling | `versions.json` → `scrapling` | Scrapling anti-bot scraper image |
+
+**Per-box version lock (`~/.openmono/versions.json`):**
+
+Each box maintains a lock file at `~/.openmono/versions.json`. Every component
+has an entry of the form `{ "version": <string>, "status": <string> }`:
+
+- `"version"` — the concrete ref actually installed on this box (e.g.
+  `"searxng/searxng:1.6.1"` or `"latest"`).
+- `"status"` — either `"latest"` or `"pinned"`:
+  - `"latest"`: the component tracks the repo catalog pin. On each `openmono
+    upgrade`, the reconciler refreshes it to whatever `versions.json` says.
+    This is the default for all components after a fresh install.
+  - `"pinned"`: the user has explicitly locked this component to a specific
+    value. `openmono upgrade` **skips** it (reports it as "locked (skipped)").
+    To unlock, set the status back to `"latest"` or change the version to
+    `"latest"`.
+
+To pin a component, edit `~/.openmono/versions.json` directly:
+
+```bash
+# Pin searxng to a specific version (upgrade will skip it):
+jq '.searxng = { version: "searxng/searxng:1.5.0", status: "pinned" }' \
+   ~/.openmono/versions.json > /tmp/vj && mv /tmp/vj ~/.openmono/versions.json
+
+# Un-pin (resume tracking the catalog):
+jq '.searxng = { version: "latest", status: "latest" }' \
+   ~/.openmono/versions.json > /tmp/vj && mv /tmp/vj ~/.openmono/versions.json
+```
+
+The box file is **auto-created** on both `openmono setup` and `openmono
+upgrade` (self-healing: if the file is missing or malformed, it is re-seeded
+without clobbering any user-pinned values).
+
+**Prism (Bonsai) detection:**
+
+A box running the Bonsai (Prism) backend is detected by the `MODEL_NAME` in
+`docker/.env` matching `*Ternary-Bonsai*`. The reconciler pins these boxes to
+the `prism_cuda` / `prism_vulkan` catalog keys (not the stock `llama_*` keys)
+and **never** replaces a live Prism image with a stock llama.cpp image — the
+stock image rejects the ternary packings and the `--no-mmap` flag that the
+override passes, which would crash-loop the box.
+
+**What `openmono upgrade` does (in order):**
+
+1. Pulls the latest code from the current branch (skipped if already current,
+   but the reconciler still runs).
+2. Seeds the box lock file if missing.
+3. Reports which components are user-locked (skipped).
+4. Refreshes frpc to the pinned version (Homebrew on macOS, binary download on
+   Linux).
+5. Refreshes the llama-server image to the pinned ref (pulls + force-recreates
+   the container).
+6. Refreshes caddy and searxng images (if installed).
+7. Re-applies inference config from settings.json to `docker/.env` (if drifted).
+8. Prints a component report: `updated`, `up to date`, `locked (skipped)`,
+   or `skipped (run manually)`.
+
+The agent Docker image is **rebuilt only when code has actually changed**; if
+the code is already at the upstream pin, no rebuild occurs.
+
 ### Global flags
 
 | Flag | Description |
