@@ -2184,13 +2184,29 @@ _om_upgrade_refresh_frpc() {
     return 0
 }
 
-# The llama image flavor for this box: cuda|vulkan|cpu (empty when the box does
-# not run a llama-server container — i.e. Strata or native macOS).
+# The llama image flavor for this box: cuda|vulkan|cpu|prism (empty when the
+# box does not run a llama-server container — i.e. Strata or native macOS).
+# "prism" is the Bonsai backend, detected from the MODEL_NAME in docker/.env
+# (the stock llama.cpp images reject the Bonsai ternary packings, so a Bonsai
+# box MUST keep its Prism image — the reconciler must never downgrade it).
 _om_upgrade_llama_flavor() {
-    local backend
+    local backend model_name
     backend="$(_inference_backend)"
     if [[ "$NATIVE_INFERENCE" == "true" || "$backend" == "strata" ]]; then
         printf ''
+        return 0
+    fi
+    model_name="$(_env_get MODEL_NAME)"
+    if [[ "$model_name" == *Ternary-Bonsai* ]]; then
+        # Bonsai (Prism) box: the image is the Prism fork, never stock. Pick the
+        # backend from the .env GPU flag, falling back to the image baked into
+        # the override (install.sh sets it per-backend).
+        if grep -qE '^(AMD_IGPU_MODE|VULKAN_MODE)=1' "$REPO_DIR/docker/.env" 2>/dev/null \
+            || grep -q 'prism-llama.cpp_vulkan' "$REPO_DIR/docker/docker-compose.override.yml" 2>/dev/null; then
+            printf 'prism_vulkan'
+        else
+            printf 'prism_cuda'
+        fi
         return 0
     fi
     if [[ -n "$(grep '^GPU_MODE=1' "$REPO_DIR/docker/.env" 2>/dev/null)" ]]; then
@@ -2202,17 +2218,41 @@ _om_upgrade_llama_flavor() {
     fi
 }
 
+# The catalog key for a llama flavor. Stock flavors share the "llama_" prefix;
+# Prism (Bonsai) flavors are catalogued under their own "prism_" keys so the
+# reconciler can pin the Prism fork distinctly from the stock llama.cpp image.
+_om_upgrade_llama_catalog_key() {
+    local flavor="$1"
+    case "$flavor" in
+        prism_cuda|prism_vulkan) printf '%s' "$flavor" ;;
+        *)                       printf 'llama_%s' "$flavor" ;;
+    esac
+}
+
 # Refresh the llama-server image to the effective pin (pull + recreate).
 # Returns 0 when it did something, 1 when nothing was needed.
 _om_upgrade_refresh_llama() {
-    local flavor target current_img
+    local flavor target key current_img
     flavor="$(_om_upgrade_llama_flavor)"
     [[ -n "$flavor" ]] || return 1
-    target="$(vp_effective_image "llama_$flavor" llama)"
+    key="$(_om_upgrade_llama_catalog_key "$flavor")"
+    target="$(vp_effective_image "$key" llama)"
     [[ -n "$target" ]] || return 1
     # The image the container is currently running (empty when stopped/absent).
     current_img="$(docker ps -a --filter "name=llama-server" --format '{{.Image}}' 2>/dev/null | head -1 || true)"
     if [[ -n "$current_img" && "$current_img" == "$target" ]]; then
+        # Already at the target — but record the concrete pin in the box file so
+        # a freshly-seeded box (no prior lock) is not left at "latest" and
+        # exposed to a future flavor mis-detection.
+        vp_box_record llama "$target"
+        return 1
+    fi
+    # Guard: never downgrade a live Prism (Bonsai) server to a stock llama.cpp
+    # image — the stock image rejects the ternary packings and the box would
+    # break. This only fires if the flavor/lock state ever disagrees with what
+    # is actually running.
+    if [[ -n "$current_img" && "$current_img" == *prism-llama.cpp* && "$target" != *prism-llama.cpp* ]]; then
+        warn "llama-server runs the Prism image ($current_img); not replacing it with $target."
         return 1
     fi
     info "Updating llama-server image: ${current_img:-not installed} → $target"
