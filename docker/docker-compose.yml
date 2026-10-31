@@ -84,7 +84,7 @@ services:
 
   searxng:
     # Pinned in versions.json (images.searxng); no longer tracks :latest.
-    image: ${SEARXNG_IMAGE:-searxng/searxng:1.6.1}
+    image: ${SEARXNG_IMAGE:-searxng/searxng:2026.10.30-ffa88e3ba}
     container_name: openmono-searxng
     profiles: ["full", "server", "search"]
     volumes:

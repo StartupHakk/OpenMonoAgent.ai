@@ -76,7 +76,7 @@ Each box maintains a lock file at `~/.openmono/versions.json`. Every component
 has an entry of the form `{ "version": <string>, "status": <string> }`:
 
 - `"version"` — the concrete ref actually installed on this box (e.g.
-  `"searxng/searxng:1.6.1"` or `"latest"`).
+  `"searxng/searxng:2026.10.30-ffa88e3ba"` or `"latest"`).
 - `"status"` — either `"latest"` or `"pinned"`:
   - `"latest"`: the component tracks the repo catalog pin. On each `openmono
     upgrade`, the reconciler refreshes it to whatever `versions.json` says.
@@ -90,7 +90,7 @@ To pin a component, edit `~/.openmono/versions.json` directly:
 
 ```bash
 # Pin searxng to a specific version (upgrade will skip it):
-jq '.searxng = { version: "searxng/searxng:1.5.0", status: "pinned" }' \
+jq '.searxng = { version: "searxng/searxng:2025.11.6-7af922c9d", status: "pinned" }' \
    ~/.openmono/versions.json > /tmp/vj && mv /tmp/vj ~/.openmono/versions.json
 
 # Un-pin (resume tracking the catalog):

@@ -7,7 +7,7 @@
     "prism_cuda": "startuphakk/prism-llama.cpp_cuda:latest",
     "prism_vulkan": "startuphakk/prism-llama.cpp_vulkan:latest",
     "caddy": "caddy:2-alpine",
-    "searxng": "searxng/searxng:1.6.1",
+    "searxng": "searxng/searxng:2026.10.30-ffa88e3ba",
     "scrapling": "openmono-scrapling:latest"
   }
 }
