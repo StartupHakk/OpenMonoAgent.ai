@@ -2121,6 +2121,61 @@ _om_upgrade_has_frpc() {
     [[ -n "$(_om_upgrade_frpc_installed)" ]]
 }
 
+# The ACTUAL ref currently installed for a component, probed from the real
+# system (OS-aware). This is the ground truth the box file is written with
+# (write-after-install) and re-probed against on upgrade (self-heal). Returns
+# empty when the component is not present.
+_om_upgrade_installed_ref() {
+    local comp="$1"
+    case "$comp" in
+        frp)
+            _om_upgrade_frpc_installed
+            ;;
+        llama)
+            # Docker path: the image the llama-server container is actually
+            # running (or has). Native macOS: the Prism checkout's git ref.
+            if [[ "$NATIVE_INFERENCE" == "true" ]]; then
+                local src="${HOME}/.openmono/prism-llama.cpp"
+                if [[ -d "$src/.git" ]]; then
+                    git -C "$src" describe --tags 2>/dev/null || \
+                        git -C "$src" rev-parse HEAD 2>/dev/null || true
+                else
+                    prism_git_ref 2>/dev/null || true
+                fi
+            else
+                docker ps -a --filter "name=llama-server" --format '{{.Image}}' 2>/dev/null | head -1 || true
+            fi
+            ;;
+        caddy)
+            docker ps -a --filter "name=openmono-gateway" --format '{{.Image}}' 2>/dev/null | head -1 \
+                || _om_upgrade_env_image CADDY_IMAGE
+            ;;
+        searxng)
+            docker ps -a --filter "name=openmono-searxng" --format '{{.Image}}' 2>/dev/null | head -1 \
+                || _om_upgrade_env_image SEARXNG_IMAGE
+            ;;
+        scrapling)
+            docker ps -a --filter "name=openmono-scrapling" --format '{{.Image}}' 2>/dev/null | head -1 \
+                || _om_upgrade_env_image SCRAPLING_IMAGE
+            ;;
+        strata)
+            command -v strata &>/dev/null && strata --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9.]*' | head -1 || true
+            ;;
+        agent)
+            docker image inspect openmono-agent:latest --format '{{.Id}}' 2>/dev/null | head -1 | cut -c1-19 || true
+            ;;
+        *)
+            ;;
+    esac
+}
+
+# Fallback for the image-based probes: read the *_IMAGE pin from docker/.env
+# (the value install.sh wrote when the container is not running).
+_om_upgrade_env_image() {
+    local var="$1"
+    grep -E "^${var}=" "$REPO_DIR/docker/.env" 2>/dev/null | head -1 | cut -d= -f2- || true
+}
+
 # Refresh frpc to the effective pinned version, reinstalling + restarting.
 # No-op (returns 1) when there is nothing to install or the version already
 # matches. Returns 0 when it performed an update.
@@ -2180,12 +2235,9 @@ _om_upgrade_refresh_frpc() {
     elif command -v systemctl &>/dev/null && systemctl list-unit-files 2>/dev/null | grep -q '^frpc\.service'; then
         sudo systemctl restart frpc >/dev/null 2>&1 || warn "Restart frpc manually: openmono tunnel restart"
     fi
-    # frpc tracks the catalog pin unless the user locked a different one.
-    if [[ -n "$(vp_box_version frp)" && "$(vp_box_version frp)" != "$target" ]]; then
-        vp_box_record frp "$target"
-    else
-        vp_box_record_latest frp "$target"
-    fi
+    # Record what actually landed. vp_box_record_installed preserves the user's
+    # status (a pin stays a pin; a latest stays tracking the catalog).
+    vp_box_record_installed frp "$target"
     return 0
 }
 
@@ -2237,28 +2289,19 @@ _om_upgrade_llama_catalog_key() {
 # Refresh the llama-server image to the effective pin (pull + recreate).
 # Returns 0 when it did something, 1 when nothing was needed.
 _om_upgrade_refresh_llama() {
-    local flavor target key current_img catalog_box
+    local flavor target key current_img
     flavor="$(_om_upgrade_llama_flavor)"
     [[ -n "$flavor" ]] || return 1
     key="$(_om_upgrade_llama_catalog_key "$flavor")"
     target="$(vp_effective_image "$key" llama)"
     [[ -n "$target" ]] || return 1
-    # What the user locked llama to (if anything). When it matches the catalog
-    # pin, the target came from the catalog (not a user pin), so recording it
-    # must keep status "latest" — otherwise every auto-refresh would lock the
-    # component forever and it would stop tracking the catalog.
-    catalog_box="$(vp_box_version llama)"
     # The image the container is currently running (empty when stopped/absent).
     current_img="$(docker ps -a --filter "name=llama-server" --format '{{.Image}}' 2>/dev/null | head -1 || true)"
     if [[ -n "$current_img" && "$current_img" == "$target" ]]; then
-        # Already at the target — but record the concrete pin in the box file so
-        # a freshly-seeded box (no prior lock) is not left at "latest" and
-        # exposed to a future flavor mis-detection.
-        if [[ -n "$catalog_box" && "$catalog_box" != "$target" ]]; then
-            vp_box_record llama "$target"      # user pinned a (different) value
-        else
-            vp_box_record_latest llama "$target"  # catalog pin → keep tracking
-        fi
+        # Already at the target — but record the concrete pin so a fresh box is
+        # not left un-recorded and exposed to a future flavor mis-detection.
+        # vp_box_record_installed preserves the user's status.
+        vp_box_record_installed llama "$target"
         return 1
     fi
     # Guard: never downgrade a live Prism (Bonsai) server to a stock llama.cpp
@@ -2280,11 +2323,8 @@ _om_upgrade_refresh_llama() {
         (cd "$DOCKER_DIR" && docker compose up -d --force-recreate llama-server >/dev/null 2>&1) \
             || warn "llama-server recreate failed — run: openmono start"
     fi
-    if [[ -n "$catalog_box" && "$catalog_box" != "$target" ]]; then
-        vp_box_record llama "$target"          # user pinned a (different) value
-    else
-        vp_box_record_latest llama "$target"   # catalog pin → keep tracking
-    fi
+    # Record what actually landed; status (pin vs latest) is preserved.
+    vp_box_record_installed llama "$target"
     return 0
 }
 
@@ -2304,14 +2344,9 @@ _om_upgrade_set_llama_image_env() {
 # Refresh a pinned docker image for a service if it is installed and the pin
 # changed. $1 = service name, $2 = catalog key, $3 = box component id.
 _om_upgrade_refresh_image_service() {
-    local service="$1" key="$2" comp="$3" target current_img box_val
+    local service="$1" key="$2" comp="$3" target current_img
     target="$(vp_effective_image "$key" "$comp")"
     [[ -n "$target" ]] || return 1
-    # The user-locked value for this component (if any). When it differs from
-    # the catalog pin the target came from the user, so record it "pinned";
-    # otherwise it is the catalog pin and we keep status "latest" so the
-    # component keeps tracking the catalog on future upgrades.
-    box_val="$(vp_box_version "$comp")"
     current_img="$(docker ps -a --filter "name=${service}" --format '{{.Image}}' 2>/dev/null | head -1 || true)"
     if [[ -n "$current_img" && "$current_img" == "$target" ]]; then
         return 1
@@ -2320,11 +2355,8 @@ _om_upgrade_refresh_image_service() {
     (cd "$DOCKER_DIR" && docker pull "$target" >/dev/null 2>&1) \
         && (cd "$DOCKER_DIR" && docker compose up -d --force-recreate "$service" >/dev/null 2>&1) \
         || warn "${service} refresh incomplete — run: openmono start"
-    if [[ -n "$box_val" && "$box_val" != "$target" ]]; then
-        vp_box_record "$comp" "$target"
-    else
-        vp_box_record_latest "$comp" "$target"
-    fi
+    # Record what actually landed; status (pin vs latest) is preserved.
+    vp_box_record_installed "$comp" "$target"
     return 0
 }
 
@@ -2554,6 +2586,25 @@ cmd_upgrade() {
             _r_skipped+=("strata")
         fi
     fi
+
+    # ── Reconcile the box file to reality (write-after-install) ───────────────
+    # The box file must always show what is ACTUALLY installed on this box, on
+    # any OS. After the refresh pass, re-probe every present component and write
+    # its real concrete ref (preserving status). A component that is no longer
+    # present and was never user-declared is dropped, so the file is a faithful
+    # "what's installed / what's wanted" manifest — never a stale "latest" seed.
+    for comp in $VP_COMPONENTS; do
+        if _om_upgrade_present "$comp"; then
+            local _ref
+            _ref="$(_om_upgrade_installed_ref "$comp")"
+            if [[ -n "$_ref" ]]; then
+                vp_box_record_installed "$comp" "$_ref"
+            fi
+        elif ! vp_box_locked "$comp"; then
+            # Absent and not user-pinned → drop the key (self-heal both ways).
+            vp_box_remove "$comp"
+        fi
+    done
 
     # ── Re-apply the unified inference config (branch-aware) ─────────────────
     # Native macOS reads settings.json directly — no docker/.env rewrite.

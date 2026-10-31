@@ -1513,3 +1513,56 @@ ENVEOF
 else
     warn "OPENMONO_ENV_FILE not set (openmono cmd_setup should have set this)"
 fi
+
+# ── Write-after-install: record the ACTUAL installed refs ─────────────────────
+# The per-box manifest must always show what is really on this machine (on any
+# OS), not a placeholder. After the install brings components up, probe each one
+# that is present and write its concrete ref (preserving any user pin status).
+# Components that are absent are left out of the file.
+if command -v vp_box_record_installed &>/dev/null && command -v vp_box_ensure &>/dev/null; then
+    vp_box_ensure
+    for _comp in frp llama caddy searxng scrapling strata agent; do
+        case "$_comp" in
+            frp)      _om_present=false; command -v frpc &>/dev/null && _om_present=true ;;
+            llama)    _om_present=false
+                      if [ "${OPENMONO_INFERENCE_BACKEND:-}" != "strata" ]; then
+                          command -v docker &>/dev/null \
+                              && docker ps -a --filter "name=llama-server" --format '{{.Image}}' 2>/dev/null | grep -q . \
+                              && _om_present=true
+                      fi ;;
+            caddy)    _om_present=false; command -v docker &>/dev/null \
+                      && docker ps -a --filter "name=openmono-gateway" --format '{{.Image}}' 2>/dev/null | grep -q . \
+                      && _om_present=true ;;
+            searxng)  _om_present=false; command -v docker &>/dev/null \
+                      && docker ps -a --filter "name=openmono-searxng" --format '{{.Image}}' 2>/dev/null | grep -q . \
+                      && _om_present=true ;;
+            scrapling) _om_present=false; command -v docker &>/dev/null \
+                      && docker ps -a --filter "name=openmono-scrapling" --format '{{.Image}}' 2>/dev/null | grep -q . \
+                      && _om_present=true ;;
+            strata)   _om_present=false; command -v strata &>/dev/null && _om_present=true ;;
+            agent)    _om_present=false; command -v docker &>/dev/null \
+                      && docker ps -a --filter "name=openmono-agent" --format '{{.Image}}' 2>/dev/null | grep -q . \
+                      && _om_present=true ;;
+        esac
+        if [ "$_om_present" = true ]; then
+            _om_ref=""
+            case "$_comp" in
+                frp)      _om_ref="$(frpc --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9.]*' | head -1 || true)" ;;
+                llama)    if [ "${NATIVE_INFERENCE:-}" = "true" ] && [ -d "$HOME/.openmono/prism-llama.cpp/.git" ]; then
+                              _om_ref="$(git -C "$HOME/.openmono/prism-llama.cpp" describe --tags 2>/dev/null || git -C "$HOME/.openmono/prism-llama.cpp" rev-parse HEAD 2>/dev/null || true)"
+                          else
+                              _om_ref="$(docker ps -a --filter "name=llama-server" --format '{{.Image}}' 2>/dev/null | head -1 || true)"
+                          fi ;;
+                caddy)    _om_ref="$(docker ps -a --filter "name=openmono-gateway" --format '{{.Image}}' 2>/dev/null | head -1 || true)" ;;
+                searxng)  _om_ref="$(docker ps -a --filter "name=openmono-searxng" --format '{{.Image}}' 2>/dev/null | head -1 || true)" ;;
+                scrapling) _om_ref="$(docker ps -a --filter "name=openmono-scrapling" --format '{{.Image}}' 2>/dev/null | head -1 || true)" ;;
+                strata)   _om_ref="$(strata --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9.]*' | head -1 || true)" ;;
+                agent)    _om_ref="openmono-agent:latest" ;;
+            esac
+            if [ -n "$_om_ref" ]; then
+                vp_box_record_installed "$_comp" "$_om_ref"
+                detail "Recorded $_comp = $_om_ref in ~/.openmono/versions.json"
+            fi
+        fi
+    done
+fi

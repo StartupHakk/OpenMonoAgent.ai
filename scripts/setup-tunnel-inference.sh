@@ -336,10 +336,10 @@ else
     ok "Installed /usr/local/bin/frpc"
 fi
 
-# Record the installed frpc version in the per-box lock file so `openmono
-# upgrade` can compare against it.
+# Record the installed frpc version in the per-box manifest file (write-
+# after-install) so it always shows the concrete ref actually on the box.
 vp_box_ensure
-vp_box_record frp "$FRP_VERSION"
+vp_box_record_installed frp "$FRP_VERSION"
 
 # ── Write frpc.toml ──────────────────────────────────────────────────
 
