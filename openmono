@@ -2502,8 +2502,14 @@ cmd_upgrade() {
     _om_upgrade_present() {
         case "$1" in
             frp)      [[ "$role" != "agent" ]] && _om_upgrade_has_frpc ;;
-            llama)    [[ "$role" != "agent" && "$NATIVE_INFERENCE" != "true" ]] \
-                          && docker ps -a --filter "name=llama-server" --format '{{.Image}}' 2>/dev/null | grep -q . ;;
+            llama)    [[ "$role" == "agent" ]] && return 1
+                    if [[ "$NATIVE_INFERENCE" == "true" ]]; then
+                        # Native macOS: present when the Prism checkout exists.
+                        [[ -d "${HOME}/.openmono/prism-llama.cpp" ]]
+                    else
+                        docker ps -a --filter "name=llama-server" --format '{{.Image}}' 2>/dev/null | grep -q .
+                    fi
+                    return $? ;;
             strata)   [[ "$role" != "agent" && "$(_inference_backend 2>/dev/null)" == "strata" ]] ;;
             agent)    command -v docker &>/dev/null \
                           && docker ps -a --filter "name=openmono-agent" --format '{{.Image}}' 2>/dev/null | grep -q . ;;
