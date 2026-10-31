@@ -2650,6 +2650,10 @@ cmd_upgrade() {
     echo ""
     ok "Upgrade complete — now on v${new_version}."
     echo "  Run the agent: openmono agent"
+
+    # Reset the update-check cache so a running TUI's "update available" banner
+    # clears immediately (the C# side re-reads the file on a 30 s timer).
+    _refresh_update_cache
 }
 
 # Build a jq path like .llm.api_key from dotted input "llm.api_key".
