@@ -27,7 +27,7 @@ public sealed class AgentContainer
         _log = log;
     }
 
-    public sealed record LlmSettings(string Endpoint, string ApiKey, string Gateway, string Search, string Scrape);
+    public sealed record LlmSettings(string Endpoint, string ApiKey, string Gateway, string Search, string Scrape, string WikipediaAnchor);
 
     public static LlmSettings ReadSettings()
     {
@@ -35,7 +35,7 @@ public sealed class AgentContainer
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             ".openmono", "settings.json");
         if (!File.Exists(path))
-            return new LlmSettings("", "", "", "", "");
+            return new LlmSettings("", "", "", "", "", "");
         try
         {
             using var doc = JsonDocument.Parse(File.ReadAllText(path));
@@ -47,11 +47,12 @@ public sealed class AgentContainer
                 Str(llm, "api_key"),
                 Str(web, "gateway"),
                 Str(web, "search"),
-                Str(web, "scrape"));
+                Str(web, "scrape"),
+                Str(web, "wikipedia_anchor"));
         }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
-            return new LlmSettings("", "", "", "", "");
+            return new LlmSettings("", "", "", "", "", "");
         }
     }
 
@@ -104,6 +105,8 @@ public sealed class AgentContainer
             args.Append($"-e OPENMONO_WEB_SEARCH={settings.Search} ");
         if (!string.IsNullOrWhiteSpace(settings.Scrape))
             args.Append($"-e OPENMONO_WEB_SCRAPE={settings.Scrape} ");
+        if (!string.IsNullOrWhiteSpace(settings.WikipediaAnchor))
+            args.Append($"-e OPENMONO_WEB_WIKI_ANCHOR={settings.WikipediaAnchor} ");
         args.Append($"-e HOST_ACP_PORT={hostPort} ");
         args.Append($"-e OPENMONO_HOST_OS={(OperatingSystem.IsMacOS() ? "Darwin" : "Linux")} ");
         args.Append("-e GIT_TERMINAL_PROMPT=0 ");
