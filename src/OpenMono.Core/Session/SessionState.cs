@@ -5,6 +5,14 @@ public sealed class SessionState
     public string Id { get; set; } = Guid.NewGuid().ToString("N")[..12];
     public DateTime StartedAt { get; set; } = DateTime.UtcNow;
     public string? Model { get; set; }
+
+    /// <summary>
+    /// Name of the inference backend this session is pointing at (see
+    /// <c>BackendRegistry</c>). When null, the session falls back to the
+    /// "default" backend. Persisted in the session header so a reloaded
+    /// session keeps its backend choice.
+    /// </summary>
+    public string? ActiveBackend { get; set; }
     public List<Message> Messages { get; } = [];
     public SessionMetadata Meta { get; } = new();
     public List<TodoItem> Todos { get; } = [];

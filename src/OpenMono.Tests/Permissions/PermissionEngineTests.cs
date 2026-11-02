@@ -205,5 +205,7 @@ public class PermissionEngineTests
         public string? ShowCommandPicker(CommandRegistry registry) => null;
         public Task<string> AskUserAsync(string question, CancellationToken ct) => Task.FromResult(string.Empty);
         public Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct) => Task.FromResult(false);
+        public Task<string?> SelectOptionAsync(string title, IReadOnlyList<string> options, int initial, CancellationToken ct) =>
+            Task.FromResult<string?>(null);
     }
 }

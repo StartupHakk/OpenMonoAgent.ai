@@ -19,30 +19,42 @@ public sealed class ModelCommand : ICommand
 
     public async Task ExecuteAsync(string[] args, CommandContext context, CancellationToken ct)
     {
-        var current = context.Config.Llm.Model;
+        var registry = context.BackendRegistry;
+        var backend = registry?.Get(ResolveBackendName(context.Session.ActiveBackend));
+        var endpoint = backend?.Endpoint ?? context.Config.Llm.Endpoint;
+        var apiKey = backend is not null && registry is not null && registry.HasKey(backend.Name)
+            ? registry.GetKey(backend.Name)
+            : context.Config.Llm.ApiKey;
+        var current = string.IsNullOrWhiteSpace(context.Session.Model)
+            ? context.Config.Llm.Model
+            : context.Session.Model;
         var arg = args.Length > 0 ? string.Join(' ', args).Trim() : "";
 
         if (string.Equals(arg, "refresh", StringComparison.OrdinalIgnoreCase))
         {
             context.Renderer.WriteInfo("Refreshing available models from backend…");
             var models = await ModelCatalog.RefreshAsync(
-                context.Config.Llm.Endpoint, context.Config.Llm.ApiKey, ct: ct);
+                endpoint, apiKey, ct: ct);
             context.Renderer.WriteInfo($"Found {models.Count} model(s).");
             arg = "";
         }
 
-        // No target model: list what's available.
+        // No target model: open the standardized selection menu over the available models.
         if (string.IsNullOrEmpty(arg))
         {
-            var models = ModelCatalog.Models;
+            var models = new List<string>(ModelCatalog.Models);
             if (models.Count == 0)
             {
-                models = await ModelCatalog.RefreshAsync(
-                    context.Config.Llm.Endpoint, context.Config.Llm.ApiKey, ct: ct);
+                models = (await ModelCatalog.RefreshAsync(endpoint, apiKey, ct: ct)).ToList();
             }
 
-            context.Renderer.WriteInfo($"Current model: {(string.IsNullOrEmpty(current) ? "(none)" : current)}");
-            context.Renderer.WriteInfo($"Endpoint: {context.Config.Llm.Endpoint}");
+            // Always include the current model so it's selectable and highlighted even when
+            // the backend's /v1/models doesn't advertise it.
+            if (!string.IsNullOrEmpty(current)
+                && models.FindIndex(m => string.Equals(m, current, StringComparison.OrdinalIgnoreCase)) < 0)
+            {
+                models.Insert(0, current);
+            }
 
             if (models.Count == 0)
             {
@@ -51,15 +63,27 @@ public sealed class ModelCommand : ICommand
                 return;
             }
 
-            context.Renderer.WriteInfo("");
-            context.Renderer.WriteInfo("Available models:");
-            for (var i = 0; i < models.Count; i++)
+            var initial = models.FindIndex(m => string.Equals(m, current, StringComparison.OrdinalIgnoreCase));
+            if (initial < 0) initial = 0;
+
+            var picked = await context.Renderer.SelectOptionAsync(
+                $"Select model — {endpoint}  (current: {(string.IsNullOrEmpty(current) ? "(none)" : current)})",
+                models, initial, ct);
+
+            if (picked is null)
             {
-                var marker = string.Equals(models[i], current, StringComparison.OrdinalIgnoreCase) ? "→" : " ";
-                context.Renderer.WriteInfo($"  {marker} {i + 1}. {models[i]}");
+                context.Renderer.WriteInfo("Model selection cancelled.");
+                return;
             }
-            context.Renderer.WriteInfo("");
-            context.Renderer.WriteInfo("Switch with: /model <name>  (type /model then a space to see suggestions)");
+
+            context.Session.Model = picked;
+            Log.Info($"<---SWITCHED-MODEL-TO-{picked}--->");
+
+            if (ModelCatalog.Contains(picked))
+                context.Renderer.WriteInfo($"✓ Model switched to '{picked}' — takes effect on your next message.");
+            else
+                context.Renderer.WriteWarning(
+                    $"✓ Model set to '{picked}' (not in the backend's advertised list — it may be rejected on send).");
             return;
         }
 
@@ -77,7 +101,7 @@ public sealed class ModelCommand : ICommand
             if (match is not null) target = match;
         }
 
-        context.Config.Llm.Model = target;
+        context.Session.Model = target;
         Log.Info($"<---SWITCHED-MODEL-TO-{target}--->");
 
         if (ModelCatalog.Contains(target))
@@ -86,4 +110,7 @@ public sealed class ModelCommand : ICommand
             context.Renderer.WriteWarning(
                 $"✓ Model set to '{target}' (not in the backend's advertised list — it may be rejected on send).");
     }
+
+    private static string ResolveBackendName(string? active)
+        => string.IsNullOrWhiteSpace(active) ? BackendRegistry.DefaultBackendName : active;
 }

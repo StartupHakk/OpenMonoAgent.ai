@@ -20,4 +20,7 @@ internal sealed class NullInputReader : IInputReader
 
     public Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct) =>
         Task.FromResult(false);
+
+    public Task<string?> SelectOptionAsync(string title, IReadOnlyList<string> options, int initial, CancellationToken ct) =>
+        Task.FromResult<string?>(null);
 }

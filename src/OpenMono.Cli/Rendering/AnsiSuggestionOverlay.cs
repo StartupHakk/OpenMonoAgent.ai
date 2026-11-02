@@ -18,6 +18,10 @@ internal sealed class AnsiSuggestionOverlay(AppConfig config, AnsiPainter painte
     private int _atSearchIdx = -1;
     private int _atScroll = 0;
 
+    // Optional provider of the configured backend definitions, so typing "/models " can
+    // complete to a backend name. Null when the TUI wasn't given a registry.
+    private Func<IReadOnlyCollection<BackendDefinition>?>? _backendsProvider;
+
     internal const int AtMaxDisplay = 10;
 
     internal bool CommandSuggestionsVisible => _filteredCmds.Count > 0 && _suggestionIdx >= 0;
@@ -38,6 +42,10 @@ internal sealed class AnsiSuggestionOverlay(AppConfig config, AnsiPainter painte
         }
         _allCommands.Add(("/quit", "Exit OpenMono"));
     }
+
+    /// <summary>Wires a provider of the configured backends so "/models " completes to a name.</summary>
+    internal void SetBackendsProvider(Func<IReadOnlyCollection<BackendDefinition>?>? provider) =>
+        _backendsProvider = provider;
 
     internal void MoveSuggestionSelection(int delta)
     {
@@ -74,6 +82,33 @@ internal sealed class AnsiSuggestionOverlay(AppConfig config, AnsiPainter painte
 
     internal void UpdateSuggestions(string text, ref bool visible)
     {
+        // Once the user has typed "/models " (command + space), suggest the configured backend
+        // names instead of commands. Selecting one completes the line to "/models <name>".
+        if (text.StartsWith("/models ", StringComparison.OrdinalIgnoreCase)
+            && _backendsProvider?.Invoke() is { Count: > 0 } backends)
+        {
+            var query = text["/models ".Length..].TrimStart();
+
+            _filteredCmds = backends
+                .Where(b => query.Length == 0 || b.Name.Contains(query, StringComparison.OrdinalIgnoreCase))
+                .Select(b => ($"/models {b.Name}", b.Endpoint))
+                .ToList();
+
+            if (_filteredCmds.Count == 0)
+            {
+                if (visible) HideSuggestions(text);
+                visible = false;
+                _suggestionIdx = -1;
+                return;
+            }
+
+            _suggestionIdx = 0;
+            _suggestionScroll = 0;
+            visible = true;
+            DrawSuggestions(text);
+            return;
+        }
+
         // Once the user has typed "/model " (command + space), suggest backend-advertised model
         // names instead of commands. Selecting one completes the line to "/model <name>".
         if (text.StartsWith("/model ", StringComparison.OrdinalIgnoreCase))

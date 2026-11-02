@@ -51,6 +51,13 @@ internal sealed class FakeScriptedRenderer : IRenderer
     public Task<char[]> AskSecretAsync(string question, CancellationToken ct)
         => Task.FromResult((_answers.Count > 0 ? _answers.Dequeue() : "").ToCharArray());
 
+    public Task<string?> SelectOptionAsync(string title, IReadOnlyList<string> options, int initial, CancellationToken ct)
+    {
+        var a = (_answers.Count > 0 ? _answers.Dequeue() : "").Trim();
+        if (a.Length == 0) return Task.FromResult<string?>(null);
+        return Task.FromResult<string?>(int.TryParse(a, out var idx) && idx >= 1 && idx <= options.Count ? options[idx - 1] : a);
+    }
+
     // IOutputSink
     public void StartAssistantResponse() { }
     public void StreamText(string text) { }
