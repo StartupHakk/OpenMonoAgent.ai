@@ -9,6 +9,15 @@ public static class TokenEstimate
 {
     public static int Estimate(string json) => json.Length / 4;
 
+    /// <summary>
+    /// Token cost of a string once JSON-escaped (as it appears inside a serialized payload).
+    /// Escaping (quotes, backslashes, \uXXXX) can inflate a raw string well past chars/4, so
+    /// this is the correct measure for anything that will be validated by
+    /// <see cref="EstimatePayload"/> — the raw <c>TokenEstimator</c> (chars/4) undercounts it.
+    /// </summary>
+    public static int EstimateEscapedText(string text)
+        => JsonSerializer.Serialize(text, JsonOptions.Default).Length / 4;
+
     public static int EstimatePayload(IReadOnlyList<Message> messages, JsonElement? tools = null, string model = "default")
         => Estimate(SerializePayload(messages, tools, model));
 

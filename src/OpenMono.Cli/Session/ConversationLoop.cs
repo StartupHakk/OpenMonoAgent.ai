@@ -1097,8 +1097,22 @@ public sealed class ConversationLoop : IDisposable
         _output.WriteInfo(
             $"Resumed conversation is ~{estimate} of {_config.Llm.ContextSize} context tokens — " +
             "compacting before the first turn.");
-        await RunCompactionAsync(estimate, customInstructions: null, ct, reason: "auto");
-        TryAbortIfStillOverflows();
+        try
+        {
+            await RunCompactionAsync(estimate, customInstructions: null, ct, reason: "auto");
+            TryAbortIfStillOverflows();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // A failed proactive compaction must not kill the resume: previously this
+            // propagated as an unhandled ContextOverflowException and crashed the whole TUI.
+            // History is only rewritten on success, so state is unchanged here — the turn
+            // proceeds and any real overflow is surfaced by the normal turn path instead.
+            _output.WriteWarning(
+                $"Proactive resume compaction failed ({ex.GetType().Name}: {ex.Message}). " +
+                "Starting the turn anyway; if it overflows the window, start a new session " +
+                "or trim the latest messages.");
+        }
     }
 
     private bool TryAbortIfStillOverflows()

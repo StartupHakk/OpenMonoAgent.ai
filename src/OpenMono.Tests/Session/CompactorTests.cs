@@ -168,6 +168,61 @@ public class CompactorTests
             "the verbatim keep-window must respect its token budget even when the recent turns are huge");
     }
 
+    // Reproduces the resume-crash: a tool output full of quotes/JSON whose JSON-ESCAPED payload
+    // is ~2x its raw char estimate. The old chunker sized messages with the raw estimator, so it
+    // assembled a chunk it believed fit under the summary budget; EnsureSummaryFits then measured
+    // the escaped size and threw ContextOverflowException, killing the resume. The chunker now
+    // sizes with the same escaped estimator the safety check uses, so it splits such content
+    // across chunks instead of overflowing.
+    [Fact]
+    public async Task CompactAsync_QuoteHeavyHugeToolOutputs_DoesNotThrowOverflow()
+    {
+        const int ctx = 100_096; // the real window from the reported crash
+        var llm = new RecordingSummaryLlm();
+        var compactor = new Compactor(llm, contextSize: ctx);
+        var session = new SessionState();
+        session.AddMessage(new Message { Role = MessageRole.System, Content = "sys" });
+
+        // Two huge quote-heavy tool outputs: raw ~25K tokens each, but ~50K each once JSON-escaped.
+        // Together the chunker's raw estimate (~50K) is under the per-chunk budget, but their
+        // escaped payload (~100K) far exceeds the 0.80 safety threshold — the old code's failure.
+        const int quoteChars = 100_000;
+        session.AddMessage(new Message
+        {
+            Role = MessageRole.Tool,
+            ToolCallId = "call_q0",
+            ToolName = "Bash",
+            Content = "MARKER_Q0" + new string('"', quoteChars),
+        });
+        session.AddMessage(new Message
+        {
+            Role = MessageRole.Tool,
+            ToolCallId = "call_q1",
+            ToolName = "Bash",
+            Content = "MARKER_Q1" + new string('"', quoteChars),
+        });
+
+        // Four more user turns push both huge outputs OUT of the last-4-turn keep window, so they
+        // land in the summarized portion (where the chunker operates).
+        for (var i = 1; i <= 5; i++)
+        {
+            session.AddMessage(new Message { Role = MessageRole.User, Content = $"turn {i}" });
+            session.AddMessage(new Message { Role = MessageRole.Assistant, Content = $"ok {i}" });
+        }
+
+        // The old code throws ContextOverflowException here; the fix must not.
+        (SessionState compacted, var report) = await compactor.CompactAsync(session);
+
+        llm.Calls.Should().BeGreaterThanOrEqualTo(2,
+            "the escape-inflated content must be split across chunks, not overflowed");
+        llm.AllReceivedText.Should().Contain(t => t.Contains("MARKER_Q0"),
+            "the first huge tool output must still reach the summarizer");
+        llm.AllReceivedText.Should().Contain(t => t.Contains("MARKER_Q1"),
+            "the second huge tool output must still reach the summarizer");
+        report.TokensAfter.Should().BeLessThan((int)(ctx * 0.80),
+            "compaction must land under the window");
+    }
+
     private sealed class SummaryLlm : ILlmClient
     {
         public async IAsyncEnumerable<StreamChunk> StreamChatAsync(

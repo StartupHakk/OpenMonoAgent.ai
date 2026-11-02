@@ -270,7 +270,11 @@ public sealed class Compactor
         var currentTokens = 0;
         foreach (var msg in messages)
         {
-            var t = TokenEstimator.EstimateMessage(msg);
+            // Size with the SAME escaped-payload estimator that EnsureSummaryFits validates with.
+            // The raw TokenEstimator (chars/4) undercounts quote/code-heavy content after JSON
+            // escaping, so a chunk it deems "fits" can still overflow the safety check — the cause
+            // of resume-crashing ContextOverflowExceptions.
+            var t = EstimateEscapedMessage(msg);
             if (current.Count > 0 && currentTokens + t > capacity)
             {
                 chunks.Add(current);
@@ -279,9 +283,11 @@ public sealed class Compactor
             }
             if (t > capacity)
             {
+                // One message bigger than the whole chunk budget (e.g. a huge tool output):
+                // truncate it — with a note — so it is summarized rather than silently dropped.
                 var truncated = TruncateToFit(msg, capacity);
                 current.Add(truncated);
-                currentTokens = TokenEstimator.EstimateMessage(truncated);
+                currentTokens = EstimateEscapedMessage(truncated);
                 continue;
             }
             current.Add(msg);
@@ -294,11 +300,12 @@ public sealed class Compactor
 
     private static Message TruncateToFit(Message msg, int maxTokens)
     {
-        // ~4 chars/token; leave room for the truncation note itself.
-        var maxChars = Math.Max(512, maxTokens * 4 - 200);
+        // Cap in ESCAPED-token space (what EnsureSummaryFits measures), not raw chars. A raw-char
+        // cap lets quote/code-heavy content escape to well over maxTokens after JSON-escaping.
         string? content = msg.Content;
-        if (content is not null && content.Length > maxChars)
-            content = content[..maxChars] + $"\n[... truncated — showing first {maxChars} of {content.Length} chars]";
+        if (content is not null && TokenEstimate.EstimateEscapedText(content) > maxTokens)
+            content = TruncateEscaped(content, Math.Max(256, maxTokens - 24))
+                      + $"\n[... truncated — {content.Length} chars total]";
 
         List<ToolCall>? calls = null;
         if (msg.ToolCalls is { Count: > 0 })
@@ -307,14 +314,52 @@ public sealed class Compactor
             foreach (var tc in msg.ToolCalls)
             {
                 string args = tc.Arguments;
-                if (args.Length > maxChars)
-                    args = args[..maxChars] + "[... truncated]";
+                if (TokenEstimate.EstimateEscapedText(args) > maxTokens)
+                    args = TruncateEscaped(args, Math.Max(256, maxTokens - 16)) + "[... truncated]";
                 calls.Add(tc with { Arguments = args });
             }
         }
 
         List<ToolCall> callsToApply = calls ?? [];
         return msg with { Content = content, ToolCalls = callsToApply };
+    }
+
+    /// <summary>
+    /// Truncates <paramref name="text"/> to the longest prefix whose JSON-escaped size fits
+    /// under <paramref name="maxTokens"/> tokens. Escaping inflates differently per character —
+    /// a plain char stays 1 escaped char, but HTML-sensitive ones (a double quote, <, >, &, ')
+    /// expand to a 6-char \uXXXX sequence — so the cut point is found by binary search over the
+    /// escaped size, never by assuming a fixed chars-per-token ratio (the old raw-length cut
+    /// left quote-heavy tool outputs untruncated and overflowing).
+    /// </summary>
+    private static string TruncateEscaped(string text, int maxTokens)
+    {
+        if (TokenEstimate.EstimateEscapedText(text) <= maxTokens)
+            return text;
+
+        var lo = 0;
+        var hi = text.Length;
+        while (lo < hi)
+        {
+            var mid = (lo + hi + 1) / 2;
+            if (TokenEstimate.EstimateEscapedText(text[..mid]) <= maxTokens)
+                lo = mid;
+            else
+                hi = mid - 1;
+        }
+        return lo == 0 ? text[..Math.Min(text.Length, 16)] : text[..lo];
+    }
+
+    /// <summary>Estimates a message's escaped-payload token cost (see <see cref="ChunkForSummarization"/>).</summary>
+    private static int EstimateEscapedMessage(Message m)
+    {
+        var cost = 20; // per-message overhead, matches TokenEstimator.MessageCharCount
+        if (m.Content is not null)
+            cost += TokenEstimate.EstimateEscapedText(m.Content);
+        if (m.ToolCalls is { Count: > 0 })
+            foreach (var c in m.ToolCalls)
+                cost += TokenEstimate.EstimateEscapedText(c.Arguments ?? "");
+        return cost;
     }
 
     // --- Keep-window (size-capped) ---------------------------------------------------------
