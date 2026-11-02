@@ -128,6 +128,13 @@ public sealed class AnsiTuiRenderer : IRenderer
 
     public bool Interactive => true;
 
+    /// <summary>
+    /// Images stashed by a binary-clipboard paste (Ctrl+V with an image in the
+    /// clipboard). Drained and cleared on each call — the caller should pass the
+    /// result to RunTurnAsync as the imageParts argument.
+    /// </summary>
+    public IReadOnlyList<ImagePart>? PendingImageParts => _inputReader.GetPendingImageParts();
+
     public Task<string> AskUserAsync(string question, CancellationToken ct)
         => _inputReader.AskUserAsync(question, ct);
 

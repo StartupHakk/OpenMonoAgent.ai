@@ -4,6 +4,7 @@ using OpenMono.Commands;
 using OpenMono.Config;
 using OpenMono.Permissions;
 using OpenMono.Playbooks;
+using OpenMono.Session;
 using OpenMono.Utils;
 
 namespace OpenMono.Rendering;
@@ -22,6 +23,10 @@ internal sealed class AnsiInputReader(
     private int _historyIndex = -1;
 
     private DateTime _lastCtrlCTime = DateTime.MinValue;
+
+    // Images stashed by a binary-clipboard paste (Ctrl+V with an image in the
+    // clipboard). Drained by the caller after ReadInput() via GetPendingImageParts().
+    private readonly List<ImagePart> _pendingImageParts = [];
 
     private (int scroll, string? paste, int wordMove, int lineMove) TryReadEscapeSequence()
     {
@@ -350,6 +355,10 @@ internal sealed class AnsiInputReader(
 
             if (k.Key == ConsoleKey.V && k.Modifiers.HasFlag(ConsoleModifiers.Control))
             {
+                if (PasteImage())
+                {
+                    continue;
+                }
                 var p = ReadClipboard();
                 if (p is not null)
                 {
@@ -827,6 +836,12 @@ internal sealed class AnsiInputReader(
                 if ((k.Key == ConsoleKey.V && k.Modifiers.HasFlag(ConsoleModifiers.Control)) ||
                     (k.Key == ConsoleKey.Insert && k.Modifiers.HasFlag(ConsoleModifiers.Shift)))
                 {
+                    if (PasteImage())
+                    {
+                        buf.Clear(); cur = 0;
+                        painter.DrawInputText("", 0);
+                        continue;
+                    }
                     var p = ReadClipboard();
                     if (p is not null)
                     {
@@ -1241,5 +1256,126 @@ internal sealed class AnsiInputReader(
             return t;
         }
         catch { return null; }
+    }
+
+    /// <summary>
+    /// Reads the clipboard as a binary image when the clipboard holds one.
+    /// Supports X11 (<c>xclip</c>) and Wayland (<c>wl-paste</c>), enumerating
+    /// available targets and, if an <c>image/*</c> target is present, fetching
+    /// its bytes. Returns (mimeType, bytes) or null if the clipboard holds no
+    /// image / the tooling is unavailable. This is the path that makes Ctrl+V
+    /// with an image work.
+    /// </summary>
+    private static (string mime, byte[] bytes)? ReadBinaryClipboard()
+    {
+        try
+        {
+            var env = Environment.GetEnvironmentVariable("WAYLAND_DISPLAY");
+            if (!string.IsNullOrEmpty(env))
+                return TryReadBinaryClipboardWayland();
+
+            ProcessStartInfo psi = new("xclip", "-selection clipboard -t") { RedirectStandardOutput = true, UseShellExecute = false };
+            var p = Process.Start(psi);
+            if (p is null) return null;
+            var targets = p.StandardOutput.ReadToEnd();
+            p.WaitForExit(2000);
+
+            string? mime = null;
+            foreach (var line in targets.Split('\n'))
+            {
+                var t = line.Trim();
+                if (t.StartsWith("image/", StringComparison.Ordinal))
+                {
+                    mime = t;
+                    break;
+                }
+            }
+            if (mime is null) return null;
+
+            // Fetch the raw bytes for that MIME target.
+            ProcessStartInfo psi2 = new("xclip", $"-selection clipboard -t {mime} -o") { RedirectStandardOutput = true, UseShellExecute = false };
+            var p2 = Process.Start(psi2);
+            if (p2 is null) return null;
+            var bytes = ReadOutputBytes(p2);
+            return (mime, bytes);
+        }
+        catch { return null; }
+    }
+
+    private static (string mime, byte[] bytes)? TryReadBinaryClipboardWayland()
+    {
+        try
+        {
+            ProcessStartInfo psi = new("wl-paste", "--types") { RedirectStandardOutput = true, UseShellExecute = false };
+            var p = Process.Start(psi);
+            if (p is null) return null;
+            var targets = p.StandardOutput.ReadToEnd();
+            p.WaitForExit(2000);
+
+            string? mime = null;
+            foreach (var line in targets.Split('\n'))
+            {
+                var t = line.Trim();
+                if (t.StartsWith("image/", StringComparison.Ordinal))
+                {
+                    mime = t;
+                    break;
+                }
+            }
+            if (mime is null) return null;
+
+            ProcessStartInfo psi2 = new("wl-paste", $"--type {mime}") { RedirectStandardOutput = true, UseShellExecute = false };
+            var p2 = Process.Start(psi2);
+            if (p2 is null) return null;
+            var bytes = ReadOutputBytes(p2);
+            return (mime, bytes);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Reads the process standard output as raw bytes (not text), preserving
+    /// binary image data. Reads until EOF, then returns the buffer.
+    /// </summary>
+    private static byte[] ReadOutputBytes(Process p)
+    {
+        using var ms = new MemoryStream();
+        p.StandardOutput.BaseStream.CopyTo(ms);
+        return ms.ToArray();
+    }
+
+    /// <summary>
+    /// Drains any images stashed by a binary-clipboard paste and returns them
+    /// (and clears the stash). Callers use the result as the <c>imageParts</c>
+    /// argument to RunTurnAsync.
+    /// </summary>
+    public IReadOnlyList<ImagePart>? GetPendingImageParts()
+    {
+        var count = _pendingImageParts.Count;
+        var outParts = count > 0 ? _pendingImageParts.ToArray() : null;
+        _pendingImageParts.Clear();
+        return outParts;
+    }
+
+    private void StashImagePart(string mime, byte[] bytes)
+    {
+        _pendingImageParts.Add(new ImagePart($"data:{mime};base64,{Convert.ToBase64String(bytes)}"));
+        painter.ShowToast($"[image] pasted ({mime}, {bytes.Length / 1024}KB) — send with Enter");
+    }
+
+    /// <summary>
+    /// Attempts a binary image paste. Returns <c>true</c> if an image was found
+    /// and stashed (caller should skip the text paste); <c>false</c> if the
+    /// clipboard holds no image (caller falls through to normal text paste).
+    /// </summary>
+    private bool PasteImage()
+    {
+        if (ReadBinaryClipboard() is not { } result)
+            return false;
+
+        var (mime, bytes) = result;
+        if (bytes.Length == 0) return false;
+        StashImagePart(mime, bytes);
+        return true;
     }
 }

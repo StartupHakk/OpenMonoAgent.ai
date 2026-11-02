@@ -37,6 +37,74 @@ public sealed class AcpTurnRunnerTests
     }
 
     [Fact]
+    public async Task RunUserMessageAsync_with_image_parts_and_vision_disabled_emits_warning_and_blocks_turn()
+    {
+        var (runner, session, body) = BuildHarness(
+            tools: new ToolRegistry(),
+            llmRounds: new List<List<StreamChunk>>
+            {
+                new() { new() { TextDelta = "Hello", IsComplete = false }, new() { IsComplete = true } },
+            },
+            visionEnabled: false);
+
+        var imageParts = new List<ContentPart>
+        {
+            new ImagePart("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="),
+        };
+
+        await runner.RunUserMessageAsync("describe this", imageParts, CancellationToken.None);
+
+        // Vision gate: the turn must NOT run (no LLM text_delta from the model),
+        // instead a warning text_delta + done is emitted.
+        var events = ParseSseEvents(body);
+        events.Should().Contain(e => e.name == "text_delta");
+        events.Should().Contain(e => e.name == "done");
+        // The last text_delta should be the vision warning, not the scripted model reply.
+        var lastDelta = events.Last(e => e.name == "text_delta");
+        lastDelta.data.GetProperty("content").GetString().Should().Contain("vision");
+
+        // Turn must not have advanced (blocked before DriveLoopAsync).
+        session.TurnCount.Should().Be(0, "vision disabled blocks the turn; no turn counted");
+
+        // The user message is still recorded with a placeholder and the image parts.
+        var userMsg = session.Messages.Last(m => m.Role == MessageRole.User);
+        userMsg.Content.Should().Contain("[1 image(s)]");
+        userMsg.ContentParts.Should().HaveCount(2);
+        userMsg.ContentParts.Should().ContainSingle(p => p is ImagePart);
+    }
+
+    [Fact]
+    public async Task RunUserMessageAsync_with_image_parts_and_vision_enabled_runs_the_turn()
+    {
+        var (runner, session, body) = BuildHarness(
+            tools: new ToolRegistry(),
+            llmRounds: new List<List<StreamChunk>>
+            {
+                new() { new() { TextDelta = "Hello", IsComplete = false }, new() { IsComplete = true, Usage = new UsageInfo { PromptTokens = 1, CompletionTokens = 1 } } },
+            },
+            visionEnabled: true);
+
+        var imageParts = new List<ContentPart>
+        {
+            new ImagePart("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="),
+        };
+
+        await runner.RunUserMessageAsync("describe this", imageParts, CancellationToken.None);
+
+        var events = ParseSseEvents(body);
+        events.Should().Contain(e => e.name == "text_delta");
+        events.Should().Contain(e => e.name == "done");
+
+        // Vision enabled: the actual model turn ran.
+        session.TurnCount.Should().BeGreaterThanOrEqualTo(1, "vision enabled allows the turn to run");
+
+        var userMsg = session.Messages.Last(m => m.Role == MessageRole.User);
+        userMsg.ContentParts.Should().HaveCount(2);
+        userMsg.ContentParts.Should().ContainSingle(p => p is TextPart);
+        userMsg.ContentParts.Should().ContainSingle(p => p is ImagePart);
+    }
+
+    [Fact]
     public async Task Tool_requiring_permission_emits_permission_request_and_pauses()
     {
         var tools = new ToolRegistry();
@@ -361,19 +429,22 @@ public sealed class AcpTurnRunnerTests
 
     private static (AcpTurnRunner runner, AcpSession session, MemoryStream body) BuildHarness(
         ToolRegistry tools,
-        List<List<StreamChunk>> llmRounds)
+        List<List<StreamChunk>> llmRounds,
+        bool visionEnabled = false)
     {
-        return BuildHarness(NewSession(), tools, llmRounds);
+        return BuildHarness(NewSession(), tools, llmRounds, visionEnabled);
     }
 
     private static (AcpTurnRunner runner, AcpSession session, MemoryStream body) BuildHarness(
         AcpSession session,
         ToolRegistry tools,
-        List<List<StreamChunk>> llmRounds)
+        List<List<StreamChunk>> llmRounds,
+        bool visionEnabled = false)
     {
         var body = new MemoryStream();
         var writer = new SseWriter(body, CancellationToken.None);
         var config = new AppConfig { DataDirectory = Path.Combine(Path.GetTempPath(), "openmono-runner-" + Guid.NewGuid().ToString("N")[..8]) };
+        config.VisionEnabled = visionEnabled;
         Directory.CreateDirectory(config.DataDirectory);
         var renderer = new TerminalRenderer();
         var llm = new ScriptedLlm(llmRounds);

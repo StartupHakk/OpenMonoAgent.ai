@@ -676,9 +676,14 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
             warmupTask = null;
         }
 
+        // Drain any images stashed by a binary-clipboard paste (Ctrl+V with an
+        // image in the clipboard). Drained per turn so a pasted image is sent
+        // with the next message.
+        IReadOnlyList<ImagePart>? imageParts = ansiTui?.PendingImageParts;
+
         try
         {
-            await loop.RunTurnAsync(transformedInput, imageParts: null, turnCts.Token);
+            await loop.RunTurnAsync(transformedInput, imageParts, turnCts.Token);
         }
         catch (OperationCanceledException)
         {

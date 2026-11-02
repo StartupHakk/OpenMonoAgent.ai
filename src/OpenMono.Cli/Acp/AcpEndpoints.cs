@@ -355,9 +355,37 @@ public static class AcpEndpoints
             {
                 if (root.TryGetProperty("message", out var msgEl))
                 {
+                    var messageText = msgEl.GetString() ?? "";
+
+                    // Parse the optional attachments array (sent by the VS Code extension
+                    // when the user pastes/drops an image). Each attachment is
+                    // { kind: "image", mime, data: <base64, no data: prefix>, name? }.
+                    IReadOnlyList<ContentPart>? imageParts = null;
+                    if (root.TryGetProperty("attachments", out var attEl) && attEl.ValueKind == JsonValueKind.Array)
+                    {
+                        var parts = new List<ContentPart>();
+                        using var attArr = attEl.EnumerateArray();
+                        foreach (var att in attArr)
+                        {
+                            if (att.TryGetProperty("kind", out var kindEl) && kindEl.GetString() == "image" &&
+                                att.TryGetProperty("mime", out var mimeEl) &&
+                                att.TryGetProperty("data", out var dataEl))
+                            {
+                                var mime = mimeEl.GetString() ?? "";
+                                if (mime is "image/png" or "image/jpeg")
+                                    parts.Add(new ImagePart($"data:{mime};base64,{dataEl.GetString()}"));
+                            }
+                        }
+                        if (parts.Count > 0)
+                            imageParts = parts;
+                    }
+
                     StartSseResponse(ctx);
                     var runner = runners.Create(session, new SseWriter(ctx.Response.Body, ctx.RequestAborted));
-                    await runner.RunUserMessageAsync(msgEl.GetString() ?? "", ct);
+                    if (imageParts is not null)
+                        await runner.RunUserMessageAsync(messageText, imageParts, ct);
+                    else
+                        await runner.RunUserMessageAsync(messageText, ct);
                 }
                 else if (root.TryGetProperty("permission", out var permEl))
                 {
@@ -414,7 +442,7 @@ public static class AcpEndpoints
                         new
                         {
                             error = "invalid_body",
-                            detail = "body must contain `message`, `permission`, `playbookPermission`, `user_input`, `mode`, or `abort:true`",
+                            detail = "body must contain `message` (optionally with `attachments`), `permission`, `playbookPermission`, `user_input`, `mode`, or `abort:true`",
                         },
                         ctx.RequestAborted);
                 }
