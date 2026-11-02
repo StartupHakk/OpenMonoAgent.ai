@@ -9,18 +9,37 @@ namespace OpenMono.Session;
 public sealed class Compactor
 {
     private readonly ILlmClient _llm;
-    private readonly int _contextSize;
+    private readonly Func<int> _contextSize;
 
     private static readonly HashSet<string> FileToolNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "FileRead", "FileEdit", "FileWrite", "Read", "Edit", "Write",
     };
 
+    /// <summary>
+    /// Fraction of the context window reserved for the verbatim "recent turns" keep-window.
+    /// The keep-window is capped in TOKENS, not turn count: a handful of user turns can each
+    /// carry tens of thousands of tokens of tool output, so "keep the last 4 turns" alone can
+    /// exceed the whole window and make compaction structurally unable to shrink anything.
+    /// </summary>
+    private const double KeepWindowFraction = 0.30;
+    private const int KeepWindowMinTokens = 512;
+    // Fraction of the window a single summarization prompt may occupy (leaves room for the
+    // summary's own output tokens inside the same window).
+    private const double SummaryBudgetFraction = 0.70;
+
     public Compactor(ILlmClient llm, int contextSize)
+        : this(llm, () => contextSize)
+    {
+    }
+
+    public Compactor(ILlmClient llm, Func<int> contextSize)
     {
         _llm = llm;
         _contextSize = contextSize;
     }
+
+    public int CurrentContextSize => _contextSize();
 
     public bool NeedsCompaction(SessionState session, int lastPromptTokens = 0)
         => NeedsCompaction(session.Messages, lastPromptTokens);
@@ -31,15 +50,16 @@ public sealed class Compactor
             return false;
 
         var tokens = lastPromptTokens > 0 ? lastPromptTokens : TokenEstimator.EstimateMessages(effectiveMessages);
-        var threshold = (int)(_contextSize * 0.80);
+        var threshold = (int)(_contextSize() * 0.80);
         return tokens > threshold;
     }
 
-    public static bool HasCompactableContent(IReadOnlyList<Message> messages)
+    public bool HasCompactableContent(IReadOnlyList<Message> messages)
     {
         var systemMessages = messages.Where(m => m.Role == MessageRole.System).ToList();
-        var recentTurns = GetRecentTurns(messages, keepTurns: 4);
-        return messages.Except(systemMessages).Except(recentTurns).Count() >= 4;
+        var (recent, spilled) = GetRecentTurns(messages, keepTurns: 4);
+        return messages.Except(systemMessages).Except(recent).Count() >= 4
+            || spilled.Count >= 4;
     }
 
     public async Task<(SessionState Session, CompactionReport Report)> CompactAsync(
@@ -52,10 +72,14 @@ public sealed class Compactor
         var tokensBefore = TokenEstimator.EstimateMessages(session.Messages);
 
         var systemMessages = session.Messages.Where(m => m.Role == MessageRole.System).ToList();
-        var recentTurns = GetRecentTurns(session.Messages, keepTurns: 4);
+        var (recentTurns, recentSpilled) = GetRecentTurns(session.Messages, keepTurns: 4);
+        // recentSpilled = older part of the "recent" window that exceeded the size cap. It is
+        // not verbatim-kept, so it goes into the summarized portion like everything else —
+        // nothing is ever dropped, only summarized.
         var toSummarize = session.Messages
             .Except(systemMessages)
             .Except(recentTurns)
+            .Concat(recentSpilled)
             .ToList();
 
         if (toSummarize.Count < 4)
@@ -88,9 +112,7 @@ public sealed class Compactor
             }
         }
 
-        var (evictedMessages, evictedCount, evictedBytes) = SummarySafety.EvictLargeToolOutputs(toSummarize);
-
-        var summary = await GenerateSummaryAsync(evictedMessages, customInstructions, ct);
+        var summary = await GenerateSummaryAsync(toSummarize, customInstructions, ct);
         var formatted = SummaryPrompt.FormatSummary(summary);
 
         var compacted = new SessionState();
@@ -100,7 +122,7 @@ public sealed class Compactor
         compacted.AddMessage(new Message
         {
             Role = MessageRole.User,
-            Content = $"[Conversation summary — {toSummarize.Count} messages compacted, {evictedCount} large tool outputs evicted]\n\n{formatted}",
+            Content = $"[Conversation summary — {toSummarize.Count} messages compacted]\n\n{formatted}",
         });
 
         compacted.AddMessage(new Message
@@ -128,30 +150,61 @@ public sealed class Compactor
             CompressedByRole = compressedByRole,
             CompressedToolCalls = compressedToolCalls,
             FilesTouched = filesTouched.OrderBy(p => p).ToList(),
-            ToolOutputsEvicted = evictedCount,
-            EvictedBytes = evictedBytes,
+            ToolOutputsEvicted = 0,
+            EvictedBytes = 0,
             Duration = sw.Elapsed,
-            ContextWindowSize = _contextSize,
+            ContextWindowSize = _contextSize(),
             SummaryText = formatted,
         };
 
         return (compacted, report);
     }
 
+    // --- Summarization (chunked) -----------------------------------------------------------
+
     private async Task<string> GenerateSummaryAsync(
         List<Message> messages,
         string? customInstructions,
         CancellationToken ct)
     {
+        var budget = (int)(_contextSize() * SummaryBudgetFraction);
+        var chunks = ChunkForSummarization(messages, budget);
+        if (chunks.Count == 0)
+            return "";
+
+        var basePrompt = SummaryPrompt.BuildPrompt(customInstructions);
+        var partials = new List<string>();
+        for (var i = 0; i < chunks.Count; i++)
+        {
+            var header = chunks.Count > 1
+                ? $"Part {i + 1} of {chunks.Count} of the conversation to summarize. " +
+                  "Other parts are summarized separately and merged afterwards — " +
+                  "cover everything in this part thoroughly; do not try to account for the other parts.\n\n"
+                : null;
+            var text = await SummarizeChunkAsync(basePrompt, header, chunks[i], ct);
+            if (!string.IsNullOrWhiteSpace(text))
+                partials.Add(text);
+        }
+
+        return await RollUpSummariesAsync(partials, basePrompt, ct);
+    }
+
+    private async Task<string> SummarizeChunkAsync(
+        string basePrompt,
+        string? header,
+        List<Message> messages,
+        CancellationToken ct)
+    {
         var conversationText = BuildConversationText(messages);
+        var userContent = header is null ? conversationText : header + conversationText;
 
         var summaryMessages = new List<Message>
         {
-            new() { Role = MessageRole.System, Content = SummaryPrompt.BuildPrompt(customInstructions) },
-            new() { Role = MessageRole.User, Content = conversationText },
+            new() { Role = MessageRole.System, Content = basePrompt },
+            new() { Role = MessageRole.User, Content = userContent },
         };
 
-        SummarySafety.EnsureSummaryFits(summaryMessages, _contextSize);
+        SummarySafety.EnsureSummaryFits(summaryMessages, _contextSize());
 
         var sb = new StringBuilder();
         var options = new LlmOptions { MaxTokens = 4096, Temperature = 0.1, EnableThinking = false };
@@ -162,6 +215,218 @@ public sealed class Compactor
                 sb.Append(chunk.TextDelta);
         }
 
+        return sb.ToString();
+    }
+
+    private async Task<string> RollUpSummariesAsync(
+        List<string> partials,
+        string basePrompt,
+        CancellationToken ct)
+    {
+        if (partials.Count == 0) return "";
+        if (partials.Count == 1) return partials[0];
+
+        var combined = string.Join("\n\n", partials.Select((s, i) => $"--- Part {i + 1} ---\n{s}"));
+
+        var rollupMessages = new List<Message>
+        {
+            new() { Role = MessageRole.System, Content = basePrompt },
+            new() { Role = MessageRole.User, Content =
+                $"The conversation was summarized in {partials.Count} parts. Merge them into ONE " +
+                "coherent summary following the required structure, preserving all concrete details " +
+                "(file names, code, decisions, user messages). Do not lose information by merging.\n\n" + combined },
+        };
+
+        // The merge input is the partials' TEXT, not the raw conversation — far smaller. If even
+        // that cannot fit (pathologically small window), concatenate deterministically rather than
+        // dropping parts.
+        if (TokenEstimate.EstimatePayload(rollupMessages) > (int)(_contextSize() * 0.80))
+            return combined;
+
+        var sb = new StringBuilder();
+        var options = new LlmOptions { MaxTokens = 4096, Temperature = 0.1, EnableThinking = false };
+        await foreach (var chunk in _llm.StreamChatAsync(rollupMessages, tools: null, options, ct))
+        {
+            if (chunk.TextDelta is not null)
+                sb.Append(chunk.TextDelta);
+        }
+        return sb.ToString();
+    }
+
+    // Splits messages into the fewest chunks whose serialized payload fits under the summary
+    // budget. A single message larger than the budget (e.g. a huge tool output) is truncated
+    // — with a note — so it is summarized rather than silently dropped.
+    private List<List<Message>> ChunkForSummarization(List<Message> messages, int budgetTokens)
+    {
+        var overhead = (int)(TokenEstimate.EstimatePayload(new List<Message>
+        {
+            new() { Role = MessageRole.System, Content = SummaryPrompt.BuildPrompt() },
+            new() { Role = MessageRole.User, Content = "" },
+        }) * 1.20); // headroom for JSON-escaping differences between estimator and real payload
+        var capacity = Math.Max(budgetTokens - overhead, 512);
+
+        var chunks = new List<List<Message>>();
+        var current = new List<Message>();
+        var currentTokens = 0;
+        foreach (var msg in messages)
+        {
+            var t = TokenEstimator.EstimateMessage(msg);
+            if (current.Count > 0 && currentTokens + t > capacity)
+            {
+                chunks.Add(current);
+                current = new List<Message>();
+                currentTokens = 0;
+            }
+            if (t > capacity)
+            {
+                var truncated = TruncateToFit(msg, capacity);
+                current.Add(truncated);
+                currentTokens = TokenEstimator.EstimateMessage(truncated);
+                continue;
+            }
+            current.Add(msg);
+            currentTokens += t;
+        }
+        if (current.Count > 0)
+            chunks.Add(current);
+        return chunks;
+    }
+
+    private static Message TruncateToFit(Message msg, int maxTokens)
+    {
+        // ~4 chars/token; leave room for the truncation note itself.
+        var maxChars = Math.Max(512, maxTokens * 4 - 200);
+        string? content = msg.Content;
+        if (content is not null && content.Length > maxChars)
+            content = content[..maxChars] + $"\n[... truncated — showing first {maxChars} of {content.Length} chars]";
+
+        List<ToolCall>? calls = null;
+        if (msg.ToolCalls is { Count: > 0 })
+        {
+            calls = new List<ToolCall>(msg.ToolCalls.Count);
+            foreach (var tc in msg.ToolCalls)
+            {
+                string args = tc.Arguments;
+                if (args.Length > maxChars)
+                    args = args[..maxChars] + "[... truncated]";
+                calls.Add(tc with { Arguments = args });
+            }
+        }
+
+        List<ToolCall> callsToApply = calls ?? [];
+        return msg with { Content = content, ToolCalls = callsToApply };
+    }
+
+    // --- Keep-window (size-capped) ---------------------------------------------------------
+
+    /// <summary>
+    /// Splits history into the verbatim keep-window and the part that must be summarized.
+    /// The keep-window is the most recent <paramref name="keepTurns"/> user turns, size-capped:
+    /// user/assistant conversation is always kept verbatim (it is the working context and is
+    /// small), but tool outputs inside the window that push it over the token budget are
+    /// moved — oldest first — into the returned <c>Spilled</c> list, where they get summarized
+    /// (never dropped). A pending tool call awaiting a permission decision is never moved.
+    /// </summary>
+    private (List<Message> Recent, List<Message> Spilled) GetRecentTurns(IReadOnlyList<Message> messages, int keepTurns)
+    {
+        var nonSystem = messages.Where(m => m.Role != MessageRole.System).ToList();
+        var turns = 0;
+        var startIndex = nonSystem.Count;
+
+        for (var i = nonSystem.Count - 1; i >= 0 && turns < keepTurns; i--)
+        {
+            startIndex = i;
+            if (nonSystem[i].Role == MessageRole.User)
+                turns++;
+        }
+
+        // A pending tool call awaiting a permission decision can outlive several user turns
+        // (queued permissions). Never let it fall into the summarized portion — resolving it
+        // later needs to find this exact message still in history.
+        var pendingCallIds = FindUnansweredToolCallIds(nonSystem);
+        var pendingIndex = FindEarliestUnansweredToolCallIndex(nonSystem);
+        if (pendingIndex is int p && p < startIndex)
+            startIndex = p;
+
+        var recent = nonSystem.Skip(startIndex).ToList();
+        var budget = Math.Max((int)(_contextSize() * KeepWindowFraction), KeepWindowMinTokens);
+        if (TokenEstimator.EstimateMessages(recent) <= budget)
+            return (recent, []);
+
+        // The recent turns exceed the token budget (huge tool outputs). Move tool messages out
+        // of the keep-window, oldest first, until it fits — but never a tool result that
+        // belongs to a still-unanswered (pending) tool call.
+        var spilled = new List<Message>();
+        while (TokenEstimator.EstimateMessages(recent) > budget)
+        {
+            var movable = -1;
+            for (var j = 0; j < recent.Count; j++)
+            {
+                var id = recent[j].ToolCallId;
+                if (recent[j].Role == MessageRole.Tool
+                    && (id is null || !pendingCallIds.Contains(id)))
+                {
+                    movable = j;
+                    break;
+                }
+            }
+            if (movable < 0)
+                break; // only protected (pending) results left — nothing more can move
+            spilled.Add(recent[movable]);
+            recent.RemoveAt(movable);
+        }
+
+        return (recent, spilled);
+    }
+
+    private static HashSet<string> FindUnansweredToolCallIds(List<Message> nonSystem)
+    {
+        var answered = nonSystem
+            .Where(m => m.Role == MessageRole.Tool && m.ToolCallId is not null)
+            .Select(m => m.ToolCallId!)
+            .ToHashSet();
+
+        var pending = new HashSet<string>();
+        foreach (var m in nonSystem)
+        {
+            if (m.Role == MessageRole.Assistant && m.ToolCalls is { Count: > 0 } calls)
+            {
+                foreach (var c in calls)
+                    if (!answered.Contains(c.Id))
+                        pending.Add(c.Id);
+            }
+        }
+        return pending;
+    }
+
+    private static int? FindEarliestUnansweredToolCallIndex(List<Message> nonSystem)
+    {
+        var answered = nonSystem
+            .Where(m => m.Role == MessageRole.Tool && m.ToolCallId is not null)
+            .Select(m => m.ToolCallId!)
+            .ToHashSet();
+
+        for (var i = 0; i < nonSystem.Count; i++)
+        {
+            if (nonSystem[i].Role == MessageRole.Assistant
+                && nonSystem[i].ToolCalls is { Count: > 0 } calls
+                && calls.Any(c => !answered.Contains(c.Id)))
+                return i;
+        }
+        return null;
+    }
+
+    // --- Helpers ---------------------------------------------------------------------------
+
+    private static string BuildConversationText(List<Message> messages)
+    {
+        var sb = new StringBuilder();
+        foreach (var msg in messages)
+        {
+            var role = msg.Role.ToString().ToUpperInvariant();
+            var content = msg.Content ?? "(tool call/result)";
+            sb.AppendLine($"[{role}]: {content}\n");
+        }
         return sb.ToString();
     }
 
@@ -186,58 +451,6 @@ public sealed class Compactor
     internal static int EstimateTokens(IReadOnlyList<Message> messages)
         => TokenEstimate.EstimatePayload(messages);
 
-    private static List<Message> GetRecentTurns(IReadOnlyList<Message> messages, int keepTurns)
-    {
-        var nonSystem = messages.Where(m => m.Role != MessageRole.System).ToList();
-        var turns = 0;
-        var startIndex = nonSystem.Count;
-
-        for (var i = nonSystem.Count - 1; i >= 0 && turns < keepTurns; i--)
-        {
-            startIndex = i;
-            if (nonSystem[i].Role == MessageRole.User)
-                turns++;
-        }
-
-        // A pending tool call awaiting a permission decision can outlive several user turns
-        // (queued permissions). Never let it fall into the summarized portion — resolving it
-        // later needs to find this exact message still in history.
-        var pendingIndex = FindEarliestUnansweredToolCallIndex(nonSystem);
-        if (pendingIndex is int p && p < startIndex)
-            startIndex = p;
-
-        return nonSystem.Skip(startIndex).ToList();
-    }
-
-    private static int? FindEarliestUnansweredToolCallIndex(List<Message> nonSystem)
-    {
-        var answered = nonSystem
-            .Where(m => m.Role == MessageRole.Tool && m.ToolCallId is not null)
-            .Select(m => m.ToolCallId!)
-            .ToHashSet();
-
-        for (var i = 0; i < nonSystem.Count; i++)
-        {
-            if (nonSystem[i].Role == MessageRole.Assistant
-                && nonSystem[i].ToolCalls is { Count: > 0 } calls
-                && calls.Any(c => !answered.Contains(c.Id)))
-                return i;
-        }
-        return null;
-    }
-
-    private static string BuildConversationText(List<Message> messages)
-    {
-        var sb = new StringBuilder();
-        foreach (var msg in messages)
-        {
-            var role = msg.Role.ToString().ToUpperInvariant();
-            var content = msg.Content ?? "(tool call/result)";
-            sb.AppendLine($"[{role}]: {content}\n");
-        }
-        return sb.ToString();
-    }
-
     private CompactionReport EmptyReport(int messagesBefore, int tokensBefore, TimeSpan duration) =>
         new()
         {
@@ -252,6 +465,6 @@ public sealed class Compactor
             ToolOutputsEvicted = 0,
             EvictedBytes = 0,
             Duration = duration,
-            ContextWindowSize = _contextSize,
+            ContextWindowSize = _contextSize(),
         };
 }

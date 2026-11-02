@@ -4,6 +4,12 @@ namespace OpenMono.Commands;
 
 public sealed class ResumeCommand : ICommand
 {
+    private readonly ConversationLoop? _loop;
+
+    public ResumeCommand() : this(null) { }
+
+    public ResumeCommand(ConversationLoop? loop) => _loop = loop;
+
     public string Name => "resume";
     public string Description => "Resume a previous session (/resume [id])";
     public CommandType Type => CommandType.Local;
@@ -75,5 +81,11 @@ public sealed class ResumeCommand : ICommand
         context.Renderer.WriteInfo(
             $"Resumed session {context.Session.Id} — {context.Session.TurnCount} turns, " +
             $"{context.Session.Messages.Count} messages loaded{cpInfo}.");
+
+        // Proactive context management: if the resumed history already exceeds the trigger
+        // threshold, compact it NOW — before the first turn — so we do not start a turn that
+        // is already over the window (where /compact can no longer help).
+        if (_loop is not null)
+            await _loop.EnsureResumedFitsAsync(ct);
     }
 }

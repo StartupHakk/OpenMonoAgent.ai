@@ -7,12 +7,17 @@ namespace OpenMono.Session;
 public sealed class Checkpointer
 {
     private readonly ILlmClient _llm;
-    private readonly int _contextSize;
+    private readonly Func<int> _contextSize;
 
     private const double TriggerThreshold = 0.65;
     private const int KeepRecentTurns = 4;
 
     public Checkpointer(ILlmClient llm, int contextSize)
+        : this(llm, () => contextSize)
+    {
+    }
+
+    public Checkpointer(ILlmClient llm, Func<int> contextSize)
     {
         _llm = llm;
         _contextSize = contextSize;
@@ -33,14 +38,14 @@ public sealed class Checkpointer
             var effective = BuildContextWindow(session);
             tokens = TokenEstimator.EstimateMessages(effective);
         }
-        var threshold = (int)(_contextSize * TriggerThreshold);
+        var threshold = (int)(_contextSize() * TriggerThreshold);
         return tokens > threshold;
     }
 
     public bool HasCompressibleContent(SessionState session)
         => FindCutoff(session) >= 0;
 
-    private int MinFoldTokens => (int)(_contextSize * 0.02);
+    private int MinFoldTokens => (int)(_contextSize() * 0.02);
 
     private int FindCutoff(SessionState session)
     {
@@ -80,8 +85,9 @@ public sealed class Checkpointer
             .Where(m => m.Role != MessageRole.System)
             .ToList();
 
-        var (evictedMessages, _, _) = SummarySafety.EvictLargeToolOutputs(toSummarise);
-        var summary = await GenerateSummaryAsync(evictedMessages, ct);
+        // Summarize the full (untrimmed) history: large tool outputs are important context,
+        // so they are summarized rather than evicted before the summary sees them.
+        var summary = await GenerateSummaryAsync(toSummarise, ct);
 
         var entry = new CheckpointEntry
         {
@@ -136,7 +142,7 @@ public sealed class Checkpointer
             new() { Role = MessageRole.User,   Content = conversationText },
         };
 
-        SummarySafety.EnsureSummaryFits(summaryMessages, _contextSize);
+        SummarySafety.EnsureSummaryFits(summaryMessages, _contextSize());
 
         var sb = new StringBuilder();
         var opts = new LlmOptions { MaxTokens = 4096, Temperature = 0.1, EnableThinking = false };

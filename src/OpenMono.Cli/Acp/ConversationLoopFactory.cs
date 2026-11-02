@@ -56,6 +56,9 @@ public sealed class ConversationLoopFactory
     public ConversationLoop Create(SessionState session, IAcpEventSink sink, IAcpUserInteraction interaction, PermissionStore store)
     {
         var placeholderPermissions = new PermissionEngine(_config, _output, _input, store: store);
+        // Live Func<int> (not by-value) so a later re-probe correction to
+        // config.Llm.ContextSize is seen by the loop's Compactor/Checkpointer —
+        // same wiring as the interactive TUI path.
         return new ConversationLoop(
             _llm,
             _tools,
@@ -65,6 +68,8 @@ public sealed class ConversationLoopFactory
             _liveFeedback,
             _config,
             session,
+            compactor: new Compactor(_llm, () => _config.Llm.ContextSize),
+            checkpointer: new Checkpointer(_llm, () => _config.Llm.ContextSize),
             sink: sink,
             interaction: interaction,
             store: store);

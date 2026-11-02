@@ -280,6 +280,47 @@ public sealed class AcpTurnRunnerTests
     }
 
     [Fact]
+    public async Task ResumedSessionOverWindow_compactsBeforeFirstTurn_andClearsResumedFlag()
+    {
+        // Mirrors the TUI /resume path: a session reloaded from disk whose rebuilt
+        // window already exceeds the trigger threshold must be compacted BEFORE the first
+        // turn (not left to start a turn already over the context limit).
+        var session = NewSession();
+        session.ResumedFromDisk = true;
+
+        // Six earlier turns, each with a sizeable assistant reply, so the rebuilt window
+        // comfortably exceeds 80% of a small context window, and at least four messages
+        // (the oldest user turns) fall outside the recent-4 keep-window — i.e. there is
+        // genuinely something to compact.
+        var chunk = new string('a', 3_200); // ~800 tokens per assistant reply
+        for (var i = 1; i <= 6; i++)
+        {
+            session.Messages.Add(new Message { Role = MessageRole.User, Content = $"task {i}: please do some work" });
+            session.Messages.Add(new Message { Role = MessageRole.Assistant, Content = $"Task {i} complete. " + chunk });
+        }
+
+        var (runner, sess, body) = BuildHarness(
+            session,
+            tools: new ToolRegistry(),
+            llmRounds: new List<List<StreamChunk>>
+            {
+                // round(s) consumed by the proactive resume compaction's summarizer:
+                new() { new() { TextDelta = "summary of prior work", IsComplete = false }, new() { IsComplete = true } },
+                // the turn's own first response:
+                new() { new() { TextDelta = "continuing", IsComplete = false }, new() { IsComplete = true, Usage = new UsageInfo() } },
+            },
+            contextSize: 4096);
+
+        await runner.RunUserMessageAsync("keep going", CancellationToken.None);
+
+        sess.ResumedFromDisk.Should().BeFalse(
+            "the one-time proactive resume check must have run and cleared the flag");
+        session.Messages.Any(m => m.Role == MessageRole.User && (m.Content ?? "").StartsWith("[Conversation summary"))
+            .Should().BeTrue("the oversized history must have been compacted into a summary message");
+        ParseSseEvents(body).Should().Contain(e => e.name == "done", "the turn must still complete after compaction");
+    }
+
+    [Fact]
     public async Task ResumeWithPermissionAsync_with_unknown_id_emits_error_event()
     {
         var (runner, _, body) = BuildHarness(
@@ -369,12 +410,14 @@ public sealed class AcpTurnRunnerTests
     private static (AcpTurnRunner runner, AcpSession session, MemoryStream body) BuildHarness(
         AcpSession session,
         ToolRegistry tools,
-        List<List<StreamChunk>> llmRounds)
+        List<List<StreamChunk>> llmRounds,
+        int? contextSize = null)
     {
         var body = new MemoryStream();
         var writer = new SseWriter(body, CancellationToken.None);
         var config = new AppConfig { DataDirectory = Path.Combine(Path.GetTempPath(), "openmono-runner-" + Guid.NewGuid().ToString("N")[..8]) };
         Directory.CreateDirectory(config.DataDirectory);
+        if (contextSize is { } cs) config.Llm.ContextSize = cs;
         var renderer = new TerminalRenderer();
         var llm = new ScriptedLlm(llmRounds);
         var factory = new ConversationLoopFactory(llm, tools, config, renderer, renderer, renderer);

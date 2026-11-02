@@ -1069,6 +1069,38 @@ public sealed class ConversationLoop : IDisposable
         TryAbortIfStillOverflows();
     }
 
+    /// <summary>
+    /// Proactive overflow check for a just-resumed session: if the rebuilt context window is
+    /// already over the trigger threshold, run a compaction BEFORE the first turn. A session can
+    /// outlive the window between compactions; resuming it without this would start the turn
+    /// already overflowing, where a later /compact can no longer help.
+    /// </summary>
+    public async Task EnsureResumedFitsAsync(CancellationToken ct)
+    {
+        var estimate = TokenEstimate.EstimatePayload(
+            _checkpointer.BuildContextWindow(_session),
+            _tools.BuildToolDefinitionsFor(_tools.All.Select(t => t.Name)),
+            _config.Llm.Model);
+        var threshold = (int)(_config.Llm.ContextSize * 0.80);
+        if (estimate <= threshold)
+            return;
+
+        if (!_compactor.HasCompactableContent(_session.Messages))
+        {
+            _output.WriteWarning(
+                $"Resumed conversation is already ~{estimate} of {_config.Llm.ContextSize} context " +
+                "tokens and there is nothing left to compact. Continue in a new session, or trim " +
+                "the latest messages.");
+            return;
+        }
+
+        _output.WriteInfo(
+            $"Resumed conversation is ~{estimate} of {_config.Llm.ContextSize} context tokens — " +
+            "compacting before the first turn.");
+        await RunCompactionAsync(estimate, customInstructions: null, ct, reason: "auto");
+        TryAbortIfStillOverflows();
+    }
+
     private bool TryAbortIfStillOverflows()
     {
         var estimate = TokenEstimate.EstimatePayload(
@@ -1120,7 +1152,7 @@ public sealed class ConversationLoop : IDisposable
 
     private async Task RunCompactionAsync(int promptTokens, string? customInstructions, CancellationToken ct, string reason)
     {
-        if (!Compactor.HasCompactableContent(_session.Messages))
+        if (!_compactor.HasCompactableContent(_session.Messages))
         {
             _output.WriteDebug($"[Compact] Skipped ({reason}) — messages={_session.Messages.Count} lastPromptTokens={promptTokens}");
             if (reason == "manual")

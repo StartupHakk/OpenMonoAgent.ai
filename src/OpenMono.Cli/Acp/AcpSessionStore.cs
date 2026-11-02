@@ -90,6 +90,9 @@ public sealed class AcpSessionStore : IDisposable
         {
             State = state,
             LastActivityAt = state.Messages.Count > 0 ? state.Messages[^1].Timestamp : state.StartedAt,
+            // This state came from disk (a resume). The turn runner will run a one-time
+            // proactive overflow compaction before the first turn on this session.
+            ResumedFromDisk = true,
         };
         if (IsExpired(session)) return null;
 

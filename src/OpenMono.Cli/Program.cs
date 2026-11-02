@@ -166,6 +166,12 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     }
     if (llm is AnthropicClient anthropicClient) anthropicClient.OnDebug = debugCallback;
 
+    // Re-probe the live server once it is reachable, in case the startup probe ran before the
+    // model finished loading (then /props reported no n_ctx and we fell back to the configured
+    // default). The Compactor/Checkpointer below read ContextSize live, so any later
+    // correction applies immediately.
+    _ = TryReProbeContextSizeAsync(config);
+
     var fileHistory = new FileHistory(config);
     session.Meta.FileHistory = fileHistory;
 
@@ -373,7 +379,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
         return;
     }
 
-    var checkpointer = new Checkpointer(llm, config.Llm.ContextSize);
+    var checkpointer = new Checkpointer(llm, () => config.Llm.ContextSize);
 
     var commands = new CommandRegistry();
     commands.Register(new HelpCommand());
@@ -382,7 +388,9 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     commands.Register(new InitCommand());
     commands.Register(new UndoCommand());
     commands.Register(new DebugCommand());
-    commands.Register(new ResumeCommand());
+    // Registered after the loop exists below — the command needs the loop to run the
+    // proactive overflow compaction on resume.
+
     commands.Register(new ExportCommand());
     commands.Register(new ClearCommand());
     commands.Register(new CheckpointCommand(checkpointer));
@@ -393,12 +401,13 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     commands.Register(new ModelCommand());
     commands.Register(new BtwCommand());
 
-    var compactor = new Compactor(llm, config.Llm.ContextSize);
+    var compactor = new Compactor(llm, () => config.Llm.ContextSize);
     var loop = new ConversationLoop(llm, tools, permissions, renderer, renderer, renderer, config, session, compactor, memoryStore,
         checkpointer: checkpointer,
         dequeuePendingUserInput: () => ansiTui?.DequeueMessage(),
         onPendingUserInputInjected: text => ansiTui?.AddUserMessage(text));
 
+    commands.Register(new ResumeCommand(loop));
     commands.Register(new RetryCommand(loop));
     commands.Register(new CompactCommand(loop));
     commands.Register(new PlanCommand(loop));
@@ -908,6 +917,76 @@ static async Task PollHealthAsync(IRenderer renderer, string healthUrl, string? 
 
     renderer.WriteWarning($"Timed out after {timeoutSeconds}s. Last response: {lastStatus}");
     renderer.WriteInfo("Check logs: docker logs llama-server --tail 20");
+}
+
+// The startup model/ctx probe runs as soon as the agent boots; if llama-server has not
+// finished loading the model yet, /props has no usable n_ctx and the agent silently keeps the
+// configured default (often far larger than the real window) for the whole session. This
+// fire-and-forget re-probe runs a little later: once a plausible n_ctx is observed, it replaces
+// the configured ContextSize unless the user pinned one explicitly (env or llm.context_size).
+static async Task TryReProbeContextSizeAsync(AppConfig config)
+{
+    for (var attempt = 0; attempt < 3; attempt++)
+    {
+        if (config.Llm.ContextSizeExplicit) return; // user pinned a value — never override
+        if (config.Llm.ContextSize > 0 && config.Llm.ContextSize != 196608)
+        {
+            // Config already differs from the built-in default: it came from settings.json /
+            // the installer's inference.ctx_size. Treat that as authoritative too; only
+            // correct the pure-default case where the startup probe clearly missed.
+            return;
+        }
+
+        try
+        {
+            using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            if (!string.IsNullOrWhiteSpace(config.Llm.ApiKey))
+                http.DefaultRequestHeaders.Authorization =
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.Llm.ApiKey);
+            var baseUrl = config.Llm.Endpoint.TrimEnd('/');
+
+            int? serverCtx = null;
+            try
+            {
+                var json = await http.GetStringAsync($"{baseUrl}/props");
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                if (root.TryGetProperty("default_generation_settings", out var dgs)
+                    && dgs.TryGetProperty("n_ctx", out var nCtxNested)
+                    && nCtxNested.TryGetInt32(out var ctxNested) && ctxNested > 0)
+                {
+                    serverCtx = ctxNested;
+                }
+                else if (root.TryGetProperty("n_ctx", out var nCtx) && nCtx.TryGetInt32(out var ctx) && ctx > 0)
+                {
+                    serverCtx = ctx;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Debug($"Re-probe /props unavailable ({ex.GetType().Name})");
+            }
+            if (serverCtx is null or <= 0)
+                serverCtx = await TryDetectCtxFromSlotsAsync(http, baseUrl);
+
+            if (serverCtx is >= OpenMono.Utils.ContextSizeResolver.MinimumPlausibleContextSize)
+            {
+                var resolved = OpenMono.Utils.ContextSizeResolver.ResolveContextSize(serverCtx, config.Llm.ContextSize);
+                if (resolved != config.Llm.ContextSize)
+                {
+                    config.Llm.ContextSize = resolved;
+                    Log.Info($"Context size corrected from server (re-probe): {resolved} (was {config.Llm.ContextSize})");
+                }
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Debug($"Context re-probe failed ({ex.GetType().Name})");
+        }
+
+        await Task.Delay(2000);
+    }
 }
 
 static async Task<int?> TryDetectCtxFromSlotsAsync(System.Net.Http.HttpClient http, string baseUrl)

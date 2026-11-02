@@ -9,6 +9,16 @@ public sealed class AcpSession
 
     public DateTime LastActivityAt { get; set; }
 
+    /// <summary>
+    /// True once the session's history has been reloaded from disk (a "resume").
+    /// Set by <c>AcpSessionStore.TryGet</c> only when the state came from disk, not
+    /// from a session created in this process. The turn runner uses it to run a one-time
+    /// proactive overflow compaction (<c>ConversationLoop.EnsureResumedFitsAsync</c>) before
+    /// the first turn after the reload, so a session that outlived its window is compacted
+    /// instead of starting a turn already over the context limit.
+    /// </summary>
+    public bool ResumedFromDisk { get; set; }
+
     public string Id => State.Id;
     public DateTime StartedAt => State.StartedAt;
     public string Model => State.Model ?? "";

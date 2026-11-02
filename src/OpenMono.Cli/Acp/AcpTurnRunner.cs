@@ -640,6 +640,18 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
         using var loop = _loopFactory.Create(sessionState, sink: this, interaction: _interaction, store: _acpSession.Store);
 
+        // Proactive context management on resume: if this session's history was just
+        // reloaded from disk and its rebuilt window already exceeds the trigger threshold,
+        // compact it NOW — before the first turn — so a session that outlived its window
+        // is summarised instead of starting a turn already over the context limit
+        // (mirrors the TUI /resume path). Runs once per disk reload.
+        if (_acpSession.ResumedFromDisk)
+        {
+            _acpSession.ResumedFromDisk = false;
+            Log.Info($"[OMA_RESUME] Session {_acpSession.Id} reloaded from disk — checking window before first turn.");
+            await loop.EnsureResumedFitsAsync(ct);
+        }
+
         try
         {
             await loop.ContinueTurnAsync(ct);
