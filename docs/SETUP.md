@@ -217,8 +217,11 @@ openmono stop       # stop everything
 openmono restart    # restart the inference server
 openmono status     # container · model status
 openmono logs       # tail live inference logs
+openmono upgrade    # reconcile all components to pinned versions
 openmono help       # list all commands
 ```
+
+→ [Upgrade & component versioning reference](CONFIG.md#upgrade--component-versioning)
 
 ---
 

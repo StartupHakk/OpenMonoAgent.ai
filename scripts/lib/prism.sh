@@ -190,6 +190,9 @@ build_prism_macos() {
         if [[ "$(git -C "$src" describe --tags --exact-match 2>/dev/null || echo '')" == "$ref" ]]; then
             ok "Prism llama-server already built ($ref) — skipping rebuild"
             detail "$(prism_macos_bin)"
+            # Write-after-install: record the actual built ref in the box file.
+            command -v vp_box_record_installed &>/dev/null && \
+                vp_box_record_installed llama "$(git -C "$src" describe --tags 2>/dev/null || echo "$ref")"
             return 0
         fi
         info "Existing Prism build is not $ref — rebuilding..."
@@ -222,6 +225,10 @@ build_prism_macos() {
 
     prism_binary_available || { err "Build finished but $(prism_macos_bin) is missing"; return 1; }
     ok "Prism llama-server ready ($(prism_macos_bin))"
+    # Write-after-install: record the actual built ref in the box file so
+    # ~/.openmono/versions.json always shows what is really on the machine.
+    command -v vp_box_record_installed &>/dev/null && \
+        vp_box_record_installed llama "$(git -C "$src" describe --tags 2>/dev/null || echo "$ref")"
 }
 
 # ── macOS native (Metal) notes ────────────────────────────────────────────────

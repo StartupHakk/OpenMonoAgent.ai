@@ -96,10 +96,44 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
 
     private volatile int _contextWarningPct;
 
-    // "Update available" banner text, supplied by the host launcher via env when a
-    // newer version of OpenMono is on the tracked branch. Null = up to date / unknown.
-    private readonly string? _updateNotice =
+    // "Update available" banner text. Seeded from the env var (frozen at process
+    // start) but refreshed live from ~/.openmono/.update_check (line 2) every
+    // 30 s, so the banner disappears after `openmono upgrade` and reappears when
+    // a new update lands — no TUI restart required. Null = up to date / unknown.
+    private volatile string? _updateNotice =
         Environment.GetEnvironmentVariable("OPENMONO_UPDATE_NOTICE") is { Length: > 0 } n ? n : null;
+    private System.Threading.Timer? _updateCheckTimer;
+
+    private static string UpdateCheckPath()
+    {
+        var home = Environment.GetEnvironmentVariable("HOME")
+            ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return Path.Combine(home, ".openmono", ".update_check");
+    }
+
+    /// <summary>
+    /// Re-reads the update-check cache file and updates <see cref="_updateNotice"/>.
+    /// Called on a 30 s timer; cheap (one small file read). If the file is missing
+    /// or unreadable, the env-var seed is retained.
+    /// </summary>
+    private void RefreshUpdateNotice()
+    {
+        try
+        {
+            var path = UpdateCheckPath();
+            if (!File.Exists(path)) return;
+            var lines = File.ReadAllLines(path);
+            // line 1 = epoch stamp, line 2 = notice text (empty when up to date)
+            var notice = lines.Length > 1 ? lines[1] : "";
+            _updateNotice = string.IsNullOrEmpty(notice) ? null : notice;
+            if (_updateNotice != null)
+                PaintConvThrottled(force: true);
+        }
+        catch
+        {
+            // File may be mid-write or missing — keep the current value.
+        }
+    }
 
     private string[]? _prevConvFrame;
     private string[]? _prevSideFrame;
@@ -693,6 +727,12 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         _paintActive = true;
         _paintThread = new Thread(PaintLoop) { IsBackground = true, Name = "PaintLoop" };
         _paintThread.Start();
+
+        // Live update-banner: re-read ~/.openmono/.update_check every 30 s so the
+        // banner clears after `openmono upgrade` and reappears on a new update.
+        _updateCheckTimer?.Dispose();
+        _updateCheckTimer = new System.Threading.Timer(_ => RefreshUpdateNotice(),
+            null, dueTime: 30_000, period: 30_000);
     }
 
     internal void StopPaintThread()
@@ -704,6 +744,8 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         while (_paintChannel.Reader.TryRead(out _)) { }
         _paintCts?.Dispose();
         _paintCts = null;
+        _updateCheckTimer?.Dispose();
+        _updateCheckTimer = null;
     }
 
     internal void OnTokensUpdated()
