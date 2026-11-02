@@ -21,6 +21,7 @@ public sealed class AppConfig
     public Dictionary<string, McpServerSettings> McpServers { get; set; } = [];
     public AcpServerSettings? AcpServer { get; set; }
     public InferenceConfig Inference { get; set; } = new();
+    public GitConfig Git { get; set; } = new();
     public bool AutoDetectCodeGraph { get; set; } = true;
     public bool Verbose { get; set; } = false;
     public bool ShowDetail { get; set; } = false;

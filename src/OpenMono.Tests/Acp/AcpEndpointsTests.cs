@@ -42,6 +42,8 @@ public sealed class AcpEndpointsTests : IAsyncLifetime
 
         var cfg = new AppConfig { DataDirectory = _tempDir };
         cfg.Llm.Model = "test-model";
+        cfg.Git.Profiles["work"] = new GitProfile { Type = "ssh", SshKey = "~/.ssh/id_ed25519" };
+        cfg.Git.Profiles["personal"] = new GitProfile { Type = "https", Token = "ghp_test" };
         var settings = new AcpServerSettings
         {
             Port = _port,
@@ -207,6 +209,133 @@ public sealed class AcpEndpointsTests : IAsyncLifetime
             Environment.SetEnvironmentVariable("OPENMONO_HOST_DAEMON_URL", origUrl);
         }
     }
+
+    [Fact]
+    public async Task PostGit_returns_404_for_unknown_session()
+    {
+        var res = await _client.PostAsJsonAsync("/api/v1/sessions/sess_missing/git", new { profile = "work" });
+        res.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task PostGit_sets_profile_and_reflects_in_session()
+    {
+        var sid = await CreateSessionAsync();
+
+        var res = await _client.PostAsJsonAsync($"/api/v1/sessions/{sid}/git", new { profile = "work" });
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("ok").GetBoolean().Should().BeTrue();
+        doc.RootElement.GetProperty("git_profile").GetString().Should().Be("work");
+
+        var store = _app.Services.GetRequiredService<AcpSessionStore>();
+        store.TryGet(sid)!.State.Meta.GitProfileName.Should().Be("work");
+    }
+
+    [Fact]
+    public async Task PostGit_null_profile_clears_to_host_passthrough()
+    {
+        var sid = await CreateSessionAsync();
+        var store = _app.Services.GetRequiredService<AcpSessionStore>();
+        store.TryGet(sid)!.State.Meta.GitProfileName = "work";
+
+        var res = await _client.PostAsJsonAsync($"/api/v1/sessions/{sid}/git", new { profile = (string?)null });
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("ok").GetBoolean().Should().BeTrue();
+        doc.RootElement.GetProperty("git_profile").ValueKind.Should().Be(JsonValueKind.Null);
+
+        store.TryGet(sid)!.State.Meta.GitProfileName.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task PostGit_profile_persists_and_survives_store_recreation()
+    {
+        var sid = await CreateSessionAsync();
+        var res = await _client.PostAsJsonAsync($"/api/v1/sessions/{sid}/git", new { profile = "personal" });
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("ok").GetBoolean().Should().BeTrue();
+
+        // Simulate a restart: a brand-new store with an empty live cache must
+        // re-resolve the session (and its git profile choice) from disk.
+        var cfg = _app.Services.GetRequiredService<AppConfig>();
+        var settings = _app.Services.GetRequiredService<AcpServerSettings>();
+        var freshStore = new AcpSessionStore(cfg, settings, startReaper: false);
+        try
+        {
+            var reloaded = freshStore.TryGet(sid);
+            reloaded!.State.Meta.GitProfileName.Should().Be("personal");
+            reloaded.State.Meta.GitProfileTouched.Should().BeTrue();
+        }
+        finally
+        {
+            freshStore.Dispose();
+        }
+    }
+
+    [Fact]
+    public void CreateSession_inheritsResolvedGitProfile()
+    {
+        var cfg = _app.Services.GetRequiredService<AppConfig>();
+        var settings = _app.Services.GetRequiredService<AcpServerSettings>();
+
+        try
+        {
+            var store = new AcpSessionStore(cfg, settings, startReaper: false);
+
+            // OPENMONO_GIT_PROFILE (SessionProfile) wins over git.default and marks
+            // the session touched.
+            cfg.Git.SessionProfile = "personal";
+            cfg.Git.Default = "work";
+            var s1 = store.Create(null, cfg);
+            s1.State.Meta.GitProfileName.Should().Be("personal");
+            s1.State.Meta.GitProfileTouched.Should().BeTrue();
+
+            // No env var → git.default, but not touched (still overridable on next launch).
+            cfg.Git.SessionProfile = null;
+            var s2 = store.Create(null, cfg);
+            s2.State.Meta.GitProfileName.Should().Be("work");
+            s2.State.Meta.GitProfileTouched.Should().BeFalse();
+
+            // Nothing configured → host pass-through.
+            cfg.Git.Default = null;
+            var s3 = store.Create(null, cfg);
+            s3.State.Meta.GitProfileName.Should().BeNull();
+            s3.State.Meta.GitProfileTouched.Should().BeFalse();
+        }
+        finally
+        {
+            cfg.Git.SessionProfile = null;
+            cfg.Git.Default = null;
+        }
+    }
+
+    [Fact]
+    public async Task PostGit_unknown_profile_returns_ok_false_with_error_not_4xx()
+    {
+        var sid = await CreateSessionAsync();
+
+        var res = await _client.PostAsJsonAsync($"/api/v1/sessions/{sid}/git", new { profile = "nope" });
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("ok").GetBoolean().Should().BeFalse();
+        doc.RootElement.GetProperty("error").GetString().Should().Contain("nope");
+
+        var store = _app.Services.GetRequiredService<AcpSessionStore>();
+        store.TryGet(sid)!.State.Meta.GitProfileName.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task PostGit_rejects_bad_json_with_400()
+    {
+        var sid = await CreateSessionAsync();
+
+        var res = await _client.PostAsync($"/api/v1/sessions/{sid}/git",
+            new StringContent("not json", System.Text.Encoding.UTF8, "application/json"));
+        res.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+
 
     [Fact]
     public async Task PostHost_off_is_idempotent_for_unpaired_session()

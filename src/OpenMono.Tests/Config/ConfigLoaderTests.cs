@@ -95,7 +95,10 @@ public class ConfigLoaderTests : IDisposable
         }
         finally
         {
-            Environment.SetEnvironmentVariable("OPENMONO_DATA_DIR", null);
+            // Restore the ctor's isolated data dir (NOT null): xUnit runs test classes
+            // in parallel, so a null would leak into other classes' ConfigLoader.Load
+            // calls and flip OPENMONO_DATA_DIR for them mid-run.
+            Environment.SetEnvironmentVariable("OPENMONO_DATA_DIR", _emptyDataDir);
         }
     }
 

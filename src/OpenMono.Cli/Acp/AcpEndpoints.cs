@@ -26,6 +26,7 @@ public static class AcpEndpoints
         app.MapGet("/api/v1/sessions/{id}/messages", GetMessages);
         app.MapPost("/api/v1/sessions/{id}/turn", PostTurn);
         app.MapPost("/api/v1/sessions/{id}/host", ToggleHost);
+        app.MapPost("/api/v1/sessions/{id}/git", SetGit);
         app.MapDelete("/api/v1/sessions/{id}", DeleteSession);
 
         app.MapGet("/api/v1/sessions/{id}/diffs", GetDiffs);
@@ -234,6 +235,60 @@ public static class AcpEndpoints
             if (cut < 0) continue;
             session.Messages[i] = m with { Content = m.Content[..cut].TrimEnd() };
         }
+    }
+
+
+
+    /// <summary>
+    /// Hot-swaps the git auth profile for a sandbox session (<c>{"profile":"&lt;name&gt;" | null}</c>).
+    /// The editor/extension equivalent of the TUI's <c>/git &lt;name&gt;</c>: the named profile's
+    /// credentials are layered onto every Bash child that session spawns afterwards
+    /// (per-session, so concurrent ACP sessions never share a git identity), and
+    /// <c>null</c> restores legacy host pass-through. Wire contract: 200 with
+    /// <c>{ ok, git_profile, error? }</c>; 404 unknown session; 400 malformed body.
+    /// An unknown profile name is NOT 4xx — it comes back as <c>ok:false</c> with a
+    /// readable <c>error</c>, matching the /host endpoint's guidance style.
+    /// </summary>
+    private static async Task<IResult> SetGit(
+        HttpContext ctx,
+        string id,
+        AcpSessionStore store,
+        AppConfig config,
+        CancellationToken ct)
+    {
+        var session = store.TryGet(id);
+        if (session is null) return Results.NotFound();
+
+        string? profileName = null;
+        try
+        {
+            using var doc = await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ct);
+            profileName = doc.RootElement.TryGetProperty("profile", out var pEl) ? pEl.GetString() : null;
+        }
+        catch (JsonException ex)
+        {
+            return Results.BadRequest(new { error = "invalid_json", detail = ex.Message });
+        }
+
+        if (string.IsNullOrWhiteSpace(profileName)) profileName = null;
+
+        string? error = null;
+        if (profileName is not null)
+        {
+            if (!config.Git.Profiles.TryGetValue(profileName, out var prof))
+                error = $"git profile '{profileName}' not found (known: {string.Join(", ", config.Git.Profiles.Keys)})";
+            else if (string.IsNullOrWhiteSpace(prof.Type) || (prof.Type != "ssh" && prof.Type != "https"))
+                error = $"git profile '{profileName}' has invalid type '{prof.Type ?? ""}' (expected 'ssh' or 'https')";
+        }
+
+        if (error is not null)
+            return Results.Ok(new { ok = false, git_profile = (string?)null, error });
+
+        session.State.Meta.GitProfileName = profileName;
+        session.State.Meta.GitProfileTouched = true;
+        store.Save(session);
+        Log.Info($"[OMA_MODE] git auth: session={id} profile={profileName ?? "(host pass-through)"}");
+        return Results.Ok(new { ok = true, git_profile = (string?)profileName });
     }
 
 

@@ -514,7 +514,7 @@ cmd_help() {
     printf "  %-14s %s\n" "help"    "Show this help"
     echo ""
     echo "Agent box (run the coding agent):"
-    printf "  %-14s %s\n" "agent"    "Run the coding agent in the current directory [--host|--sandbox]"
+    printf "  %-14s %s\n" "agent"    "Run the coding agent in the current directory [--host|--sandbox] [--git-profile <name>]"
     printf "  %-14s %s\n" "graph"    "Build the code-review-graph for a project"
     printf "  %-14s %s\n" "graphify" "Build the graphify knowledge graph for a project"
     echo ""
@@ -1632,10 +1632,18 @@ cmd_agent() {
     local mode="${OPENMONO_AGENT_MODE:-sandbox}"
     local fwd=()
     local a
-    for a in ${1+"$@"}; do
+    while [[ $# -gt 0 ]]; do
+        a="$1"; shift
         case "$a" in
             --host) mode=host ;;
             --sandbox) mode=sandbox ;;
+            --git-profile)
+                # Selects a git.auth profile (git.profiles in ~/.openmono/
+                # settings.json) for this session's commits/pushes. The NAME is
+                # forwarded as an env var; the credentials themselves never
+                # travel on the command line.
+                [[ $# -gt 0 ]] || { err "--git-profile requires a profile name"; exit 1; }
+                export OPENMONO_GIT_PROFILE="$1"; shift ;;
             *) fwd+=("$a") ;;
         esac
     done
@@ -1832,6 +1840,14 @@ cmd_agent_sandbox() {
     local extra_env=()
     local _upd; _upd="$(_update_notice 2>/dev/null || true)"
     [[ -n "$_upd" ]] && extra_env+=(-e "OPENMONO_UPDATE_NOTICE=$_upd")
+
+    # Git auth profile (git.profiles in ~/.openmono/settings.json): pass the
+    # NAME only — the value stays in the host environment, never on the docker
+    # command line. Inside, GitAuthApplier sets the matching env-level git
+    # credentials. Unset = git.default profile (or host pass-through).
+    if [[ -n "${OPENMONO_GIT_PROFILE:-}" ]]; then
+        extra_env+=(-e "OPENMONO_GIT_PROFILE=${OPENMONO_GIT_PROFILE}")
+    fi
 
     # Host mode: forward the daemon pairing details injected by cmd_agent_host
     # into the sandbox so the agent pairs on boot (HOST:ON + standing orders).

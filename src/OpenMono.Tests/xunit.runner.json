@@ -1,0 +1,5 @@
+{
+  "$schema": "https://xunit.net/schema/current/xunit.runner.schema.json",
+  "parallelizeTestCollections": false,
+  "_comment": "Several test classes mutate process-wide environment variables (HOME, OPENMONO_DATA_DIR, OPENMONO_GIT_PROFILE, HOST_WORKSPACE_PATH, ...) and other classes implicitly depend on the real values (AppConfig default DataDirectory = ~/.openmono). Parallelizing collections lets one class's mutation race into another class's run — see DirectoryNotFoundException in AcpEventSinkTests vs GitAuthApplierTests. Serializing test collections makes the suite deterministic."
+}

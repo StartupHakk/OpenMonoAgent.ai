@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
+using OpenMono.Config;
+using OpenMono.Cli.Git;
 using OpenMono.Permissions;
 
 namespace OpenMono.Tools;
@@ -103,6 +105,10 @@ public sealed class BashTool : ToolBase
 
         psi.Environment["HOME"] = Environment.GetEnvironmentVariable("HOME") ?? "/root";
         psi.Environment["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? "/usr/local/bin:/usr/bin:/bin";
+
+        // Per-session git auth (hot-swappable): layer this session's selected
+        // profile onto this child only. No-op (host pass-through) when none set.
+        GitAuthApplier.ApplyTo(psi, context.Session.Meta.GitProfileName, context.Config.Git);
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeoutMs);
@@ -215,6 +221,8 @@ public sealed class BashTool : ToolBase
         };
         psi.Environment["HOME"] = Environment.GetEnvironmentVariable("HOME") ?? "/root";
         psi.Environment["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? "/usr/local/bin:/usr/bin:/bin";
+
+        GitAuthApplier.ApplyTo(psi, context.Session.Meta.GitProfileName, context.Config.Git);
 
         Process? process;
         try

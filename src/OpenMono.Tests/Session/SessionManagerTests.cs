@@ -210,6 +210,48 @@ public class SessionManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task SaveAndLoad_RestoresGitProfileSelection()
+    {
+        var session = SessionManager.CreateSession();
+        session.AddMessage(new Message { Role = MessageRole.User, Content = "hi" });
+        session.Meta.GitProfileName = "work";
+        session.Meta.GitProfileTouched = true;
+        await _manager.SaveAsync(session, CancellationToken.None);
+
+        var loaded = await _manager.LoadAsync(session.Id, CancellationToken.None);
+        loaded!.Meta.GitProfileName.Should().Be("work");
+        loaded.Meta.GitProfileTouched.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task SaveAndLoad_RestoresExplicitGitProfileOff()
+    {
+        // A null name + touched=true ("explicitly off") must survive the round
+        // trip — that is what keeps /git off from silently re-enabling git.default
+        // on resume.
+        var session = SessionManager.CreateSession();
+        session.AddMessage(new Message { Role = MessageRole.User, Content = "hi" });
+        session.Meta.GitProfileTouched = true; // GitProfileName stays null
+        await _manager.SaveAsync(session, CancellationToken.None);
+
+        var loaded = await _manager.LoadAsync(session.Id, CancellationToken.None);
+        loaded!.Meta.GitProfileName.Should().BeNull();
+        loaded.Meta.GitProfileTouched.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task SaveAndLoad_UnsetGitProfile_StaysUnset()
+    {
+        var session = SessionManager.CreateSession();
+        session.AddMessage(new Message { Role = MessageRole.User, Content = "hi" });
+        await _manager.SaveAsync(session, CancellationToken.None);
+
+        var loaded = await _manager.LoadAsync(session.Id, CancellationToken.None);
+        loaded!.Meta.GitProfileName.Should().BeNull();
+        loaded.Meta.GitProfileTouched.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task DeleteAsync_RemovesSessionFilesAndIndexEntry()
     {
         var session = SessionManager.CreateSession();

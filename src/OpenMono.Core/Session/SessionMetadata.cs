@@ -24,6 +24,23 @@ public sealed class SessionMetadata
     /// writes go through the normal permission flow. Honored in LocalToolExecutor.
     /// </summary>
     public bool AutoApproveWrites { get; set; }
+    /// <summary>
+    /// Name of the git auth profile (settings.json "git" section) active for this
+    /// session, or null for legacy host pass-through. Layered onto every Bash child
+    /// at spawn time by GitAuthApplier.ApplyTo — so it is hot-swappable mid-session
+    /// in both the TUI (/git) and ACP (POST /sessions/{id}/git) without a process
+    /// restart, and independent per session under multi-session ACP.
+    /// </summary>
+    public string? GitProfileName { get; set; }
+    /// <summary>
+    /// True once the user has explicitly chosen a profile for this session — via
+    /// <c>/git &lt;name&gt;</c>, <c>/git off</c>, or the ACP POST /git endpoint.
+    /// Persisted in the session header so a resumed session keeps the choice
+    /// (including an explicit "off", which must NOT silently fall back to
+    /// git.default). When false, startup resolution continues:
+    /// OPENMONO_GIT_PROFILE → git.default → host pass-through.
+    /// </summary>
+    public bool GitProfileTouched { get; set; }
     /// <summary>The most recent plan's full text (what the plan says), set by CreatePlan.</summary>
     public string? LastPlanContent { get; set; }
     /// <summary>Workspace-relative path of the most recent plan file written by CreatePlan (where it's saved).</summary>
