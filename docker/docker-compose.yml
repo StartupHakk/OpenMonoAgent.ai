@@ -156,6 +156,9 @@ services:
       - OPENMONO_HOST_MODE=${OPENMONO_HOST_MODE:-}
       - OPENMONO_HOST_DAEMON_URL=${OPENMONO_HOST_DAEMON_URL:-}
       - OPENMONO_HOST_OS=${OPENMONO_HOST_OS:-}
+      # Git auth profile name (git.profiles in settings.json); empty = the
+      # git.default profile or host credential pass-through.
+      - OPENMONO_GIT_PROFILE=${OPENMONO_GIT_PROFILE:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     stdin_open: true

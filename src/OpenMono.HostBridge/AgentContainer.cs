@@ -107,6 +107,14 @@ public sealed class AgentContainer
         args.Append($"-e HOST_ACP_PORT={hostPort} ");
         args.Append($"-e OPENMONO_HOST_OS={(OperatingSystem.IsMacOS() ? "Darwin" : "Linux")} ");
         args.Append("-e GIT_TERMINAL_PROMPT=0 ");
+        // Git auth profile: OPENMONO_GIT_PROFILE (explicit) → git.default in
+        // settings.json. The NAME only ever enters the command line — the
+        // applier inside the container derives credentials from settings/env.
+        var gitProfile = Environment.GetEnvironmentVariable("OPENMONO_GIT_PROFILE");
+        if (string.IsNullOrWhiteSpace(gitProfile))
+            gitProfile = ReadGitDefault();
+        if (!string.IsNullOrWhiteSpace(gitProfile))
+            args.Append($"-e OPENMONO_GIT_PROFILE=\"{gitProfile}\" ");
         args.Append("agent --acp-only --acp-port 7475");
 
         _log.WriteLine("[bridge] starting ACP agent container...");
@@ -248,6 +256,28 @@ public sealed class AgentContainer
             }
         }
         args.Append("-e GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes\" ");
+    }
+
+    private static string? ReadGitDefault()
+    {
+        try
+        {
+            var path = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".openmono", "settings.json");
+            if (!File.Exists(path))
+                return null;
+            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            return doc.RootElement.TryGetProperty("git", out var gitEl)
+                && gitEl.TryGetProperty("default", out var dEl)
+                && dEl.ValueKind == JsonValueKind.String
+                    ? dEl.GetString()
+                    : null;
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

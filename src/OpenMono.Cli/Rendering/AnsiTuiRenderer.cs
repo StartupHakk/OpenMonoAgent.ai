@@ -126,6 +126,8 @@ public sealed class AnsiTuiRenderer : IRenderer
     public string  ReadInput()                                   => _inputReader.ReadInput();
     public string? ShowCommandPicker(CommandRegistry registry)   => _inputReader.ShowCommandPicker(registry);
 
+    public bool Interactive => true;
+
     public Task<string> AskUserAsync(string question, CancellationToken ct)
         => _inputReader.AskUserAsync(question, ct);
 

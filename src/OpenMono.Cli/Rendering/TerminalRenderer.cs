@@ -354,6 +354,8 @@ public sealed class TerminalRenderer : IRenderer
 
     private static bool IsNonInteractive => Console.IsInputRedirected || Console.IsOutputRedirected;
 
+    public bool Interactive => !IsNonInteractive;
+
     public Task<string> AskUserAsync(string question, CancellationToken ct)
     {
         if (IsNonInteractive)
@@ -369,6 +371,24 @@ public sealed class TerminalRenderer : IRenderer
             new TextPrompt<string>("  [yellow]>[/] ")
                 .AllowEmpty());
         return Task.FromResult(answer);
+    }
+
+    public Task<char[]> AskSecretAsync(string question, CancellationToken ct)
+    {
+        if (IsNonInteractive)
+        {
+            _console.MarkupLine($"  [yellow]⚠ Cannot prompt (non-interactive session): {Markup.Escape(question)}[/]");
+            return Task.FromResult(Array.Empty<char>());
+        }
+
+        _console.WriteLine();
+        _console.MarkupLine($"  [bold yellow]? {Markup.Escape(question)}[/]");
+        var prompt = new TextPrompt<string>("  [yellow]>[/] ")
+        {
+            IsSecret = true,
+        };
+        var secret = _console.Prompt(prompt);
+        return Task.FromResult(secret.ToCharArray());
     }
 
     public Task<PermissionResponse> AskPermissionAsync(

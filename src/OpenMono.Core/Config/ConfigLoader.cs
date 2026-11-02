@@ -173,6 +173,7 @@ public static class ConfigLoader
             config.Agents.MergeFrom(overrides.Agents);
             config.Web.MergeFrom(overrides.Web);
             config.Inference.MergeFrom(overrides.Inference);
+            config.Git.MergeFrom(overrides.Git);
 
             foreach (var (tool, rules) in overrides.Permissions.Tools)
             {
@@ -304,5 +305,11 @@ public static class ConfigLoader
             foreach (var p in config.Providers.Values) p.Active = false;
             ps.Active = true;
         }
+
+        // Per-session git auth profile selection (openmono agent --git-profile).
+        // Transient: never written back to settings.json.
+        var gitProfile = Environment.GetEnvironmentVariable("OPENMONO_GIT_PROFILE");
+        if (!string.IsNullOrEmpty(gitProfile))
+            config.Git.SessionProfile = gitProfile;
     }
 }

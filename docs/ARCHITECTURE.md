@@ -420,7 +420,7 @@ src/OpenMono.Cli/
 ├── Mcp/                    McpClient, McpServerManager, McpToolAdapter
 ├── Lsp/                    LspClient, LspServerManager
 ├── Playbooks/              PlaybookExecutor, PlaybookLoader, TemplateEngine, ParameterValidator
-├── Commands/               20 slash commands (/help, /status, /model, /compact, /undo, /btw, …)
+├── Commands/               21 slash commands (/help, /status, /model, /git, /compact, /undo, /btw, …)
 ├── Memory/                 Cross-session memory (YAML frontmatter files)
 ├── Hooks/                  HookRunner
 ├── Rendering/              AnsiTuiRenderer, TerminalRenderer, IRenderer

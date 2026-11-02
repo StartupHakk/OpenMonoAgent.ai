@@ -405,6 +405,8 @@ internal sealed class AnsiInputReader(
     /// history, suggestions, or background buffer. Returns chars owned by
     /// the caller (hand to <c>HostIdentity</c> or zero them).
     /// </summary>
+    public bool Interactive => true;
+
     public Task<char[]> AskSecretAsync(string question, CancellationToken ct)
     {
         var saved = _bgInputBuf.ToString();

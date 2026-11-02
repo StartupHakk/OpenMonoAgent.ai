@@ -32,6 +32,8 @@ public static class SessionReattach
             live.Todos.Add(todo);
 
         live.Meta.PlanMode = loaded.Meta.PlanMode;
+        live.Meta.GitProfileName = loaded.Meta.GitProfileName;
+        live.Meta.GitProfileTouched = loaded.Meta.GitProfileTouched;
 
         SessionConsistency.Repair(live);
     }

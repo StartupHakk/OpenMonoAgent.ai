@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using OpenMono.Cli.Git;
 using OpenMono.Config;
 using OpenMono.Session;
 using OpenMono.Utils;
@@ -54,6 +55,18 @@ public sealed class AcpSessionStore : IDisposable
         // only transmits the mode on an explicit toggle — so without this default a fresh
         // session would silently run in build mode (writes allowed) while the UI showed "plan".
         state.Meta.PlanMode = true;
+
+        // Inherit the git auth profile resolved at startup
+        // (OPENMONO_GIT_PROFILE / git.default) so every ACP session authenticates
+        // as the same profile. The POST /sessions/{id}/git endpoint hot-swaps
+        // this per session afterwards; a resumed session keeps its own persisted
+        // choice (AcpSession.TryGet → LoadAsync restores GitProfileName).
+        var (gitProfileName, _) = GitProfileSelection.Resolve(cfg.Git, null);
+        if (gitProfileName is not null)
+        {
+            state.Meta.GitProfileName = gitProfileName;
+            state.Meta.GitProfileTouched = cfg.Git.SessionProfile is not null;
+        }
 
         var reasoningProfile = ResolveReasoning(state.Model);
         state.Meta.ThinkingLevel = reasoningProfile.DefaultLevel;

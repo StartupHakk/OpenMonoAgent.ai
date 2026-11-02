@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using OpenMono.Acp;
+using OpenMono.Cli.Git;
 using OpenMono.Commands;
 using OpenMono.Config;
 using OpenMono.History;
@@ -134,8 +135,28 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     Log.Initialize(config.DataDirectory);
     Log.Info($"Session starting — model={config.Llm.Model} endpoint={config.Llm.Endpoint} workdir={config.WorkingDirectory}");
 
+    // Git auth profile: the session's own persisted choice (from a resumed session)
+    // → OPENMONO_GIT_PROFILE → git.default → host pass-through. The env vars are
+    // layered onto each Bash child at spawn time by GitAuthApplier.ApplyTo
+    // (see /git for hot-swapping), not set process-globally.
     var sessionManager = new SessionManager(config);
     var session = SessionManager.CreateSession();
+    try
+    {
+        var (gitProfileName, gitWarning) = GitProfileSelection.Resolve(config.Git, session);
+        if (gitWarning is not null)
+            renderer.WriteWarning(gitWarning);
+        if (gitProfileName is not null)
+        {
+            session.Meta.GitProfileName = gitProfileName;
+            session.Meta.GitProfileTouched = config.Git.SessionProfile is not null;
+            Log.Info($"git auth: profile '{gitProfileName}' ({config.Git.Profiles[gitProfileName].Type})");
+        }
+    }
+    catch (Exception ex)
+    {
+        renderer.WriteWarning($"git auth setup failed: {ex.Message} — continuing with host git credentials");
+    }
 
     var reasoningProfile = OpenMono.Utils.ModelReasoningProfile.Resolve(config.Llm.Model, config.Llm.ServerReasoning);
     session.Meta.ThinkingLevel = reasoningProfile.DefaultLevel;
@@ -391,6 +412,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     commands.Register(new HostCommand());
     commands.Register(new PromptCommand());
     commands.Register(new ModelCommand());
+    commands.Register(new GitCommand());
     commands.Register(new BtwCommand());
 
     var compactor = new Compactor(llm, config.Llm.ContextSize);

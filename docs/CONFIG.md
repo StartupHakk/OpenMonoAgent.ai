@@ -16,7 +16,7 @@ Commands are grouped by which box they run on.
 
 | Command | Description |
 |---------|-------------|
-| `openmono agent` | Run the coding agent in the current directory |
+| `openmono agent [--host\|--sandbox] [--git-profile <name>]` | Run the coding agent in the current directory; `--git-profile` selects a git auth profile for the session |
 | `openmono graph [path]` | Build the code-review-graph index for a project |
 | `openmono graphify [path]` | Build the Graphify knowledge graph for a project |
 
@@ -93,6 +93,7 @@ Flags passed to `openmono agent` override settings.json and env vars for that se
 | `--no-acp` | — | Disable the ACP server |
 | `--acp-only` | — | Start in ACP server mode (no TUI) — for VS Code / Cursor extension |
 | `--acp-port <port>` | — | ACP server port (default: `7475`) |
+| `--git-profile <name>` | `git.default` | Select a git auth profile for this session's commits/pushes (see `git` below) |
 
 ---
 
@@ -182,6 +183,13 @@ These always write to `~/.openmono/settings.json`. Project-level `.openmono/sett
     "gateway": "http://localhost:47480",
     "search": true,
     "scrape": true
+  },
+  "git": {
+    "default": "work",
+    "profiles": {
+      "work": { "type": "ssh", "ssh_key": "~/.ssh/id_ed25519_work", "user": "Jane Dev", "email": "jane@work.dev" },
+      "personal": { "type": "https", "host": "github.com", "token_env": "GITHUB_PAT_PERSONAL", "user": "jane-dev", "email": "jane@example.com" }
+    }
   },
   "auto_detect_code_graph": true
 }
@@ -372,6 +380,22 @@ Override via env vars: `OPENMONO_WEB_SEARCH=1` / `OPENMONO_WEB_SCRAPE=1` (truthy
 
 ---
 
+## `git`
+
+Named git auth profiles for the agent's commits and pushes. A session uses its own saved selection if it made one (via `/git <name>` or `/git off`, which is persisted with the session and restored on resume), otherwise `--git-profile`/`OPENMONO_GIT_PROFILE` if given, otherwise `git.default`, otherwise the host's own credentials are passed through (legacy behaviour). The profile applies per session to every git command the session runs. Create a new profile interactively with `/git add` (a wizard that walks you through SSH-key or PAT setup and writes the section for you) instead of hand-editing JSON. See **[GIT-AUTH.md](GIT-AUTH.md)** for the full reference, PAT scoping, hot-swap, resume behaviour, and troubleshooting.
+
+```jsonc
+{
+  "default": "work",
+  "profiles": {
+    "work": { "type": "ssh", "ssh_key": "~/.ssh/id_ed25519_work", "user": "Jane Dev", "email": "jane@work.dev" },
+    "personal": { "type": "https", "host": "github.com", "token_env": "GITHUB_PAT_PERSONAL", "user": "jane-dev", "email": "jane@example.com" }
+  }
+}
+```
+
+---
+
 ## Host bridge (`openmono agent --host`)
 
 The bare-metal host sub-agent has its **own** config file: `~/.openmono/host-bridge.json`
@@ -473,3 +497,4 @@ server-reported `n_ctx` (at least 1024) takes precedence at startup.
 | `OPENMONO_VISION_ENABLED` | `inference.vision_enabled` — set to `1` to enable image input (the settings file wins when explicitly set) |
 | `OPENMONO_WEB_SEARCH` | `web.search` — set to `1` to force-enable SearXNG routing |
 | `OPENMONO_WEB_SCRAPE` | `web.scrape` — set to `1` to force-enable Scrapling routing |
+| `OPENMONO_GIT_PROFILE` | `git.default` — the per-session git auth profile selection (never written to settings.json) |

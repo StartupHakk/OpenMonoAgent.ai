@@ -82,6 +82,8 @@ public sealed class SessionManager
             session.TurnCount = header.TurnCount;
             session.TotalTokensUsed = header.TotalTokens;
             session.Meta.PlanMode = header.PlanMode;
+            session.Meta.GitProfileName = header.GitProfileName;
+            session.Meta.GitProfileTouched = header.GitProfileTouched;
             if (header.Todos.Count > 0) session.Todos.AddRange(header.Todos);
 
             // Restore the token tracker so compaction/checkpoint thresholds work
@@ -235,6 +237,8 @@ public sealed class SessionManager
             TurnCount = session.TurnCount,
             TotalTokens = session.TotalTokensUsed,
             PlanMode = session.Meta.PlanMode,
+            GitProfileName = session.Meta.GitProfileName,
+            GitProfileTouched = session.Meta.GitProfileTouched,
             Todos = session.Todos,
             LastPromptTokens = tracker?.LastPromptTokens ?? 0,
             TotalPromptTokens = tracker?.TotalPromptTokens ?? 0,
@@ -276,6 +280,8 @@ public sealed record SessionHeader
     public int TurnCount { get; init; }
     public int TotalTokens { get; init; }
     public bool PlanMode { get; init; }
+    public string? GitProfileName { get; init; }
+    public bool GitProfileTouched { get; init; }
     public List<TodoItem> Todos { get; init; } = new();
 
     // TokenTracker persistence — restored on load so compaction/checkpoint
