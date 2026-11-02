@@ -76,7 +76,15 @@ public sealed class AcpTurnRunner : IAcpEventSink
         var trimmed = userText.TrimStart();
         if (trimmed.StartsWith('/') && await TryHandleSlashCommandAsync(trimmed.Trim(), ct))
             return;
-        await SubmitUserMessageAsync(userText, ct);
+        await SubmitUserMessageAsync(userText, null, ct);
+    }
+
+    public async Task RunUserMessageAsync(string userText, IReadOnlyList<ContentPart>? imageParts, CancellationToken ct)
+    {
+        var trimmed = userText.TrimStart();
+        if (trimmed.StartsWith('/') && await TryHandleSlashCommandAsync(trimmed.Trim(), ct))
+            return;
+        await SubmitUserMessageAsync(userText, imageParts, ct);
     }
 
     private static string SlashHelpText() =>
@@ -177,7 +185,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
                 await OnModeChangedAsync("plan");
                 if (args.Length > 0)
                 {
-                    await SubmitUserMessageAsync(ModeInstructions.PlanTask(args), ct);
+                    await SubmitUserMessageAsync(ModeInstructions.PlanTask(args), null, ct);
                 }
                 else
                 {
@@ -195,7 +203,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
         }
     }
 
-    private async Task SubmitUserMessageAsync(string userText, CancellationToken ct)
+    private async Task SubmitUserMessageAsync(string userText, IReadOnlyList<ContentPart>? imageParts, CancellationToken ct)
     {
         // A fresh user message is genuine new direction: it acknowledges any pending
         // escalation barrier (same rule as interactive RunTurnAsync).
@@ -242,7 +250,28 @@ public sealed class AcpTurnRunner : IAcpEventSink
         // Transform relative @ file references to absolute paths (e.g., @file.md → @/workspace/file.md)
         var transformedText = FileReferenceResolver.TransformRelativeReferences(userText, _loopFactory.Config.WorkingDirectory);
 
-        _acpSession.Messages.Add(new Message { Role = MessageRole.User, Content = transformedText });
+        _acpSession.Messages.Add(new Message
+        {
+            Role = MessageRole.User,
+            Content = imageParts is { Count: > 0 }
+                ? $"[{imageParts.Count} image(s)] {transformedText}"
+                : transformedText,
+            ContentParts = imageParts is { Count: > 0 }
+                ? [new TextPart(transformedText), ..imageParts]
+                : null
+        });
+
+        // Vision gate (mirrors ConversationLoop.RunTurnAsync): an image can only be
+        // sent to the model when the inference server actually supports it.
+        if (imageParts is { Count: > 0 } && !_loopFactory.Config.VisionEnabled)
+        {
+            var warning = "Image attached but vision is not enabled \u2014 enable it with: openmono config set inference.vision_enabled true (the inference server must serve a vision-capable model). Re-run 'openmono setup' on the inference box to install the projector.";
+            await _writer.WriteEventAsync("text_delta", new { content = warning });
+            await _writer.WriteEventAsync("done", new { });
+            Log.Info($"[OMA_VISION] Session {_acpSession.Id}: {imageParts.Count} image(s) attached but vision disabled \u2014 turn not run.");
+            return;
+        }
+
         _acpSession.TurnCount++;
         Log.Info($"[OMA_TURN] Session {_acpSession.Id} turn {_acpSession.TurnCount}: Processing message with {_acpSession.Messages.Count} total messages (first is System: {_acpSession.Messages[0].Role == MessageRole.System})");
         await DriveLoopAsync(ct);
