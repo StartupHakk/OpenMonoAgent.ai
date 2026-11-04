@@ -191,8 +191,9 @@ build_prism_macos() {
             ok "Prism llama-server already built ($ref) — skipping rebuild"
             detail "$(prism_macos_bin)"
             # Write-after-install: record the actual built ref in the box file.
-            command -v vp_box_record_installed &>/dev/null && \
+            if command -v vp_box_record_installed &>/dev/null; then
                 vp_box_record_installed llama "$(git -C "$src" describe --tags 2>/dev/null || echo "$ref")"
+            fi
             return 0
         fi
         info "Existing Prism build is not $ref — rebuilding..."
@@ -227,8 +228,13 @@ build_prism_macos() {
     ok "Prism llama-server ready ($(prism_macos_bin))"
     # Write-after-install: record the actual built ref in the box file so
     # ~/.openmono/versions.json always shows what is really on the machine.
-    command -v vp_box_record_installed &>/dev/null && \
+    # NOTE: must be an `if` block, not `cmd && cmd` — under `set -e` a failed
+    # `command -v` in a trailing &&-list makes the whole function return 1,
+    # which callers misreport as "build failed" even after a successful build.
+    if command -v vp_box_record_installed &>/dev/null; then
         vp_box_record_installed llama "$(git -C "$src" describe --tags 2>/dev/null || echo "$ref")"
+    fi
+    return 0
 }
 
 # ── macOS native (Metal) notes ────────────────────────────────────────────────
