@@ -39,6 +39,15 @@ public static class ModelCatalog
     }
 
     /// <summary>
+    /// True when the active endpoint advertises more than one model. A fallback-seeded
+    /// single model counts as single, so the <c>/model</c> picker only makes sense here.
+    /// </summary>
+    public static bool IsMultiModel
+    {
+        get { lock (_lock) return _models.Count > 1; }
+    }
+
+    /// <summary>
     /// Query the backend's <c>/v1/models</c> endpoint and return every advertised model id.
     /// Returns an empty list if the endpoint is unavailable or reports no models.
     /// </summary>

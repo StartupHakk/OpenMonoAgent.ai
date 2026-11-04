@@ -365,6 +365,8 @@ public sealed class ConversationLoop : IDisposable
         if (_checkpointer.NeedsCheckpoint(_session, preForwardEstimate))
         {
             _output.WriteDebug($"[Checkpoint] Triggered pre-turn — messages={_session.Messages.Count} forward={preForwardEstimate}");
+            _session.Meta.IsCheckpointing = true;
+            _output.ShowWaitingIndicator("Checkpointing");
             if (_sink is not null)
                 await _sink.OnCheckpointStartedAsync("pre-turn", preForwardEstimate);
             var cpSw = Stopwatch.StartNew();
@@ -381,6 +383,11 @@ public sealed class ConversationLoop : IDisposable
                 if (_sink is not null)
                     await _sink.OnSubAgentLogAsync($"Checkpoint failed: {ex.Message}");
                 throw;
+            }
+            finally
+            {
+                _session.Meta.IsCheckpointing = false;
+                _output.ClearWaitingIndicator();
             }
             _output.WriteDebug($"[Checkpoint] Done — effective window={_checkpointer.BuildContextWindow(_session).Count} messages");
         }
@@ -435,6 +442,8 @@ public sealed class ConversationLoop : IDisposable
                 if (_checkpointer.NeedsCheckpoint(_session, iterForwardEstimate))
                 {
                     _output.WriteDebug($"[Checkpoint] Triggered mid-turn — messages={_session.Messages.Count} forward={iterForwardEstimate}");
+                    _session.Meta.IsCheckpointing = true;
+                    _output.ShowWaitingIndicator("Checkpointing");
                     if (_sink is not null)
                         await _sink.OnCheckpointStartedAsync("mid-turn", iterForwardEstimate);
                     var cpSw = Stopwatch.StartNew();
@@ -451,6 +460,11 @@ public sealed class ConversationLoop : IDisposable
                         if (_sink is not null)
                             await _sink.OnSubAgentLogAsync($"Checkpoint failed: {ex.Message}");
                         throw;
+                    }
+                    finally
+                    {
+                        _session.Meta.IsCheckpointing = false;
+                        _output.ClearWaitingIndicator();
                     }
                     _output.WriteDebug($"[Checkpoint] Done — effective window={_checkpointer.BuildContextWindow(_session).Count} messages");
                     _doomLoop.Reset();

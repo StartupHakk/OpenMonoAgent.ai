@@ -25,6 +25,8 @@ public sealed class CheckpointCommand : ICommand
         }
 
         context.Renderer.WriteInfo("Creating checkpoint...");
+        context.Session.Meta.IsCheckpointing = true;
+        context.Renderer.ShowWaitingIndicator("Checkpointing");
 
         try
         {
@@ -39,6 +41,11 @@ public sealed class CheckpointCommand : ICommand
         catch (OperationCanceledException)
         {
             context.Renderer.WriteWarning("Checkpoint cancelled.");
+        }
+        finally
+        {
+            context.Session.Meta.IsCheckpointing = false;
+            context.Renderer.ClearWaitingIndicator();
         }
     }
 }

@@ -130,8 +130,18 @@ internal sealed class AnsiSuggestionOverlay(AppConfig config, AnsiPainter painte
 
         // Once the user has typed "/model " (command + space), suggest backend-advertised model
         // names instead of commands. Selecting one completes the line to "/model <name>".
+        // Hidden entirely when the endpoint advertises a single model — there is nothing to pick.
         if (text.StartsWith("/model ", StringComparison.OrdinalIgnoreCase))
         {
+            if (!ModelCatalog.IsMultiModel)
+            {
+                if (visible) HideSuggestions(text);
+                visible = false;
+                _filteredCmds.Clear();
+                _suggestionIdx = -1;
+                return;
+            }
+
             var query  = text["/model ".Length..].TrimStart();
             var models = ModelCatalog.Models;
 
@@ -166,6 +176,8 @@ internal sealed class AnsiSuggestionOverlay(AppConfig config, AnsiPainter painte
 
         _filteredCmds = _allCommands
             .Where(c => c.Name.StartsWith(text, StringComparison.OrdinalIgnoreCase))
+            // Only offer /model when the active endpoint advertises more than one model.
+            .Where(c => c.Name != "/model" || ModelCatalog.IsMultiModel)
             .ToList();
 
         if (_filteredCmds.Count == 0)

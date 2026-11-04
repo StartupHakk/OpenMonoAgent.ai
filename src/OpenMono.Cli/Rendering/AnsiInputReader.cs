@@ -16,6 +16,10 @@ internal sealed class AnsiInputReader(
 {
 
     private readonly StringBuilder _bgInputBuf = new();
+    // Guards _bgInputBuf: the BgInput thread mutates it while the PaintLoop thread
+    // samples it via BgInputText. Unlocked concurrent Append/ToString is what made
+    // the input box visibly "blip" with torn partial text.
+    private readonly object _bgInputLock = new();
     private volatile bool _bgInputActive;
     private Thread? _bgInputThread;
 
@@ -176,19 +180,35 @@ internal sealed class AnsiInputReader(
     internal Func<string, bool>? TryDispatchDuringTurn { private get; set; }
 
     private Func<string>? _liveMainInput;
-    internal string BgInputText => _liveMainInput?.Invoke() ?? _bgInputBuf.ToString();
+    internal string BgInputText
+    {
+        get
+        {
+            var live = _liveMainInput;
+            if (live is not null) return live();
+            lock (_bgInputLock) return _bgInputBuf.ToString();
+        }
+    }
     internal bool IsBackgroundInputActive => _bgInputActive;
+
+    private string SnapshotBgInput()
+    {
+        lock (_bgInputLock) return _bgInputBuf.ToString();
+    }
 
     internal void StartBackgroundInput(string? preserveText = null)
     {
         StopBackgroundInput();
         if (preserveText is not null)
         {
-            _bgInputBuf.Clear();
-            _bgInputBuf.Append(preserveText);
+            lock (_bgInputLock)
+            {
+                _bgInputBuf.Clear();
+                _bgInputBuf.Append(preserveText);
+            }
         }
         _bgInputActive = true;
-        var displayText = _bgInputBuf.ToString();
+        var displayText = BgInputText;
         painter.DrawInputText(displayText, displayText.Length);
         painter.Write($"{AnsiPainter.E}[?25h");
         painter.Write($"{AnsiPainter.E}[?2004h");
@@ -215,170 +235,214 @@ internal sealed class AnsiInputReader(
 
         while (_bgInputActive)
         {
-            var result = terminal.TryReadKey();
-            if (result is null) { Thread.Sleep(50); continue; }
-            var k = result.Value;
-            if (!_bgInputActive) break;
-
-            if (k.Key == ConsoleKey.Escape)
+            // Drain every key already sitting in the console buffer before sleeping.
+            // Sleeping after a single key let fast-typed bursts lag behind Enter —
+            // the leftover keys then surfaced at the *next* prompt (split message).
+            while (_bgInputActive)
             {
-                if (!Console.KeyAvailable) { var ms = 0; while (!Console.KeyAvailable && ms < 50) { Thread.Sleep(1); ms++; } }
-                if (Console.KeyAvailable)
+                var result = terminal.TryReadKey();
+                if (result is null) break;
+                var k = result.Value;
+                if (!_bgInputActive) return;
+
+                if (k.Key == ConsoleKey.Escape)
                 {
-                    var (scroll, paste, _, _) = TryReadEscapeSequence();
-                    if (paste is not null)
+                    if (!Console.KeyAvailable) { var ms = 0; while (!Console.KeyAvailable && ms < 50) { Thread.Sleep(1); ms++; } }
+                    if (Console.KeyAvailable)
                     {
-                        if (sugVis) { suggestions.HideSuggestions(_bgInputBuf.ToString()); sugVis = false; }
-                        _bgInputBuf.Append(paste.Replace("\r\n", "\n").Replace('\r', '\n'));
-                        if (!painter.PaintInProgress) painter.DrawInputText(_bgInputBuf.ToString(), _bgInputBuf.Length);
+                        var (scroll, paste, _, _) = TryReadEscapeSequence();
+                        if (paste is not null)
+                        {
+                            if (sugVis) { suggestions.HideSuggestions(SnapshotBgInput()); sugVis = false; }
+                            string ps;
+                            lock (_bgInputLock)
+                            {
+                                _bgInputBuf.Append(paste.Replace("\r\n", "\n").Replace('\r', '\n'));
+                                ps = _bgInputBuf.ToString();
+                            }
+                            painter.DrawInputText(ps, ps.Length);
+                        }
+                        else if (scroll != 0) { ApplyScroll(scroll); }
+                        continue;
                     }
-                    else if (scroll != 0) { ApplyScroll(scroll); }
-                    continue;
-                }
-                if (sugVis) { suggestions.HideSuggestions(_bgInputBuf.ToString()); sugVis = false; continue; }
-                CurrentTurnCts?.Cancel();
-                continue;
-            }
-
-            if (k.Key == ConsoleKey.PageUp)   { painter.ScrollPageUp(); painter.Paint(); continue; }
-            if (k.Key == ConsoleKey.PageDown) { painter.ScrollPageDown(); painter.Paint(); continue; }
-
-            if (k.Key == ConsoleKey.C && k.Modifiers.HasFlag(ConsoleModifiers.Control))
-            {
-                var now = DateTime.UtcNow;
-                var isDouble = (now - _lastCtrlCTime).TotalSeconds <= 1.5;
-                _lastCtrlCTime = now;
-
-                if (isDouble)
-                {
-                    _bgInputActive = false;
-                    ProcessWatchdog.ScheduleHardKill();
-                    OnSafeExit();
-                    Environment.Exit(0);
-                }
-                else
-                {
-                    if (sugVis) { suggestions.HideSuggestions(_bgInputBuf.ToString()); sugVis = false; }
+                    if (sugVis) { suggestions.HideSuggestions(SnapshotBgInput()); sugVis = false; continue; }
                     CurrentTurnCts?.Cancel();
-                    painter.ShowCtrlCBanner();
-                }
-                continue;
-            }
-
-            if (k.Key == ConsoleKey.U && k.Modifiers.HasFlag(ConsoleModifiers.Control))
-            {
-                if (sugVis) { suggestions.HideSuggestions(_bgInputBuf.ToString()); sugVis = false; }
-                _bgInputBuf.Clear();
-                if (!painter.PaintInProgress) painter.DrawInputText("", 0);
-                continue;
-            }
-
-            if (k.Key == ConsoleKey.W && k.Modifiers.HasFlag(ConsoleModifiers.Control))
-            {
-                if (_bgInputBuf.Length > 0)
-                {
-                    var s   = _bgInputBuf.ToString();
-                    var end = s.Length;
-                    while (end > 0 && s[end - 1] == ' ') end--;
-                    while (end > 0 && s[end - 1] != ' ') end--;
-                    _bgInputBuf.Clear();
-                    _bgInputBuf.Append(s[..end]);
-                    var ws = _bgInputBuf.ToString();
-                    suggestions.UpdateSuggestions(ws, ref sugVis);
-                    if (!painter.PaintInProgress) painter.DrawInputText(ws, _bgInputBuf.Length);
-                }
-                continue;
-            }
-
-            if (k.Key == ConsoleKey.Home && k.Modifiers.HasFlag(ConsoleModifiers.Control))
-            { painter.ScrollToTop(); painter.Paint(); continue; }
-
-            if (k.Key == ConsoleKey.End && k.Modifiers.HasFlag(ConsoleModifiers.Control))
-            { painter.ScrollToBottom(); painter.Paint(); continue; }
-
-            if (k.Key == ConsoleKey.UpArrow && sugVis && suggestions.FilteredCommands.Count > 0)
-            { suggestions.MoveSuggestionSelection(-1); suggestions.DrawSuggestions(_bgInputBuf.ToString()); continue; }
-            if (k.Key == ConsoleKey.DownArrow && sugVis && suggestions.FilteredCommands.Count > 0)
-            { suggestions.MoveSuggestionSelection(+1); suggestions.DrawSuggestions(_bgInputBuf.ToString()); continue; }
-
-            if (k.Key == ConsoleKey.Tab && sugVis && suggestions.FilteredCommands.Count > 0)
-            {
-                var idx  = suggestions.SuggestionIndex >= 0 ? suggestions.SuggestionIndex : 0;
-                var comp = suggestions.FilteredCommands[idx].Name;
-                _bgInputBuf.Clear();
-                _bgInputBuf.Append(comp);
-                suggestions.HideSuggestions(comp);
-                sugVis = false;
-                painter.DrawInputText(_bgInputBuf.ToString(), _bgInputBuf.Length);
-                continue;
-            }
-
-            if (k.Key == ConsoleKey.Enter)
-            {
-                var text = _bgInputBuf.ToString().Trim();
-
-                if (sugVis && suggestions.SuggestionIndex >= 0 &&
-                    suggestions.SuggestionIndex < suggestions.FilteredCommands.Count)
-                {
-                    text = suggestions.FilteredCommands[suggestions.SuggestionIndex].Name;
-                    _bgInputBuf.Clear();
-                    _bgInputBuf.Append(text);
-                }
-                suggestions.HideSuggestions(_bgInputBuf.ToString());
-                sugVis = false;
-
-                if (text is "exit" or "quit" or "q" or "/quit" or "/exit" or "/q")
-                {
-                    CurrentTurnCts?.Cancel();
-                    _bgInputBuf.Clear();
-                    if (!painter.PaintInProgress) painter.DrawInputText("", 0);
                     continue;
                 }
-                if (text.Length > 0 && !(TryDispatchDuringTurn?.Invoke(text) ?? false))
-                    painter.EnqueueUserMessage(text);
-                _bgInputBuf.Clear();
-                if (!painter.PaintInProgress) painter.DrawInputText("", 0);
-                continue;
-            }
 
-            if (k.Key == ConsoleKey.Backspace)
-            {
-                if (_bgInputBuf.Length > 0)
-                {
-                    _bgInputBuf.Remove(_bgInputBuf.Length - 1, 1);
-                    var bs = _bgInputBuf.ToString();
-                    suggestions.UpdateSuggestions(bs, ref sugVis);
-                    if (!painter.PaintInProgress) painter.DrawInputText(bs, _bgInputBuf.Length);
-                }
-                continue;
-            }
+                if (k.Key == ConsoleKey.PageUp)   { painter.ScrollPageUp(); painter.Paint(); continue; }
+                if (k.Key == ConsoleKey.PageDown) { painter.ScrollPageDown(); painter.Paint(); continue; }
 
-            if (k.Key == ConsoleKey.V && k.Modifiers.HasFlag(ConsoleModifiers.Control))
-            {
-                if (PasteImage())
+                if (k.Key == ConsoleKey.C && k.Modifiers.HasFlag(ConsoleModifiers.Control))
                 {
+                    var now = DateTime.UtcNow;
+                    var isDouble = (now - _lastCtrlCTime).TotalSeconds <= 1.5;
+                    _lastCtrlCTime = now;
+
+                    if (isDouble)
+                    {
+                        _bgInputActive = false;
+                        ProcessWatchdog.ScheduleHardKill();
+                        OnSafeExit();
+                        Environment.Exit(0);
+                    }
+                    else
+                    {
+                        if (sugVis) { suggestions.HideSuggestions(SnapshotBgInput()); sugVis = false; }
+                        CurrentTurnCts?.Cancel();
+                        painter.ShowCtrlCBanner();
+                    }
                     continue;
                 }
-                var p = ReadClipboard();
-                if (p is not null)
+
+                if (k.Key == ConsoleKey.U && k.Modifiers.HasFlag(ConsoleModifiers.Control))
                 {
-                    if (sugVis) { suggestions.HideSuggestions(_bgInputBuf.ToString()); sugVis = false; }
-                    _bgInputBuf.Append(p.Replace("\r\n", "\n").Replace('\r', '\n'));
-                    if (!painter.PaintInProgress) painter.DrawInputText(_bgInputBuf.ToString(), _bgInputBuf.Length);
+                    if (sugVis) { suggestions.HideSuggestions(SnapshotBgInput()); sugVis = false; }
+                    lock (_bgInputLock) _bgInputBuf.Clear();
+                    painter.DrawInputText("", 0);
+                    continue;
                 }
-                continue;
+
+                if (k.Key == ConsoleKey.W && k.Modifiers.HasFlag(ConsoleModifiers.Control))
+                {
+                    string? ws = null;
+                    lock (_bgInputLock)
+                    {
+                        if (_bgInputBuf.Length > 0)
+                        {
+                            var s   = _bgInputBuf.ToString();
+                            var end = s.Length;
+                            while (end > 0 && s[end - 1] == ' ') end--;
+                            while (end > 0 && s[end - 1] != ' ') end--;
+                            _bgInputBuf.Clear();
+                            _bgInputBuf.Append(s[..end]);
+                            ws = _bgInputBuf.ToString();
+                        }
+                    }
+                    if (ws is not null)
+                    {
+                        suggestions.UpdateSuggestions(ws, ref sugVis);
+                        painter.DrawInputText(ws, ws.Length);
+                    }
+                    continue;
+                }
+
+                if (k.Key == ConsoleKey.Home && k.Modifiers.HasFlag(ConsoleModifiers.Control))
+                { painter.ScrollToTop(); painter.Paint(); continue; }
+
+                if (k.Key == ConsoleKey.End && k.Modifiers.HasFlag(ConsoleModifiers.Control))
+                { painter.ScrollToBottom(); painter.Paint(); continue; }
+
+                if (k.Key == ConsoleKey.UpArrow && sugVis && suggestions.FilteredCommands.Count > 0)
+                { suggestions.MoveSuggestionSelection(-1); suggestions.DrawSuggestions(SnapshotBgInput()); continue; }
+                if (k.Key == ConsoleKey.DownArrow && sugVis && suggestions.FilteredCommands.Count > 0)
+                { suggestions.MoveSuggestionSelection(+1); suggestions.DrawSuggestions(SnapshotBgInput()); continue; }
+
+                if (k.Key == ConsoleKey.Tab && sugVis && suggestions.FilteredCommands.Count > 0)
+                {
+                    var idx  = suggestions.SuggestionIndex >= 0 ? suggestions.SuggestionIndex : 0;
+                    var comp = suggestions.FilteredCommands[idx].Name;
+                    lock (_bgInputLock)
+                    {
+                        _bgInputBuf.Clear();
+                        _bgInputBuf.Append(comp);
+                    }
+                    suggestions.HideSuggestions(comp);
+                    sugVis = false;
+                    painter.DrawInputText(comp, comp.Length);
+                    continue;
+                }
+
+                if (k.Key == ConsoleKey.Enter)
+                {
+                    string text;
+                    lock (_bgInputLock) text = _bgInputBuf.ToString().Trim();
+
+                    if (sugVis && suggestions.SuggestionIndex >= 0 &&
+                        suggestions.FilteredCommands.Count > 0 &&
+                        suggestions.SuggestionIndex < suggestions.FilteredCommands.Count)
+                    {
+                        text = suggestions.FilteredCommands[suggestions.SuggestionIndex].Name;
+                        lock (_bgInputLock)
+                        {
+                            _bgInputBuf.Clear();
+                            _bgInputBuf.Append(text);
+                        }
+                    }
+                    suggestions.HideSuggestions(SnapshotBgInput());
+                    sugVis = false;
+
+                    if (text is "exit" or "quit" or "q" or "/quit" or "/exit" or "/q")
+                    {
+                        CurrentTurnCts?.Cancel();
+                        lock (_bgInputLock) _bgInputBuf.Clear();
+                        painter.DrawInputText("", 0);
+                        continue;
+                    }
+                    if (text.Length > 0 && !(TryDispatchDuringTurn?.Invoke(text) ?? false))
+                        painter.EnqueueUserMessage(text);
+                    lock (_bgInputLock) _bgInputBuf.Clear();
+                    painter.DrawInputText("", 0);
+                    continue;
+                }
+
+                if (k.Key == ConsoleKey.Backspace)
+                {
+                    string? bs = null;
+                    lock (_bgInputLock)
+                    {
+                        if (_bgInputBuf.Length > 0)
+                        {
+                            _bgInputBuf.Remove(_bgInputBuf.Length - 1, 1);
+                            bs = _bgInputBuf.ToString();
+                        }
+                    }
+                    if (bs is not null)
+                    {
+                        suggestions.UpdateSuggestions(bs, ref sugVis);
+                        painter.DrawInputText(bs, bs.Length);
+                    }
+                    continue;
+                }
+
+                if (k.Key == ConsoleKey.V && k.Modifiers.HasFlag(ConsoleModifiers.Control))
+                {
+                    if (PasteImage())
+                    {
+                        continue;
+                    }
+                    var p = ReadClipboard();
+                    if (p is not null)
+                    {
+                        if (sugVis) { suggestions.HideSuggestions(SnapshotBgInput()); sugVis = false; }
+                        string ps;
+                        lock (_bgInputLock)
+                        {
+                            _bgInputBuf.Append(p.Replace("\r\n", "\n").Replace('\r', '\n'));
+                            ps = _bgInputBuf.ToString();
+                        }
+                        painter.DrawInputText(ps, ps.Length);
+                    }
+                    continue;
+                }
+
+                if (k.Modifiers.HasFlag(ConsoleModifiers.Alt))
+                    continue;
+
+                if (k.KeyChar != '\0' && !char.IsControl(k.KeyChar))
+                {
+                    string cs;
+                    lock (_bgInputLock)
+                    {
+                        _bgInputBuf.Append(k.KeyChar);
+                        cs = _bgInputBuf.ToString();
+                    }
+                    suggestions.UpdateSuggestions(cs, ref sugVis);
+                    painter.DrawInputText(cs, cs.Length);
+                }
             }
 
-            if (k.Modifiers.HasFlag(ConsoleModifiers.Alt))
-                continue;
-
-            if (k.KeyChar != '\0' && !char.IsControl(k.KeyChar))
-            {
-                _bgInputBuf.Append(k.KeyChar);
-                var cs = _bgInputBuf.ToString();
-                suggestions.UpdateSuggestions(cs, ref sugVis);
-                if (!painter.PaintInProgress) painter.DrawInputText(cs, _bgInputBuf.Length);
-            }
+            if (_bgInputActive) Thread.Sleep(20);
         }
     }
 
@@ -391,7 +455,7 @@ internal sealed class AnsiInputReader(
 
     public Task<string> AskUserAsync(string question, CancellationToken ct)
     {
-        var saved = _bgInputBuf.ToString();
+        var saved = SnapshotBgInput();
         painter.AddMessage(new AnsiPainter.Msg("sys", $"? {question}"));
         StopBackgroundInput();
         painter.Sz();
@@ -418,7 +482,7 @@ internal sealed class AnsiInputReader(
 
     public Task<char[]> AskSecretAsync(string question, CancellationToken ct)
     {
-        var saved = _bgInputBuf.ToString();
+        var saved = SnapshotBgInput();
         painter.AddMessage(new AnsiPainter.Msg("sys", $"? {question}"));
         StopBackgroundInput();
         painter.Sz();
@@ -689,7 +753,7 @@ internal sealed class AnsiInputReader(
 
     public Task<PermissionResponse> AskPermissionAsync(string tool, string summary, CancellationToken ct)
     {
-        var saved = _bgInputBuf.ToString();
+        var saved = SnapshotBgInput();
         StopBackgroundInput();
 
         // Alert the user in case the terminal/window isn't focused. Inside the
@@ -716,7 +780,7 @@ internal sealed class AnsiInputReader(
 
     public Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct)
     {
-        var saved = _bgInputBuf.ToString();
+        var saved = SnapshotBgInput();
         StopBackgroundInput();
 
         var stepsStr = string.Join(", ", plan.Steps.Select(s => s.Id));
@@ -773,10 +837,13 @@ internal sealed class AnsiInputReader(
         painter.Write($"{AnsiPainter.E}[?2004h");
 
         var buf = new StringBuilder();
-        if (_bgInputBuf.Length > 0)
+        lock (_bgInputLock)
         {
-            buf.Append(_bgInputBuf);
-            _bgInputBuf.Clear();
+            if (_bgInputBuf.Length > 0)
+            {
+                buf.Append(_bgInputBuf);
+                _bgInputBuf.Clear();
+            }
         }
         var cur = buf.Length;
         _liveMainInput = () => buf.ToString();
@@ -1148,7 +1215,7 @@ internal sealed class AnsiInputReader(
     {
         if (options.Count == 0) return Task.FromResult<string?>(null);
 
-        var saved = _bgInputBuf.ToString();
+        var saved = SnapshotBgInput();
         StopBackgroundInput();
 
         string? ans;

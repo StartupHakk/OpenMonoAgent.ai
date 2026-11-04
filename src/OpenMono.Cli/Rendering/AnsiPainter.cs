@@ -1787,7 +1787,7 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
     private void PaintTabBar(StringBuilder sb, int w, int row)
     {
         sb.Append($"{E}[{row + 1};1H{BgStatus}");
-        var model = config.Llm.Model;
+        var model = string.IsNullOrWhiteSpace(session.Model) ? config.Llm.Model : session.Model;
         if (model.Length > 50) model = model[..49] + "…";
         sb.Append($" {Fbb}{B}Build{R}{BgStatus}  {B}{Fw}{model}{R}{BgStatus}");
         sb.Append(new string(' ', Math.Max(0, w - 8 - model.Length)));
@@ -1885,13 +1885,17 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
             _lastHeartbeatTick = now;
         }
         var isCompacting = session.Meta.IsCompacting;
+        var isCheckpointing = session.Meta.IsCheckpointing;
+        var isBusy = isCompacting || isCheckpointing;
         // Distinct glyph + color while compacting so the ring reads as "actively recalculating",
         // not just the normal idle pulse — the (pct%) next to it is stale until compaction finishes.
-        var pulse = isCompacting
+        var pulse = isBusy
             ? SpinnerFrames[_heartbeatFrame % SpinnerFrames.Length]
             : HeartbeatFrames[_heartbeatFrame];
-        var pulseColor = isCompacting ? Fy : (_streaming && _lastTokSec > 0 ? Fc : Fg);
-        var compactingTag = isCompacting ? $"{Fy} compacting…{R}{BgStatus}" : "";
+        var pulseColor = isBusy ? Fy : (_streaming && _lastTokSec > 0 ? Fc : Fg);
+        var compactingTag = isCompacting
+            ? $"{Fy} compacting…{R}{BgStatus}"
+            : isCheckpointing ? $"{Fy} checkpointing…{R}{BgStatus}" : "";
 
         var tokStr = FmtTok(tok);
         var wMax   = Volatile.Read(ref _windowMax);

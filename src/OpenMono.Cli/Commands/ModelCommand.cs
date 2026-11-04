@@ -56,6 +56,14 @@ public sealed class ModelCommand : ICommand
                 models.Insert(0, current);
             }
 
+            if (models.Count == 1)
+            {
+                context.Renderer.WriteInfo(
+                    $"Endpoint advertises one model ({models[0]}) — nothing to pick. " +
+                    $"Use /model <name> to set a model the endpoint doesn't advertise, or /model refresh to retry.");
+                return;
+            }
+
             if (models.Count == 0)
             {
                 context.Renderer.WriteWarning(
