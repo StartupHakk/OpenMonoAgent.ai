@@ -1,0 +1,57 @@
+# Default team for a new roster. Edit, then run: oma-bot team apply team.yaml
+# Model nicknames must be known to the gateway (models: below, or roster.json backends).
+version: 1
+
+defaults:
+  model: flash-next
+  permission_profile: ask
+  timezone: America/Phoenix
+  idle_sleep_minutes: 60
+  memory: { enabled: true, max_lines: 200, max_bytes: 24576, upkeep: { capture: true, tidy: true } }
+  limits: { memory: 1536m, cpu: 1.0, max_turn_minutes: 30, daily_token_budget: 400000 }
+  host_exec: false
+  desktop: off
+
+models:
+  flash-next:
+    upstream_model: Qwen3.8-Flash-Next
+    labels: [class=main-3090]
+
+teams:
+  - name: Core
+    lead: head-honcho
+
+bots:
+  - name: head-honcho
+    team: Core
+    role: lead
+    title: Lead bot, supervises the roster
+    seen_as: Splits work, hands it out and reports to Spencer
+    personality: { file: bots/head-honcho.md }
+    tools:
+      allow: [FileRead, Grep, Glob, ListDirectory,
+              mcp__roster__list_bots, mcp__roster__assign, mcp__roster__consult, mcp__roster__notify,
+              mcp__roster__assignment_status, mcp__roster__ask, mcp__roster__report,
+              mcp__roster__memory_update, mcp__roster__memory_read_topic,
+              mcp__roster__doctor_results, mcp__roster__gateway_metrics, mcp__roster__room_post, mcp__roster__room_read]
+    accepts_from: [person, health]
+
+  - name: health
+    team: Core
+    role: health
+    title: Read-only health checks, reports to head-honcho and Spencer
+    seen_as: Runs oma-bot doctor and reports failures only
+    personality: { file: bots/health.md }
+    memory: { enabled: false }
+    tools:
+      allow: [mcp__roster__doctor_results, mcp__roster__list_bots, mcp__roster__gateway_metrics]
+    accepts_from: [person]
+    routines:
+      - name: health-watch
+        interval_minutes: 5
+        checks:
+          - command: { run: "oma-bot doctor --json --quiet" }
+        instructions: Report each failed check in one line to head-honcho and Spencer.
+        notify: errors_only
+
+blocked_hosts: [x.com, twitter.com, facebook.com]

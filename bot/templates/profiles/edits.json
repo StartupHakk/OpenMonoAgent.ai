@@ -1,0 +1,7 @@
+{
+  "description": "File edits in the workspace run freely. Commands ask unless listed in bash.allow.",
+  "read": "allow",
+  "write": "allow",
+  "bash": "ask",
+  "host_exec": "ask"
+}

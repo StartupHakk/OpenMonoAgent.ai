@@ -1,0 +1,47 @@
+# Example compose file for one roster bot, kept in step with the supervisor's
+# ContainerSpec by test INT-08. The supervisor is the normal way to run bots;
+# use this file only for a hand launch or to read what a bot container gets.
+# Replace BOT with the bot slug and PORT with its ACP port (7500 to 7599).
+name: oma-roster
+
+networks:
+  oma-roster:
+    name: oma-roster
+
+services:
+  bot:
+    image: openmono-agent:latest
+    container_name: oma-bot-BOT
+    user: "1000:1000"
+    command: ["--acp-only"]
+    networks: [oma-roster]
+    ports:
+      - "127.0.0.1:PORT:7475"
+    cap_drop: [ALL]
+    security_opt:
+      - "no-new-privileges:true"
+    pids_limit: 512
+    mem_limit: 1536m
+    cpus: 1.0
+    restart: "no"
+    environment:
+      ACP_PORT: "7475"
+      TZ: America/Phoenix
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      # OPENMONO_API_KEY comes from the bot token file at launch. Never write it here.
+      OPENMONO_API_KEY: ${OPENMONO_API_KEY:?set from the bot token file at launch}
+    labels:
+      oma-bot.roster: "1"
+      oma-bot.bot: BOT
+    volumes:
+      - ${OMABOT_HOME:-~/.omabot}/bots/BOT/data:/home/agent/.openmono:rw
+      - ${OMABOT_HOME:-~/.omabot}/bots/BOT/workspace:/workspace:rw
+      - /dev/null:/home/agent/.openmono/host-bridge.json:ro
+      - ${OMABOT_APP:-/opt/oma-bot}/hooks:/omabot/hooks:ro
+      - ${OMABOT_HOME:-~/.omabot}/bots/BOT/botcfg:/omabot/bot:ro
+      - ${OMABOT_HOME:-~/.omabot}/run/bots/BOT:/omabot/sock:rw
+      - ${OMABOT_APP:-/opt/oma-bot}/mcp-shim:/omabot/mcp-shim:ro
+    tmpfs:
+      - /home/agent/.openmono/host-bridge/logs
+      - /home/agent/.openmono/logs
+      - /tmp

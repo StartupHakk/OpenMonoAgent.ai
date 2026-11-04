@@ -1,0 +1,7 @@
+{
+  "description": "Edits and listed commands run freely. Unlisted commands and HostExec still ask.",
+  "read": "allow",
+  "write": "allow",
+  "bash": "ask",
+  "host_exec": "ask"
+}

@@ -1,0 +1,12 @@
+# Build output for the roster (lesson L15)
+dist/
+**/bin/
+**/obj/
+TestResults/
+*.user
+*.swp
+# Never commit local roster state or secrets
+.omabot/
+*.key
+*.token
+*.env

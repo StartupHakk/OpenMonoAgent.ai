@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+  <PropertyGroup>
+    <RootNamespace>Omabot</RootNamespace>
+    <AssemblyName>Omabot.Core</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
+    <!-- Pinned on purpose (advisory GHSA-2m69-gcr7-jv3q, keep list). -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
+    <PackageReference Include="YamlDotNet" Version="16.3.0" />
+    <PackageReference Include="Cronos" Version="0.11.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\templates\**\*" LinkBase="templates" />
+    <InternalsVisibleTo Include="Omabot.Tests" />
+    <InternalsVisibleTo Include="Omabot.SecurityTests" />
+  </ItemGroup>
+</Project>

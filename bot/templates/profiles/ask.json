@@ -1,0 +1,7 @@
+{
+  "description": "Ask before any change. Read tools run freely.",
+  "read": "allow",
+  "write": "ask",
+  "bash": "ask",
+  "host_exec": "ask"
+}

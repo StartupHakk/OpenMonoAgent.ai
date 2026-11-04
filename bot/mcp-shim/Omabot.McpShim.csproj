@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+  <!-- The stdio MCP server mounted read-only into each bot container at
+       /omabot/mcp-shim. The agent image ships the .NET SDK, so the shim runs
+       as a framework dependent dll through the run script. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>Omabot.McpShim</AssemblyName>
+    <RootNamespace>Omabot.McpShim</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="bin/**;obj/**" />
+    <None Include="run" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <InternalsVisibleTo Include="Omabot.Tests" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>Omabot.EgressGate</AssemblyName>
+    <RootNamespace>Omabot.EgressGate</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Omabot.Core\Omabot.Core.csproj" />
+  </ItemGroup>
+</Project>
