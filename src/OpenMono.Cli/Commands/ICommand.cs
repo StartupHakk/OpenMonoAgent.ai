@@ -15,6 +15,16 @@ public interface ICommand
     Task ExecuteAsync(string[] args, CommandContext context, CancellationToken ct);
 }
 
+/// <summary>
+/// Optional interface a command implements to supply dynamic argument suggestions
+/// to the TUI overlay (e.g. "/think <level>"). The overlay calls it with the text
+/// typed after the command + space; returning rows replaces the command list.
+/// </summary>
+public interface ICommandArgumentSource
+{
+    IEnumerable<(string Value, string Detail)> GetArgumentOptions(string query, Config.AppConfig config);
+}
+
 public sealed class CommandContext
 {
     public required Session.SessionState Session { get; init; }

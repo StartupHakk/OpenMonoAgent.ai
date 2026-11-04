@@ -137,6 +137,10 @@ public sealed class WebConfig
     [JsonConverter(typeof(FlexibleBoolToStringConverter))]
     public string? WikipediaAnchor { get; set; }
 
+    // Optional Brave Search API key. When set, Brave is tried as a keyed tertiary
+    // engine after the DuckDuckGo chain fails (ahead of the keyless Mojeek tier).
+    public string? BraveApiKey { get; set; }
+
     public bool? SearchEnabled => Truthy(Search);
     public bool? ScrapeEnabled => Truthy(Scrape);
 
@@ -149,6 +153,7 @@ public sealed class WebConfig
         if (!string.IsNullOrEmpty(source.Search)) Search = source.Search;
         if (!string.IsNullOrEmpty(source.Scrape)) Scrape = source.Scrape;
         if (!string.IsNullOrEmpty(source.WikipediaAnchor)) WikipediaAnchor = source.WikipediaAnchor;
+        if (!string.IsNullOrEmpty(source.BraveApiKey)) BraveApiKey = source.BraveApiKey;
     }
 
     private static bool? Truthy(string? value) =>

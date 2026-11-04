@@ -255,12 +255,29 @@ public sealed class AcpSessionStore : IDisposable
 
     private static bool IsValidId(string id)
     {
-        if (string.IsNullOrEmpty(id) || !id.StartsWith("sess_", StringComparison.Ordinal)) return false;
-        for (var i = 5; i < id.Length; i++)
+        if (string.IsNullOrEmpty(id)) return false;
+        if (id.StartsWith("sess_", StringComparison.Ordinal))
         {
-            var c = id[i];
-            if (!(c is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F')) return false;
+            if (id.Length <= 5) return false;
+            for (var i = 5; i < id.Length; i++)
+            {
+                var c = id[i];
+                if (!(c is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F')) return false;
+            }
+            return true;
         }
-        return id.Length > 5;
+
+        // Legacy TUI sessions used a bare 12-hex id (pre-sess_ standardization);
+        // accept them so the extension can join sessions created by the TUI.
+        if (id.Length is >= 8 and <= 32)
+        {
+            for (var i = 0; i < id.Length; i++)
+            {
+                var c = id[i];
+                if (!(c is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F')) return false;
+            }
+            return true;
+        }
+        return false;
     }
 }

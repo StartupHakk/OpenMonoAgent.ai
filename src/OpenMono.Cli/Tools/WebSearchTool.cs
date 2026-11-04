@@ -64,6 +64,8 @@ public sealed partial class WebSearchTool : ToolBase
         new NetworkEgressCap("duckduckgo.com", 443, "https"),
         new NetworkEgressCap("html.duckduckgo.com", 443, "https"),
         new NetworkEgressCap("lite.duckduckgo.com", 443, "https"),
+        new NetworkEgressCap("www.mojeek.com", 443, "https"),
+        new NetworkEgressCap("api.search.brave.com", 443, "https"),
         new NetworkEgressCap("en.wikipedia.org", 443, "https"),
     ];
 
@@ -104,6 +106,13 @@ public sealed partial class WebSearchTool : ToolBase
         if (result.Class == ResultClass.Success)
             return result;
 
+        // DuckDuckGo gave nothing useful — try keyless/tertiary engines before
+        // declaring failure. Best-effort: any exception is swallowed and the honest
+        // DDG outcome is kept.
+        var tertiary = await TertiarySearchAsync(query, maxResults, context, ct);
+        if (tertiary is not null)
+            return tertiary;
+
         // Only merge the anchor into a genuine web-search failure/empty — never into a
         // success. A success already has real results to surface.
         if (result.Class is not (ResultClass.Empty or ResultClass.InvalidInput))
@@ -142,6 +151,122 @@ public sealed partial class WebSearchTool : ToolBase
     }
 
     private static int WikiResultLimit => 3;
+
+    /// <summary>
+    /// Tertiary fallback engines, tried only when the DuckDuckGo chain failed:
+    /// Brave (keyed, if configured) then Mojeek (keyless, often captcha-walled from
+    /// datacenter IPs — hence best-effort). Returns null when neither yields results.
+    /// </summary>
+    private async Task<ToolResult?> TertiarySearchAsync(
+        string query, int maxResults, ToolContext context, CancellationToken ct)
+    {
+        var braveKey = context.Config.Web.BraveApiKey;
+        if (!string.IsNullOrWhiteSpace(braveKey))
+        {
+            try
+            {
+                var brave = await BraveSearchAsync(braveKey!, query, maxResults, ct);
+                if (brave.Count > 0)
+                {
+                    context.OnDebug?.Invoke("WebSearch: DuckDuckGo chain failed; Brave API returned results.");
+                    return RenderResults(query, brave);
+                }
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                context.OnDebug?.Invoke($"WebSearch: Brave fallback failed ({ex.Message})");
+            }
+        }
+
+        try
+        {
+            var mojeek = await MojeekSearchAsync(query, maxResults, ct);
+            if (mojeek.Count > 0)
+            {
+                context.OnDebug?.Invoke("WebSearch: DuckDuckGo chain failed; Mojeek returned results.");
+                return RenderResults(query, mojeek);
+            }
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            context.OnDebug?.Invoke($"WebSearch: Mojeek fallback failed ({ex.Message})");
+        }
+
+        return null;
+    }
+
+    private async Task<List<SearchResult>> BraveSearchAsync(
+        string apiKey, string query, int maxResults, CancellationToken ct)
+    {
+        var url = $"https://api.search.brave.com/res/v1/web/search?q={Uri.EscapeDataString(query)}&count={maxResults}";
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Add("X-Subscription-Token", apiKey);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.Add("User-Agent", AgentUserAgent);
+
+        using var response = await _http.SendAsync(request, ct);
+        response.EnsureSuccessStatusCode();
+
+        var json = await response.Content.ReadAsStringAsync(ct);
+        using var doc = JsonDocument.Parse(json);
+        var results = new List<SearchResult>();
+        if (!doc.RootElement.TryGetProperty("web", out var web) ||
+            !web.TryGetProperty("results", out var arr) ||
+            arr.ValueKind != JsonValueKind.Array)
+            return results;
+
+        foreach (var r in arr.EnumerateArray())
+        {
+            if (results.Count >= maxResults) break;
+            var title = r.TryGetProperty("title", out var t) ? t.GetString() : null;
+            var resultUrl = r.TryGetProperty("url", out var u) ? u.GetString() : null;
+            if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(resultUrl)) continue;
+            var desc = r.TryGetProperty("description", out var d) ? d.GetString() : null;
+            results.Add(new SearchResult { Title = title!, Url = resultUrl!, Snippet = desc });
+        }
+        return results;
+    }
+
+    /// <summary>
+    /// Keyless Mojeek HTML search. Mojeek frequently captcha-walls datacenter IPs,
+    /// so this is strictly best-effort: a challenge page, non-2xx, or parse miss all
+    /// yield zero results (the caller then falls through to the Wikipedia anchor).
+    /// </summary>
+    private async Task<List<SearchResult>> MojeekSearchAsync(
+        string query, int maxResults, CancellationToken ct)
+    {
+        var url = $"https://www.mojeek.com/search?q={Uri.EscapeDataString(query)}";
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Add("Accept", "text/html");
+        request.Headers.Add("User-Agent", BrowserUserAgent);
+
+        using var response = await _http.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode) return [];
+
+        var html = await response.Content.ReadAsStringAsync(ct);
+        if (html.Contains("<title>Captcha</title>", StringComparison.OrdinalIgnoreCase))
+            return [];
+
+        var results = new List<SearchResult>();
+        foreach (Match m in MojeekResultPattern().Matches(html))
+        {
+            if (results.Count >= maxResults) break;
+            var title = WebUtility.HtmlDecode(StripTags().Replace(m.Groups["title"].Value, "")).Trim();
+            var href = ExtractHref(m.Groups["tag"].Value);
+            if (string.IsNullOrEmpty(title) || string.IsNullOrEmpty(href)) continue;
+            if (!href.StartsWith("http", StringComparison.Ordinal)) continue;
+            results.Add(new SearchResult { Title = title, Url = href });
+        }
+
+        // Mojeek snippets sit in <p class="s"> blocks, positionally paired with results.
+        var snippets = MojeekSnippetPattern().Matches(html);
+        for (var i = 0; i < Math.Min(snippets.Count, results.Count); i++)
+        {
+            var snippet = WebUtility.HtmlDecode(StripTags().Replace(snippets[i].Groups[1].Value, "")).Trim();
+            results[i] = results[i] with { Snippet = snippet };
+        }
+        return results;
+    }
 
     /// <summary>
     /// Keyless Wikipedia REST search. The only no-key general source that is never
@@ -499,6 +624,13 @@ public sealed partial class WebSearchTool : ToolBase
 
     [GeneratedRegex(@"href=""([^""]*)""")]
     private static partial Regex HrefPattern();
+
+    // Mojeek result block: <a class="title" href=...>title</a> inside a result <li>.
+    [GeneratedRegex(@"<a\b(?<tag>[^>]*\bclass=""title""[^>]*)>(?<title>.*?)</a>", RegexOptions.Singleline)]
+    private static partial Regex MojeekResultPattern();
+
+    [GeneratedRegex(@"<p\b[^>]*\bclass=""s""[^>]*>(?<snippet>.*?)</p>", RegexOptions.Singleline)]
+    private static partial Regex MojeekSnippetPattern();
 
     [GeneratedRegex(@"<[^>]+>")]
     private static partial Regex StripTags();

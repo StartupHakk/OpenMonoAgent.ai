@@ -503,6 +503,78 @@ public sealed class AcpEndpointsTests : IAsyncLifetime
         res.StatusCode.Should().Be(HttpStatusCode.NoContent);
     }
 
+    [Fact]
+    public async Task GetModels_returns_flat_menu_with_expected_shape()
+    {
+        var sid = await CreateSessionAsync();
+        var registry = _app.Services.GetRequiredService<OpenMono.Llm.BackendRegistry>();
+        registry.Add(new OpenMono.Llm.BackendDefinition
+        {
+            Name = "default",
+            Endpoint = "http://127.0.0.1:1",
+            DefaultModel = "gpt-4o",
+            IsLocal = true,
+        });
+        registry.SetKey("default", "sk-test");
+
+        // Make the session's model match the backend default so the active row is well-defined.
+        var store = _app.Services.GetRequiredService<AcpSessionStore>();
+        var sess = store.TryGet(sid)!;
+        sess.State.Model = "gpt-4o";
+        store.Save(sess);
+
+        var res = await _client.GetAsync($"/api/v1/models?session={sid}");
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        var root = doc.RootElement;
+        root.GetProperty("session_id").GetString().Should().Be(sid);
+        root.GetProperty("default_backend").GetString().Should().Be("default");
+        root.GetProperty("default_model").GetString().Should().Be("gpt-4o");
+
+        var rows = root.GetProperty("models").EnumerateArray().ToList();
+        rows.Should().NotBeEmpty();
+        var defRow = rows.First(r => r.GetProperty("backend").GetString() == "default");
+        defRow.GetProperty("has_key").GetBoolean().Should().BeTrue();
+        defRow.GetProperty("is_default").GetBoolean().Should().BeTrue();
+        defRow.GetProperty("is_active").GetBoolean().Should().BeTrue();
+        defRow.GetProperty("rendered").GetString().Should().Contain("gpt-4o");
+    }
+
+    [Fact]
+    public async Task GetModels_404s_for_unknown_or_missing_session()
+    {
+        (await _client.GetAsync("/api/v1/models?session=sess_nope")).StatusCode
+            .Should().Be(HttpStatusCode.NotFound);
+        (await _client.GetAsync("/api/v1/models")).StatusCode
+            .Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task SetSessionBackend_honors_explicit_model_in_body()
+    {
+        var sid = await CreateSessionAsync();
+        var registry = _app.Services.GetRequiredService<OpenMono.Llm.BackendRegistry>();
+        registry.Add(new OpenMono.Llm.BackendDefinition
+        {
+            Name = "testhub",
+            Endpoint = "http://127.0.0.1:1",
+            DefaultModel = "gpt-4o-mini",
+            IsLocal = true,
+        });
+
+        var res = await _client.PostAsJsonAsync($"/api/v1/sessions/{sid}/backend",
+            new { backend = "testhub", model = "gpt-4o-turbo" });
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("model").GetString().Should().Be("gpt-4o-turbo");
+
+        var session = _app.Services.GetRequiredService<AcpSessionStore>().TryGet(sid);
+        session!.State.ActiveBackend.Should().Be("testhub");
+        session.State.Model.Should().Be("gpt-4o-turbo");
+    }
+
 
 
     [Fact]

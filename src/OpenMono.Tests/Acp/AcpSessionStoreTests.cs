@@ -107,6 +107,33 @@ public sealed class AcpSessionStoreTests : IDisposable
     }
 
     [Fact]
+    public void Default_session_id_uses_sess_prefix_format()
+    {
+        var state = new SessionState();
+        state.Id.Should().StartWith("sess_");
+    }
+
+    [Fact]
+    public void TryGet_accepts_legacy_bare_hex_session_id()
+    {
+        // Pre-standardization TUI sessions used a bare 12-hex id; the extension
+        // must still be able to join them ("That session is no longer available" bug).
+        using var store = new AcpSessionStore(_cfg, _settings, startReaper: false);
+
+        var legacyId = Guid.NewGuid().ToString("N")[..12];
+        var session = new AcpSession
+        {
+            State = new SessionState { Id = legacyId, StartedAt = DateTime.UtcNow, Model = "gpt-4o" },
+            LastActivityAt = DateTime.UtcNow,
+        };
+        store.Save(session);
+
+        var got = store.TryGet(legacyId);
+        got.Should().NotBeNull();
+        got!.Model.Should().Be("gpt-4o");
+    }
+
+    [Fact]
     public void Never_expires_when_ttl_is_zero()
     {
         var neverExpire = new AcpServerSettings { SessionTtlHours = 0, SessionsDirectory = _legacyDir };

@@ -118,9 +118,35 @@ public static class ModelCatalog
         var tasks = list.Select(async b =>
         {
             var models = await FetchAsync(b.Endpoint, b.Key, ct);
-            return (Name: b.Name, Probe: new BackendProbe(models.Count > 0, models));
+            // Many working backends (Anthropic-style endpoints, some llama-server
+            // configs, gateways) do not serve /v1/models. Treat a reachable TCP
+            // endpoint as online so the menu doesn't show a false OFFLINE.
+            var reachable = models.Count > 0 || await TcpReachableAsync(b.Endpoint, ct);
+            return (Name: b.Name, Probe: new BackendProbe(reachable, models));
         }).ToList();
         var done = await Task.WhenAll(tasks);
         return done.ToDictionary(r => r.Name, r => r.Probe, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Raw TCP connect to the endpoint's host:port (HTTPS-aware default port).
+    /// Used as a reachability fallback when /v1/models is absent.
+    /// </summary>
+    private static async Task<bool> TcpReachableAsync(string endpoint, CancellationToken ct)
+    {
+        try
+        {
+            if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri)) return false;
+            var port = uri.Port > 0 ? uri.Port : uri.Scheme == Uri.UriSchemeHttps ? 443 : 80;
+            using var client = new System.Net.Sockets.TcpClient();
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(3));
+            await client.ConnectAsync(uri.Host, port, timeoutCts.Token);
+            return client.Connected;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

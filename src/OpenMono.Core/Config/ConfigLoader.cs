@@ -252,6 +252,10 @@ public static class ConfigLoader
         if (!string.IsNullOrEmpty(webWikiAnchor))
             config.Web.WikipediaAnchor = webWikiAnchor;
 
+        var braveApiKey = Environment.GetEnvironmentVariable("OPENMONO_BRAVE_API_KEY");
+        if (!string.IsNullOrEmpty(braveApiKey))
+            config.Web.BraveApiKey = braveApiKey;
+
         var workspace = Environment.GetEnvironmentVariable("OPENMONO_WORKSPACE");
         if (!string.IsNullOrEmpty(workspace))
             config.WorkingDirectory = workspace;

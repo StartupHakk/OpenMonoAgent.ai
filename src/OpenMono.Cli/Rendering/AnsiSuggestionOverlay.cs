@@ -14,6 +14,10 @@ internal sealed class AnsiSuggestionOverlay(AppConfig config, AnsiPainter painte
     private int _suggestionScroll = 0;
     private int _lastDrawnCount = 0;
 
+    // Commands that implement ICommandArgumentSource, keyed by lowercase command name,
+    // so typing "/think " can complete to a runtime-supplied argument value.
+    private Dictionary<string, ICommandArgumentSource> _argumentSources = new(StringComparer.OrdinalIgnoreCase);
+
     private List<string> _atResults = [];
     private int _atSearchIdx = -1;
     private int _atScroll = 0;
@@ -35,10 +39,13 @@ internal sealed class AnsiSuggestionOverlay(AppConfig config, AnsiPainter painte
     internal void SetCommands(CommandRegistry registry)
     {
         _allCommands = [];
+        _argumentSources = new Dictionary<string, ICommandArgumentSource>(StringComparer.OrdinalIgnoreCase);
         foreach (var cmd in registry.All.OrderBy(c => c.Name))
         {
             var name = cmd.Name.TrimStart('/');
             _allCommands.Add(($"/{name}", cmd.Description));
+            if (cmd is ICommandArgumentSource src)
+                _argumentSources[name] = src;
         }
         _allCommands.Add(("/quit", "Exit OpenMono"));
     }
@@ -82,6 +89,18 @@ internal sealed class AnsiSuggestionOverlay(AppConfig config, AnsiPainter painte
 
     internal void UpdateSuggestions(string text, ref bool visible)
     {
+        // Dynamic per-command argument suggestions (see ICommandArgumentSource): once
+        // the user has typed "/<cmd> ", ask the command for runtime options. Selecting
+        // one completes the line to "/<cmd> <value>".
+        if (_argumentSources.Count > 0 && TryBuildArgumentSuggestions(text))
+        {
+            _suggestionIdx = 0;
+            _suggestionScroll = 0;
+            visible = true;
+            DrawSuggestions(text);
+            return;
+        }
+
         // Once the user has typed "/models " (command + space), suggest the configured backend
         // names instead of commands. Selecting one completes the line to "/models <name>".
         if (text.StartsWith("/models ", StringComparison.OrdinalIgnoreCase)
@@ -161,6 +180,45 @@ internal sealed class AnsiSuggestionOverlay(AppConfig config, AnsiPainter painte
         _suggestionScroll = 0;
         visible = true;
         DrawSuggestions(text);
+    }
+
+    /// <summary>
+    /// Matches "/<cmd> <partial>" against the registered argument sources and fills
+    /// _filteredCmds with the supplied options. Returns false when nothing matched,
+    /// leaving the command-list path to handle the input.
+    /// </summary>
+    private bool TryBuildArgumentSuggestions(string text)
+    {
+        if (!TextStartsWithCommandSpace(text, out var cmd, out var query)) return false;
+        if (!_argumentSources.TryGetValue(cmd, out var source)) return false;
+
+        var options = source.GetArgumentOptions(query, config)
+            .Where(o => query.Length == 0
+                || o.Value.Contains(query, StringComparison.OrdinalIgnoreCase)
+                || o.Detail.Contains(query, StringComparison.OrdinalIgnoreCase))
+            .Select(o => ($"/{cmd} {o.Value}", o.Detail))
+            .ToList();
+        if (options.Count == 0) return false;
+
+        _filteredCmds = options;
+        return true;
+    }
+
+    /// <summary>
+    /// True when <paramref name="text"/> is "/<cmd> <partial>" with a non-empty
+    /// command name and the cursor past the space. Extracts the lowercase command
+    /// name and everything after the first space.
+    /// </summary>
+    private static bool TextStartsWithCommandSpace(string text, out string command, out string query)
+    {
+        command = "";
+        query = "";
+        if (text.Length < 2 || text[0] != '/') return false;
+        var spaceIdx = text.IndexOf(' ');
+        if (spaceIdx <= 1) return false;
+        command = text[1..spaceIdx].ToLowerInvariant();
+        query = text[(spaceIdx + 1)..].TrimStart();
+        return command.Length > 0;
     }
 
     internal void DrawSuggestions(string bgText)

@@ -22,7 +22,7 @@ public class SessionManagerTests : IDisposable
     {
         var session = SessionManager.CreateSession();
         session.Should().NotBeNull();
-        session.Id.Should().HaveLength(12);
+        session.Id.Should().StartWith("sess_");
         session.Messages.Should().BeEmpty();
     }
 

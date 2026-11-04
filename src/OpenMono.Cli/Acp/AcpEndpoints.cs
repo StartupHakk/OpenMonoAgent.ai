@@ -42,6 +42,10 @@ public static class AcpEndpoints
         app.MapPost("/api/v1/backends", PostBackend);
         app.MapDelete("/api/v1/backends/{name}", DeleteBackend);
         app.MapPost("/api/v1/sessions/{id}/backend", SetSessionBackend);
+
+        // Flat per-session model menu (backends × advertised models) for the
+        // extension's model picker.
+        app.MapGet("/api/v1/models", ListModels);
     }
 
 
@@ -564,6 +568,82 @@ public static class AcpEndpoints
     }
 
     /// <summary>
+    /// Flat model menu for a session: every configured backend probed for
+    /// reachability and advertised models, with active/default markers. Wire
+    /// contract mirrors the extension's model picker: 200 with
+    /// <c>{ session_id, active_backend, active_model, default_backend, default_model,
+    /// models: [{ backend, label, endpoint, model, is_offline, is_active, has_key,
+    /// is_default, rendered }] }</c>; 404 unknown session.
+    /// </summary>
+    private static async Task<IResult> ListModels(
+        HttpContext ctx,
+        AcpSessionStore store,
+        BackendRegistry registry,
+        AppConfig config,
+        CancellationToken ct)
+    {
+        var sessionId = ctx.Request.Query["session"].ToString();
+        var session = string.IsNullOrWhiteSpace(sessionId) ? null : store.TryGet(sessionId);
+        if (session is null) return Results.NotFound();
+
+        var backends = registry.All.ToList();
+        var probes = await ModelCatalog.ProbeAsync(
+            backends.Select(b => (b.Name, b.Endpoint, registry.GetKey(b.Name))), ct);
+
+        var activeBackend = string.IsNullOrWhiteSpace(session.State.ActiveBackend)
+            ? BackendRegistry.DefaultBackendName
+            : session.State.ActiveBackend;
+
+        var rows = new List<object>();
+        foreach (var b in backends)
+        {
+            var probe = probes.GetValueOrDefault(b.Name);
+            var isOffline = probe is { Ok: false };
+            var models = probe is { Models.Count: > 0 } ? probe.Models : (IReadOnlyList<string>)[];
+            // One row per advertised model, or a single backend-default row.
+            IReadOnlyList<string?> modelNames = models.Count > 0
+                ? models.Select(m => (string?)m).ToList()
+                : new[] { b.DefaultModel };
+
+            foreach (var model in modelNames)
+            {
+                var isActive = string.Equals(b.Name, activeBackend, StringComparison.OrdinalIgnoreCase)
+                    && (string.IsNullOrWhiteSpace(session.State.Model)
+                        || model is null
+                        || string.Equals(model, session.State.Model, StringComparison.OrdinalIgnoreCase));
+                var isDefault = string.Equals(b.Name, BackendRegistry.DefaultBackendName, StringComparison.OrdinalIgnoreCase);
+                var label = string.IsNullOrWhiteSpace(b.Nickname) ? b.Name : b.Nickname!;
+                var rendered = isOffline
+                    ? $"[{label}] OFFLINE  {model ?? b.DefaultModel ?? "(no default model)"}  {b.Endpoint}"
+                    : $"[{label}] {model ?? b.DefaultModel ?? "(no default model)"}  {b.Endpoint}{(registry.HasKey(b.Name) ? " [key]" : "")}";
+
+                rows.Add(new
+                {
+                    backend = b.Name,
+                    label,
+                    endpoint = b.Endpoint,
+                    model,
+                    is_offline = isOffline,
+                    is_active = isActive,
+                    has_key = registry.HasKey(b.Name),
+                    is_default = isDefault,
+                    rendered,
+                });
+            }
+        }
+
+        return Results.Ok(new
+        {
+            session_id = session.Id,
+            active_backend = session.State.ActiveBackend,
+            active_model = session.State.Model,
+            default_backend = BackendRegistry.DefaultBackendName,
+            default_model = registry.Get(BackendRegistry.DefaultBackendName)?.DefaultModel ?? config.Llm.Model,
+            models = rows,
+        });
+    }
+
+    /// <summary>
     /// Creates or updates a backend. The body may include <c>api_key</c>; if present it is
     /// stored in-memory only (never persisted to disk). Wire contract: 200 with
     /// <c>{ ok, name, has_key }</c>; 400 malformed body.
@@ -675,6 +755,7 @@ public static class AcpEndpoints
 
         string backendName;
         string? apiKey;
+        string? requestedModel;
         try
         {
             using var doc = await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ct);
@@ -682,6 +763,7 @@ public static class AcpEndpoints
 
             backendName = root.TryGetProperty("backend", out var bEl) ? bEl.GetString() ?? "" : "";
             apiKey = root.TryGetProperty("api_key", out var kEl) ? kEl.GetString() : null;
+            requestedModel = root.TryGetProperty("model", out var mEl) ? mEl.GetString() : null;
         }
         catch (JsonException ex)
         {
@@ -717,8 +799,11 @@ public static class AcpEndpoints
         clientPool.Invalidate(name);
 
         session.State.ActiveBackend = name;
-        // Adopt the backend's default model only if the session has no explicit model yet.
-        if (string.IsNullOrWhiteSpace(session.State.Model))
+        // An explicit model from the request wins (extension model picker); otherwise
+        // adopt the backend's default model only if the session has no explicit model.
+        if (!string.IsNullOrWhiteSpace(requestedModel))
+            session.State.Model = requestedModel;
+        else if (string.IsNullOrWhiteSpace(session.State.Model))
             session.State.Model = def.DefaultModel;
 
         store.Save(session);

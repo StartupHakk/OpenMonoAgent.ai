@@ -222,6 +222,14 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
             IsLocal = true,
         });
     }
+    // Seed the process-wide API key into the registry so has_key probes (/models,
+    // GET /api/v1/backends, the extension model menu) report the default backend as
+    // keyed when the key comes from config/env rather than a runtime entry.
+    var defaultBackendKey = backendRegistry.GetKey(BackendRegistry.DefaultBackendName)
+        ?? config.Llm.ApiKey
+        ?? Environment.GetEnvironmentVariable("OPENMONO_API_KEY");
+    if (!string.IsNullOrWhiteSpace(defaultBackendKey))
+        backendRegistry.SetKey(BackendRegistry.DefaultBackendName, defaultBackendKey!);
     foreach (var (providerName, ps) in config.Providers)
     {
         if (string.IsNullOrWhiteSpace(ps.Endpoint)) continue;
@@ -235,6 +243,8 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
                 IsLocal = providerName is "local" or "strata",
             });
         }
+        if (!backendRegistry.HasKey(providerName) && !string.IsNullOrWhiteSpace(ps.ApiKey))
+            backendRegistry.SetKey(providerName, ps.ApiKey!);
     }
     var clientPool = new LlmClientPool();
     // Seed the routing client with the process-wide key so the default backend (when no

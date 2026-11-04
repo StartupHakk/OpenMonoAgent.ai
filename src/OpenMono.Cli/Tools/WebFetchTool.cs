@@ -92,21 +92,45 @@ public sealed partial class WebFetchTool : ToolBase
             (uri.Scheme != "http" && uri.Scheme != "https"))
             return ToolResult.Error($"Invalid URL: {url}");
 
-        if (await GatewayCapabilities.IsEnabledAsync(context.Config, GatewayCapabilities.WebService.Scrape, ct))
+        var canScrape = await GatewayCapabilities.IsEnabledAsync(context.Config, GatewayCapabilities.WebService.Scrape, ct);
+
+        // Explicit render=true with a browser available: go straight to Scrapling
+        // (the caller already asked for a browser) and fall back to plain HTTP on error.
+        if (render && canScrape)
         {
-            var gateway = GatewayCapabilities.ResolveGateway(context.Config)!;
+            var gw = GatewayCapabilities.ResolveGateway(context.Config)!;
             try
             {
-                return await ScraplingFetchAsync(gateway, context.Config.Llm.ApiKey, url, maxLength, render, headless, ct);
+                return await ScraplingFetchAsync(gw, context.Config.Llm.ApiKey, url, maxLength, render, headless, ct);
             }
             catch (Exception ex)
             {
                 if (ct.IsCancellationRequested) throw;
                 context.OnDebug?.Invoke($"WebFetch: Scrapling gateway unavailable ({ex.Message}); falling back to direct fetch");
+                return await DirectFetchAsync(uri, url, input, maxLength, ct);
             }
         }
 
-        return await DirectFetchAsync(uri, url, input, maxLength, ct);
+        // Plain HTTP first (fast path). When it fails and a Scrapling browser is
+        // available, route the URL through the browser (bot walls and JS-heavy pages
+        // typically reject plain HTTP but succeed rendered) instead of returning the
+        // plain-fetch error directly.
+        var direct = await DirectFetchAsync(uri, url, input, maxLength, ct);
+        if (direct.Class == ResultClass.Success || !canScrape)
+            return direct;
+
+        var gateway = GatewayCapabilities.ResolveGateway(context.Config)!;
+        try
+        {
+            context.OnDebug?.Invoke($"WebFetch: plain fetch failed ({direct.ModelPreview.Split('\n')[0]}); retrying via Scrapling browser");
+            return await ScraplingFetchAsync(gateway, context.Config.Llm.ApiKey, url, maxLength, render, headless, ct);
+        }
+        catch (Exception ex)
+        {
+            if (ct.IsCancellationRequested) throw;
+            context.OnDebug?.Invoke($"WebFetch: Scrapling retry failed ({ex.Message}); returning plain-fetch result");
+            return direct;
+        }
     }
 
     private static async Task<ToolResult> ScraplingFetchAsync(
@@ -148,7 +172,7 @@ public sealed partial class WebFetchTool : ToolBase
         return ToolResult.Success($"[{status}] {url} ({content.Length} chars)\n\n{content}");
     }
 
-    private static async Task<ToolResult> DirectFetchAsync(
+    private async Task<ToolResult> DirectFetchAsync(
         Uri uri, string url, JsonElement input, int maxLength, CancellationToken ct)
     {
         try
