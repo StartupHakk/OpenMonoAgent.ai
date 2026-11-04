@@ -83,6 +83,79 @@ public static class SupervisorHost
                 return Results.UnprocessableEntity(new { error = ex.Message });
             }
         });
+        app.MapPost("/checks", async (HttpContext ctx) =>
+        {
+            CheckContainerSpec? spec;
+            try
+            {
+                spec = await ctx.Request.ReadFromJsonAsync<CheckContainerSpec>(SocketSupervisorClient.Json, ctx.RequestAborted).ConfigureAwait(false);
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                return Results.BadRequest(new { error = "invalid spec" });
+            }
+            if (spec is null) return Results.BadRequest(new { error = "invalid spec" });
+            try
+            {
+                var r = await inner.RunCheckAsync(spec, ctx.RequestAborted).ConfigureAwait(false);
+                log?.Invoke($"check {spec.Name} exit {r.ExitCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none"}");
+                return Results.Ok(new { exit_code = r.ExitCode, output = r.Output, error = r.Error });
+            }
+            catch (ContainerEngineException ex)
+            {
+                log?.Invoke($"refused check {spec.Name}: {Redactor.Shared.Redact(ex.Message)}");
+                return Results.UnprocessableEntity(new { error = Redactor.Shared.Redact(ex.Message) });
+            }
+        });
+        app.MapPost("/networks", async (CancellationToken ct) =>
+        {
+            try
+            {
+                await inner.EnsureNetworksAsync(ct).ConfigureAwait(false);
+                return Results.Ok(new { ok = true });
+            }
+            catch (ContainerEngineException ex)
+            {
+                log?.Invoke("refused networks: " + Redactor.Shared.Redact(ex.Message));
+                return Results.UnprocessableEntity(new { error = Redactor.Shared.Redact(ex.Message) });
+            }
+        });
+        app.MapPost("/services", async (HttpContext ctx) =>
+        {
+            ServiceContainerSpec? spec;
+            try
+            {
+                spec = await ctx.Request.ReadFromJsonAsync<ServiceContainerSpec>(SocketSupervisorClient.Json, ctx.RequestAborted).ConfigureAwait(false);
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                return Results.BadRequest(new { error = "invalid spec" });
+            }
+            if (spec is null) return Results.BadRequest(new { error = "invalid spec" });
+            try
+            {
+                var id = await inner.EnsureServiceAsync(spec, ctx.RequestAborted).ConfigureAwait(false);
+                log?.Invoke($"started {spec.Name}");
+                return Results.Ok(new { id });
+            }
+            catch (ContainerEngineException ex)
+            {
+                log?.Invoke($"refused {spec.Name}: {Redactor.Shared.Redact(ex.Message)}");
+                return Results.UnprocessableEntity(new { error = Redactor.Shared.Redact(ex.Message) });
+            }
+        });
+        app.MapPost("/services/{name}/stop", async (string name, CancellationToken ct) =>
+        {
+            try
+            {
+                await inner.StopServiceAsync(name, ct).ConfigureAwait(false);
+                return Results.Ok();
+            }
+            catch (ContainerEngineException ex)
+            {
+                return Results.UnprocessableEntity(new { error = ex.Message });
+            }
+        });
         app.MapGet("/images/{image}", async (string image, CancellationToken ct) =>
         {
             var id = await inner.ImageIdAsync(image, ct).ConfigureAwait(false);

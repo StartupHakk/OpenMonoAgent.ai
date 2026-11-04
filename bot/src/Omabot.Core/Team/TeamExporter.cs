@@ -84,6 +84,8 @@ public sealed class TeamExporter(RosterDb db, BotStore bots)
             sb.Append("    accepts_from: ").Append(L(s.AcceptsFrom)).Append('\n');
             sb.Append("    manages: ").Append(L(s.Manages)).Append('\n');
             sb.Append("    keywords: ").Append(L(s.Keywords)).Append('\n');
+            if (s.AutoAllow is { Count: > 0 }) sb.Append("    auto_allow: ").Append(L(s.AutoAllow)).Append('\n');
+            if (s.Preset is { } preset) sb.Append("    preset: ").Append(Q(preset)).Append('\n');
             if (s.Secrets.Count > 0)
             {
                 sb.Append("    secrets:\n");
@@ -118,7 +120,8 @@ public sealed class TeamExporter(RosterDb db, BotStore bots)
                     sb.Append("        notify: ").Append(r.Notify).Append('\n');
                     sb.Append("        daily_token_budget: ").Append(r.DailyTokenBudget).Append('\n');
                     sb.Append("        enabled: ").Append(B(r.Enabled)).Append('\n');
-                    sb.Append("        allow_external: ").Append(B(r.AllowExternal)).Append('\n');
+                    sb.Append("        session: ").Append(r.Session).Append('\n');
+                    sb.Append("        host_exec: ").Append(r.HostExec).Append('\n');
                 }
             }
         }
@@ -158,6 +161,20 @@ public sealed class TeamExporter(RosterDb db, BotStore bots)
         {
             using var doc = JsonDocument.Parse(blocked[0].Json);
             sb.Append("blocked_hosts: ").Append(L(doc.RootElement.EnumerateArray().Select(x => x.GetString() ?? ""))).Append('\n');
+        }
+
+        var approvers = Items("approvers");
+        if (approvers.Count > 0)
+        {
+            using var doc = JsonDocument.Parse(approvers[0].Json);
+            if (doc.RootElement.GetArrayLength() == 0) sb.Append("approvers: []\n");
+            else
+            {
+                sb.Append("approvers:\n");
+                foreach (var a in doc.RootElement.EnumerateArray())
+                    sb.Append("  - { bot: ").Append(Q(a.GetProperty("bot").GetString() ?? "")).Append(", kinds: ")
+                        .Append(L(a.GetProperty("kinds").EnumerateArray().Select(x => x.GetString() ?? ""))).Append(" }\n");
+            }
         }
         return sb.ToString();
     }

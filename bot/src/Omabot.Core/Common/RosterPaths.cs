@@ -35,6 +35,9 @@ public sealed class RosterPaths
     public string Web => Path.Combine(Home, "web");
     public string UsersDb => Path.Combine(Web, "users.db");
     public string WebSessions => Path.Combine(Web, "sessions");
+    public string WebEnroll => Path.Combine(Web, "enroll");
+    public string WebCheckNonce => Path.Combine(Web, "check.nonce");
+    public string WebAdminSecret => Path.Combine(Secrets, "web-admin.secret");
     public string Bots => Path.Combine(Home, "bots");
     public string Archive => Path.Combine(Home, "archive");
     public string UsersRoot => Path.Combine(Home, "users");

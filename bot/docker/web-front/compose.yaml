@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# HTTPS front for oma-bot web-single. Host networking lets it reach the roster
+# on 127.0.0.1:7477; it listens on 80 (redirect and certificate checks) and 443.
+#
+#   CADDY_DIGEST=sha256:... OMABOT_WEB_HOST=roster.example.com docker compose up -d
+#
+# The image is pinned by digest (plan 7.20 item 9); compose refuses to start
+# without one.
+name: oma-bot-web-front
+services:
+  caddy:
+    image: "caddy:2@${CADDY_DIGEST:?set CADDY_DIGEST to the pinned sha256 digest of the caddy:2 image}"
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 256m
+    environment:
+      OMABOT_WEB_HOST: "${OMABOT_WEB_HOST:?set OMABOT_WEB_HOST to the public host name}"
+      OMABOT_ACME_EMAIL: "${OMABOT_ACME_EMAIL:-}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    tmpfs:
+      - /tmp
+volumes:
+  caddy-data:
+  caddy-config:

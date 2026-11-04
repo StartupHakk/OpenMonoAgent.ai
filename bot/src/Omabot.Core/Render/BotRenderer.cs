@@ -38,6 +38,17 @@ public sealed class BotRenderer(RosterPaths paths, RosterConfig config)
         "169.254.169.254", "metadata.google.internal", "host.docker.internal", ":7477", ":7476", "/admin/invite",
     ];
 
+    /// <summary>
+    /// Strings a Bash command may not contain (threat T3): loopback names that
+    /// reach the bot's own ACP listener, and the host bridge variables and the
+    /// process environment that hold its invite. Bash only, so file edits that
+    /// mention localhost still work.
+    /// </summary>
+    public static readonly string[] BlockedBashInputs =
+    [
+        "localhost", "127.0.0.1", "0.0.0.0", "[::1]", "::ffff:127", "OPENMONO_HOST", "/environ", "7475",
+    ];
+
     public string WorkspaceOf(BotSpec spec) => spec.Workspace == "auto" ? paths.Bot(spec.Slug).DefaultWorkspace : spec.Workspace;
 
     /// <summary>Create the bot folders. Only missing folders are created; files are never touched here.</summary>
@@ -86,9 +97,10 @@ public sealed class BotRenderer(RosterPaths paths, RosterConfig config)
         SecureFile.WriteIfMissing(Path.Combine(ws, "MEMORY.md"), "");
 
         var botcfg = Path.Combine(bp.Root, "botcfg");
-        SecureFile.WriteAllTextAtomic(Path.Combine(botcfg, "allowed-tools.txt"), string.Join("\n", spec.ToolsAllow) + "\n", SecureFile.PrivateFile | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        SecureFile.WriteAllTextAtomic(Path.Combine(botcfg, "allowed-tools.txt"), string.Join("\n", AllowedTools(spec)) + "\n", SecureFile.PrivateFile | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
         SecureFile.WriteAllTextAtomic(Path.Combine(botcfg, "blocked-hosts.txt"), string.Join("\n", ctx.BlockedHosts) + "\n", SecureFile.PrivateFile | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
         SecureFile.WriteAllTextAtomic(Path.Combine(botcfg, "allow-hosts.txt"), string.Join("\n", spec.AllowHosts) + "\n", SecureFile.PrivateFile | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        if (!File.Exists(Runtime.TurnGate.PathFor(paths, spec.Slug))) Runtime.TurnGate.Reset(paths, spec.Slug);
         SecureFile.WriteAllTextAtomic(bp.BotYaml, spec.ToJson() + "\n");
         return new RenderedBot(settings, system, omd, SecureFile.Sha256Hex(omd));
     }
@@ -166,6 +178,10 @@ public sealed class BotRenderer(RosterPaths paths, RosterConfig config)
         return sb.ToString() + marker;
     }
 
+    /// <summary>The pre tool hook's list: the team file's tools, plus the desktop tools for a bot with a desktop (each still asks).</summary>
+    public static IReadOnlyList<string> AllowedTools(BotSpec spec)
+        => spec.Desktop == "off" ? spec.ToolsAllow : [.. spec.ToolsAllow, "mcp__desktop__*"];
+
     public string RenderSettings(BotSpec spec, RenderContext ctx)
     {
         var root = new JsonObject
@@ -190,6 +206,7 @@ public sealed class BotRenderer(RosterPaths paths, RosterConfig config)
             ["auto_detect_code_graph"] = false,
         };
         if (ctx.ContextSize is { } cs) ((JsonObject)root["llm"]!)["context_size"] = cs;
+        root["model_presets"] = RenderPresets(spec, ctx);
         if (ctx.McpShimInstalled)
         {
             root["mcp_servers"] = new JsonObject
@@ -202,8 +219,50 @@ public sealed class BotRenderer(RosterPaths paths, RosterConfig config)
                     ["enabled"] = true,
                 },
             };
+            if (spec.Desktop != "off")
+            {
+                ((JsonObject)root["mcp_servers"]!)["desktop"] = new JsonObject
+                {
+                    ["command"] = ShimMount + "/run",
+                    ["args"] = new JsonArray(),
+                    ["env"] = new JsonObject { ["ROSTER_BOT"] = spec.Slug, ["ROSTER_SOCKET"] = SockMount + "/roster.sock", ["ROSTER_MCP_MODE"] = "desktop" },
+                    ["enabled"] = true,
+                };
+            }
         }
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + "\n";
+    }
+
+    /// <summary>
+    /// Sampling presets (plan 7.8). OMA copies an active preset's endpoint and
+    /// model over the llm settings, and a preset without them keeps OMA's
+    /// default local endpoint, so every preset written here, including OMA's
+    /// own qwen and qwen38 names, carries the gateway endpoint, the bot's
+    /// model and an explicit context size and output cap.
+    /// </summary>
+    public JsonObject RenderPresets(BotSpec spec, RenderContext ctx)
+    {
+        var context = ctx.ContextSize ?? 196608;
+        var maxOut = Math.Min(16384, Math.Max(1024, context / 4));
+        JsonObject Preset(Config.SamplingPreset p) => new()
+        {
+            ["endpoint"] = ctx.GatewayUrl,
+            ["model"] = spec.Model,
+            ["context_size"] = context,
+            ["max_output_tokens"] = maxOut,
+            ["temperature"] = p.Temperature,
+            ["top_p"] = p.TopP,
+            ["top_k"] = p.TopK,
+            ["presence_penalty"] = p.PresencePenalty,
+            ["min_p"] = p.MinP,
+            ["repetition_penalty"] = p.RepetitionPenalty,
+        };
+        var presets = new JsonObject();
+        var qwen = new Config.SamplingPreset { Temperature = 0.7, TopP = 0.8, TopK = 20, PresencePenalty = 1.5 };
+        presets["qwen"] = Preset(qwen);
+        presets["qwen38"] = Preset(qwen);
+        foreach (var (name, p) in Config.Bots.Presets.OrderBy(kv => kv.Key, StringComparer.Ordinal)) presets[name] = Preset(p);
+        return presets;
     }
 
     /// <summary>
@@ -221,6 +280,14 @@ public sealed class BotRenderer(RosterPaths paths, RosterConfig config)
             pre.Add(new JsonObject
             {
                 ["if"] = new JsonObject { ["input_contains"] = blocked },
+                ["run"] = HooksMount + "/block.sh blocked_input",
+            });
+        }
+        foreach (var blocked in BlockedBashInputs)
+        {
+            pre.Add(new JsonObject
+            {
+                ["if"] = new JsonObject { ["tool"] = "Bash", ["input_contains"] = blocked },
                 ["run"] = HooksMount + "/block.sh blocked_input",
             });
         }

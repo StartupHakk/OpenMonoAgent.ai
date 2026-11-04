@@ -71,8 +71,42 @@ public sealed class SocketSupervisorClient : ISupervisorClient, IDisposable
         if (!r.IsSuccessStatusCode) throw new ContainerEngineException("Supervisor refused remove", (int)r.StatusCode);
     }
 
+    public async Task EnsureNetworksAsync(CancellationToken ct = default)
+    {
+        using var r = await _http.PostAsync("networks", null, ct).ConfigureAwait(false);
+        if (!r.IsSuccessStatusCode) throw new ContainerEngineException("Supervisor refused: " + Common.Redactor.Shared.Redact(await r.Content.ReadAsStringAsync(ct).ConfigureAwait(false)), (int)r.StatusCode);
+    }
+
+    public async Task<string> EnsureServiceAsync(ServiceContainerSpec spec, CancellationToken ct = default)
+    {
+        using var r = await _http.PostAsJsonAsync("services", spec, Json, ct).ConfigureAwait(false);
+        var body = await r.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        if (!r.IsSuccessStatusCode) throw new ContainerEngineException("Supervisor refused: " + Common.Redactor.Shared.Redact(body), (int)r.StatusCode);
+        using var doc = JsonDocument.Parse(body);
+        return doc.RootElement.GetProperty("id").GetString()!;
+    }
+
+    public async Task StopServiceAsync(string name, CancellationToken ct = default)
+    {
+        using var r = await _http.PostAsync($"services/{Uri.EscapeDataString(name)}/stop", null, ct).ConfigureAwait(false);
+        if (!r.IsSuccessStatusCode) throw new ContainerEngineException("Supervisor refused stop", (int)r.StatusCode);
+    }
+
     public async Task<IReadOnlyList<ContainerInfo>> ListAsync(CancellationToken ct = default)
         => await _http.GetFromJsonAsync<List<ContainerInfo>>("containers", Json, ct).ConfigureAwait(false) ?? [];
+
+    public async Task<Routines.CommandCheckResult> RunCheckAsync(CheckContainerSpec spec, CancellationToken ct = default)
+    {
+        using var r = await _http.PostAsJsonAsync("checks", spec, Json, ct).ConfigureAwait(false);
+        var body = await r.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        if (!r.IsSuccessStatusCode) throw new ContainerEngineException("Supervisor refused the check: " + Common.Redactor.Shared.Redact(body), (int)r.StatusCode);
+        using var doc = JsonDocument.Parse(body);
+        var j = doc.RootElement;
+        long? exit = j.TryGetProperty("exit_code", out var e) && e.ValueKind == JsonValueKind.Number ? e.GetInt64() : null;
+        var output = j.TryGetProperty("output", out var o) ? o.GetString() ?? "" : "";
+        var error = j.TryGetProperty("error", out var er) && er.ValueKind == JsonValueKind.String ? er.GetString() : null;
+        return new Routines.CommandCheckResult(exit, output, error);
+    }
 
     public async Task<string?> ImageIdAsync(string image, CancellationToken ct = default)
     {

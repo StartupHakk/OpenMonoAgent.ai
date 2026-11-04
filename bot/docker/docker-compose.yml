@@ -5,8 +5,18 @@
 name: oma-roster
 
 networks:
+  # Internal: no default route. Bots reach only the gateway on 172.30.240.1 and
+  # the egress gate ("egress"). The supervisor creates it with these settings
+  # and refuses to start bots when it differs (docs/egress.md).
   oma-roster:
     name: oma-roster
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.name: br-omabot0
+    ipam:
+      config:
+        - subnet: 172.30.240.0/24
+          gateway: 172.30.240.1
 
 services:
   bot:
@@ -30,6 +40,10 @@ services:
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
       # OPENMONO_API_KEY comes from the bot token file at launch. Never write it here.
       OPENMONO_API_KEY: ${OPENMONO_API_KEY:?set from the bot token file at launch}
+      # The egress gate URL carries the bot's own gate token (secrets/egress/BOT.token).
+      HTTPS_PROXY: ${OMABOT_EGRESS_PROXY:?http://BOT:TOKEN@egress:3128}
+      HTTP_PROXY: ${OMABOT_EGRESS_PROXY:?http://BOT:TOKEN@egress:3128}
+      NO_PROXY: 172.30.240.1
     labels:
       oma-bot.roster: "1"
       oma-bot.bot: BOT

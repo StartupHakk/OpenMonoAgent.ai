@@ -46,7 +46,7 @@ public sealed class ShimServer(RosterToolHost tools, ShimTokens tokens)
         {
             var auth = ctx.Request.Headers.Authorization.ToString();
             var token = auth.StartsWith("Bearer ", StringComparison.Ordinal) ? auth[7..].Trim() : null;
-            if (!tokens.Check(bot, token, out var routine))
+            if (!tokens.Check(bot, token, out var routine, out var assignment))
             {
                 ctx.Response.StatusCode = 401;
                 await ctx.Response.WriteAsync("""{"error":"turn_token","message":"The turn token is missing or from an earlier turn. Claim a new one."}""").ConfigureAwait(false);
@@ -62,7 +62,7 @@ public sealed class ShimServer(RosterToolHost tools, ShimTokens tokens)
             }
             var name = body["name"]?.GetValue<string>() ?? "";
             var args = body["arguments"] as JsonObject ?? [];
-            var result = await tools.CallAsync(new ToolCaller(bot, routine, null), name, args, ctx.RequestAborted).ConfigureAwait(false);
+            var result = await tools.CallAsync(new ToolCaller(bot, routine, assignment), name, args, ctx.RequestAborted).ConfigureAwait(false);
             ctx.Response.StatusCode = result.Status;
             await ctx.Response.WriteAsync(result.ToJson().ToJsonString()).ConfigureAwait(false);
             return;

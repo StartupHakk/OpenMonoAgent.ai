@@ -7,7 +7,7 @@ public sealed record AcpDiscovery(string Version, string AgentId, string Status,
 
 public sealed record AcpSessionInfo(string SessionId, string Model, int TurnCount, bool PlanMode, bool HostEnabled);
 
-public enum PauseKind { Permission, Playbook, ToggleMode, UserInput, HostExec }
+public enum PauseKind { Permission, Playbook, ToggleMode, UserInput, HostExec, Plan }
 
 /// <summary>A pause the bot raised. Payload is the raw event data, kept for audit and display after redaction.</summary>
 public sealed record AcpPause(PauseKind Kind, string Id, string Summary, bool Dangerous, string? Tool, JsonElement Payload)
@@ -25,6 +25,8 @@ public sealed record AcpPause(PauseKind Kind, string Id, string Summary, bool Da
         }
         string S(string name) => root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
         bool B(string name) => root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
+        // plan_ready carries no id; its answer is a plan_decision for the session's open plan.
+        if (e.Name == "plan_ready") return new AcpPause(PauseKind.Plan, "plan", "Plan ready: " + Truncate(S("plan"), 400), true, null, root);
         var id = S("id");
         if (id.Length == 0) return null;
         return e.Name switch
@@ -39,15 +41,22 @@ public sealed record AcpPause(PauseKind Kind, string Id, string Summary, bool Da
         };
     }
 
-    /// <summary>The /turn body that answers this pause.</summary>
+    /// <summary>
+    /// The /turn body that answers this pause. Permissions are answered once,
+    /// never for the session. An approved plan is "gated" (OMA prompts before
+    /// each edit), never "auto", which would approve every later write.
+    /// </summary>
     public object Answer(bool allow, string? value = null) => Kind switch
     {
         PauseKind.Permission => new { permission = new { id = Id, decision = allow ? "allow" : "deny", scope = "once" } },
         PauseKind.Playbook => new { playbookPermission = new { id = Id, decision = allow ? "allow" : "deny" } },
         PauseKind.ToggleMode => new { toggle_mode = new { id = Id, decision = allow ? "approve" : "deny" } },
         PauseKind.HostExec => new { user_input = new { id = Id, value = allow ? "HOST_EXEC_APPROVE" : "HOST_EXEC_DENY" } },
+        PauseKind.Plan => new { plan_decision = allow ? "gated" : "keep" },
         _ => new { user_input = new { id = Id, value = value ?? "" } },
     };
+
+    private static string Truncate(string s, int n) => s.Length <= n ? s : s[..n] + "...";
 }
 
 public sealed record AcpUsage(int InputTokens, int OutputTokens, int TotalTokens);

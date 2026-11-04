@@ -17,8 +17,9 @@ done
 if command -v systemctl >/dev/null 2>&1; then
   systemctl --user disable --now oma-bot.service oma-bot-supervisor.service >/dev/null 2>&1 || true
 fi
-rm -f "${HOME}/.config/systemd/user/oma-bot.service" "${HOME}/.config/systemd/user/oma-bot-supervisor.service"
-rm -f "${HOME}/.local/bin/oma-bot" "${HOME}/.local/bin/oma-bot-supervisor"
+rm -f "${HOME}/.config/systemd/user/oma-bot.service" "${HOME}/.config/systemd/user/oma-bot-supervisor.service" \
+  "${HOME}/.config/systemd/user/oma-bot@.service" "${HOME}/.config/systemd/user/oma-bot-supervisor@.service"
+rm -f "${HOME}/.local/bin/oma-bot" "${HOME}/.local/bin/oma-bot-supervisor" "${HOME}/.local/bin/oma-bot-node"
 case "${prefix}" in
   ""|"/"|"${HOME}") echo "Refusing to remove ${prefix}" >&2; exit 1 ;;
 esac

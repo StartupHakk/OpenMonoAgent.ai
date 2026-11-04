@@ -16,6 +16,7 @@
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="..\..\templates\**\*" LinkBase="templates" />
+    <EmbeddedResource Include="..\..\web\**\*" LinkBase="web" />
     <InternalsVisibleTo Include="Omabot.Tests" />
     <InternalsVisibleTo Include="Omabot.SecurityTests" />
   </ItemGroup>

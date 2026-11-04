@@ -6,7 +6,7 @@ using Omabot.Db;
 
 namespace Omabot.Gateway;
 
-public sealed record UsageRecord(string Bot, string? Routine, Priority Priority, string Backend, string Model, int PromptTokens, int CompletionTokens, bool Estimated, long QueueMs, long TotalMs, int Status);
+public sealed record UsageRecord(string Bot, string? Routine, Priority Priority, string Backend, string Model, int PromptTokens, int CompletionTokens, bool Estimated, long QueueMs, long TotalMs, int Status, string? Assignment = null);
 
 public sealed record UsageSummary(string Bot, string? Routine, long Calls, long PromptTokens, long CompletionTokens, long QueueMsP95, long Estimated);
 
@@ -15,10 +15,13 @@ public sealed class UsageMeter(RosterDb db, IClock clock)
 {
     public void Record(UsageRecord u)
         => db.Exec("""
-            INSERT INTO usage(at, bot, routine, priority, backend, model, prompt_tokens, completion_tokens, estimated, queue_ms, total_ms, status)
-            VALUES ($at, $b, $r, $p, $be, $m, $pt, $ct, $e, $q, $t, $s);
+            INSERT INTO usage(at, bot, routine, priority, backend, model, prompt_tokens, completion_tokens, estimated, queue_ms, total_ms, status, assignment)
+            VALUES ($at, $b, $r, $p, $be, $m, $pt, $ct, $e, $q, $t, $s, $a);
             """, ("$at", clock.UtcNow.ToString("O")), ("$b", u.Bot), ("$r", u.Routine), ("$p", Priorities.Name(u.Priority)), ("$be", u.Backend), ("$m", u.Model),
-            ("$pt", u.PromptTokens), ("$ct", u.CompletionTokens), ("$e", u.Estimated ? 1 : 0), ("$q", u.QueueMs), ("$t", u.TotalMs), ("$s", u.Status));
+            ("$pt", u.PromptTokens), ("$ct", u.CompletionTokens), ("$e", u.Estimated ? 1 : 0), ("$q", u.QueueMs), ("$t", u.TotalMs), ("$s", u.Status), ("$a", u.Assignment));
+
+    public long TokensForAssignment(string assignment)
+        => Convert.ToInt64(db.Scalar("SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0) FROM usage WHERE assignment=$a;", ("$a", assignment)) ?? 0L);
 
     public long TokensToday(string bot, TimeZoneInfo zone)
     {
@@ -63,6 +66,15 @@ public sealed class UsageSniffer
     public bool HasUsage { get; private set; }
     public int ContentChunks { get; private set; }
     public bool Estimated => !HasUsage;
+
+    /// <summary>Adds another reply's counts (the gateway's one resend of an unreadable tool call).</summary>
+    public void Add(UsageSniffer other)
+    {
+        PromptTokens += other.PromptTokens;
+        CompletionTokens += other.CompletionTokens;
+        HasUsage |= other.HasUsage;
+        ContentChunks += other.ContentChunks;
+    }
 
     public void Feed(ReadOnlySpan<byte> bytes)
     {

@@ -140,6 +140,124 @@ public sealed class DockerEngineClient : IContainerEngine, IDisposable
         await Ensure(c, ct).ConfigureAwait(false);
     }
 
+    public async Task<NetworkInfo?> InspectNetworkAsync(string name, CancellationToken ct = default)
+    {
+        using var r = await _http.GetAsync($"{Api}/networks/{Uri.EscapeDataString(name)}", ct).ConfigureAwait(false);
+        if (r.StatusCode == HttpStatusCode.NotFound) return null;
+        await Ensure(r, ct).ConfigureAwait(false);
+        var j = (await r.Content.ReadFromJsonAsync<JsonObject>(ct).ConfigureAwait(false))!;
+        return new NetworkInfo(
+            j["Name"]?.GetValue<string>() ?? name,
+            j["Internal"]?.GetValue<bool>() ?? false,
+            j["IPAM"]?["Config"]?[0]?["Subnet"]?.GetValue<string>(),
+            j["Options"]?["com.docker.network.bridge.name"]?.GetValue<string>());
+    }
+
+    public async Task CreateNetworkAsync(Egress.NetworkSpec spec, CancellationToken ct = default)
+    {
+        var body = new JsonObject
+        {
+            ["Name"] = spec.Name,
+            ["Driver"] = "bridge",
+            ["CheckDuplicate"] = true,
+            ["Internal"] = spec.Internal,
+            ["IPAM"] = new JsonObject { ["Driver"] = "default", ["Config"] = new JsonArray(new JsonObject { ["Subnet"] = spec.Subnet, ["Gateway"] = spec.Gateway }) },
+            ["Options"] = new JsonObject { ["com.docker.network.bridge.name"] = spec.Bridge, ["com.docker.network.bridge.enable_icc"] = "true" },
+            ["Labels"] = new JsonObject { ["oma-bot.roster"] = "1" },
+        };
+        using var content = new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json");
+        using var c = await _http.PostAsync($"{Api}/networks/create", content, ct).ConfigureAwait(false);
+        await Ensure(c, ct).ConfigureAwait(false);
+    }
+
+    public async Task ConnectNetworkAsync(string network, string container, IReadOnlyList<string> aliases, CancellationToken ct = default)
+    {
+        var body = new JsonObject
+        {
+            ["Container"] = container,
+            ["EndpointConfig"] = new JsonObject { ["Aliases"] = new JsonArray([.. aliases.Select(a => (JsonNode)JsonValue.Create(a)!)]) },
+        };
+        using var content = new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json");
+        using var r = await _http.PostAsync($"{Api}/networks/{Uri.EscapeDataString(network)}/connect", content, ct).ConfigureAwait(false);
+        await Ensure(r, ct).ConfigureAwait(false);
+    }
+
+    public async Task<string> CreateRawAsync(string name, JsonObject body, CancellationToken ct = default)
+    {
+        using var content = new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json");
+        using var r = await _http.PostAsync($"{Api}/containers/create?name={Uri.EscapeDataString(name)}", content, ct).ConfigureAwait(false);
+        await Ensure(r, ct).ConfigureAwait(false);
+        var j = (await r.Content.ReadFromJsonAsync<JsonObject>(ct).ConfigureAwait(false))!;
+        return j["Id"]!.GetValue<string>();
+    }
+
+    public async Task<long?> WaitAsync(string idOrName, TimeSpan limit, CancellationToken ct = default)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(limit);
+        try
+        {
+            using var r = await _http.PostAsync($"{Api}/containers/{Uri.EscapeDataString(idOrName)}/wait", null, cts.Token).ConfigureAwait(false);
+            await Ensure(r, ct).ConfigureAwait(false);
+            var j = (await r.Content.ReadFromJsonAsync<JsonObject>(cts.Token).ConfigureAwait(false))!;
+            return j["StatusCode"]?.GetValue<long>();
+        }
+        catch (TaskCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return null;
+        }
+    }
+
+    public async Task<string> LogsAsync(string idOrName, int maxBytes, CancellationToken ct = default)
+    {
+        using var r = await _http.GetAsync($"{Api}/containers/{Uri.EscapeDataString(idOrName)}/logs?stdout=1&stderr=1", HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        await Ensure(r, ct).ConfigureAwait(false);
+        await using var s = await r.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+        return await DemuxAsync(s, maxBytes, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Reads Docker's multiplexed log stream: an 8 byte header (stream, 0, 0, 0, size big endian) before each frame.</summary>
+    public static async Task<string> DemuxAsync(Stream s, int maxBytes, CancellationToken ct)
+    {
+        var output = new MemoryStream();
+        var header = new byte[8];
+        while (output.Length < maxBytes)
+        {
+            if (!await FillAsync(s, header, ct).ConfigureAwait(false)) break;
+            if (header[0] > 2 || header[1] != 0 || header[2] != 0 || header[3] != 0)
+            {
+                // A TTY container sends a raw stream; keep the bytes as they are.
+                output.Write(header);
+                await s.CopyToAsync(output, ct).ConfigureAwait(false);
+                break;
+            }
+            var size = (header[4] << 24) | (header[5] << 16) | (header[6] << 8) | header[7];
+            var frame = new byte[Math.Max(0, size)];
+            if (!await FillAsync(s, frame, ct).ConfigureAwait(false)) break;
+            output.Write(frame, 0, (int)Math.Min(frame.Length, maxBytes - output.Length));
+        }
+        return System.Text.Encoding.UTF8.GetString(output.ToArray());
+    }
+
+    private static async Task<bool> FillAsync(Stream s, byte[] buf, CancellationToken ct)
+    {
+        var n = 0;
+        while (n < buf.Length)
+        {
+            var read = await s.ReadAsync(buf.AsMemory(n), ct).ConfigureAwait(false);
+            if (read == 0) return false;
+            n += read;
+        }
+        return true;
+    }
+
+    public async Task KillAsync(string idOrName, CancellationToken ct = default)
+    {
+        using var r = await _http.PostAsync($"{Api}/containers/{Uri.EscapeDataString(idOrName)}/kill", null, ct).ConfigureAwait(false);
+        if (r.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Conflict) return;
+        await Ensure(r, ct).ConfigureAwait(false);
+    }
+
     private static Dictionary<string, string> Labels(JsonNode? node)
     {
         var d = new Dictionary<string, string>(StringComparer.Ordinal);

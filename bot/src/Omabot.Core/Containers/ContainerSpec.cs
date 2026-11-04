@@ -33,7 +33,8 @@ public sealed record ContainerSpec(
     long NanoCpus,
     long PidsLimit,
     IReadOnlyList<string> CapDrop,
-    IReadOnlyList<string> SecurityOpt)
+    IReadOnlyList<string> SecurityOpt,
+    IReadOnlyList<string>? ExtraNetworks = null)
 {
     public const string Workspace = "/workspace";
     public const string DataDir = "/home/agent/.openmono";
@@ -52,8 +53,14 @@ public sealed record ContainerSpec(
         "/tmp",
     ];
 
+    /// <summary>Env names that carry a secret; shown redacted.</summary>
+    public static readonly string[] SecretEnv = ["OPENMONO_API_KEY", "OPENMONO_HOST_INVITE", "HTTPS_PROXY", "HTTP_PROXY"];
+
+    /// <summary>A container with this label is created fresh on every start, so a time-limited invite is never reused.</summary>
+    public const string FreshStartLabel = "oma-bot.fresh-start";
+
     public static ContainerSpec For(BotSpec spec, int hostPort, string token, RosterPaths paths, RosterConfig config, BotRenderer renderer,
-        string appDir, bool shimInstalled, string? proxyUrl = null)
+        string appDir, bool shimInstalled, string? proxyUrl = null, HostExec.HostInvite? host = null)
     {
         var bp = paths.Bot(spec.Slug);
         var env = new SortedDictionary<string, string>(StringComparer.Ordinal)
@@ -67,7 +74,16 @@ public sealed record ContainerSpec(
         {
             env["HTTP_PROXY"] = proxyUrl;
             env["HTTPS_PROXY"] = proxyUrl;
-            env["NO_PROXY"] = "";
+            // Model calls go straight to the gateway on the roster network, never through the gate.
+            env["NO_PROXY"] = config.Gateway.BindAddress;
+        }
+        if (spec.Preset is { } preset) env["OPENMONO_MODEL_PRESET"] = preset;
+        if (host is not null && spec.HostExec)
+        {
+            env["OPENMONO_HOST_MODE"] = "1";
+            env["OPENMONO_HOST_DAEMON_URL"] = host.DaemonUrl;
+            env["OPENMONO_HOST_INVITE"] = host.Invite;
+            env["OPENMONO_HOST_WORKSPACE"] = host.HostWorkspace;
         }
         var mounts = new List<Mount>
         {
@@ -94,7 +110,8 @@ public sealed record ContainerSpec(
             {
                 ["oma-bot.roster"] = "1",
                 ["oma-bot.bot"] = spec.Slug,
-                ["oma-bot.spec"] = spec.Hash()[..16],
+                ["oma-bot.spec"] = spec.ContainerHash()[..16],
+                [FreshStartLabel] = env.ContainsKey("OPENMONO_HOST_INVITE") ? "1" : "0",
             },
             HostIp: "127.0.0.1",
             HostPort: hostPort,
@@ -104,7 +121,8 @@ public sealed record ContainerSpec(
             NanoCpus: (long)Math.Round(spec.LimitCpu * 1_000_000_000d),
             PidsLimit: spec.LimitPids,
             CapDrop: ["ALL"],
-            SecurityOpt: ["no-new-privileges:true"]);
+            SecurityOpt: ["no-new-privileges:true"],
+            ExtraNetworks: spec.Desktop == "off" ? null : [config.Desktops.Network]);
     }
 
     public static long ParseMemory(string s)
@@ -134,6 +152,9 @@ public sealed record ContainerSpec(
             if (!Tmpfs.Contains(t)) p.Add("missing tmpfs " + t);
         if (User.StartsWith("0", StringComparison.Ordinal) || User.StartsWith("root", StringComparison.Ordinal)) p.Add("container must not run as root");
         if (PidsLimit <= 0 || MemoryBytes <= 0 || NanoCpus <= 0) p.Add("resource limits missing");
+        if (Env.ContainsKey("OPENMONO_HOST_PAIR_SECRET")) p.Add("the host bridge pair secret never enters a container");
+        if (Env.ContainsKey("OPENMONO_HOST_INVITE") && (!Labels.TryGetValue(FreshStartLabel, out var fresh) || fresh != "1"))
+            p.Add("a container holding a host invite must be created fresh on each start");
         return p;
     }
 
@@ -190,7 +211,7 @@ public sealed record ContainerSpec(
         foreach (var (k, v) in Env)
         {
             a.Add("-e");
-            a.Add(redactEnv && k is "OPENMONO_API_KEY" ? $"{k}=«redacted»" : $"{k}={v}");
+            a.Add(redactEnv && SecretEnv.Contains(k) ? $"{k}=«redacted»" : $"{k}={v}");
         }
         foreach (var m in Mounts) { a.Add("-v"); a.Add($"{m.Source}:{m.Target}:{(m.ReadOnly ? "ro" : "rw")}"); }
         foreach (var t in Tmpfs) { a.Add("--tmpfs"); a.Add(t); }

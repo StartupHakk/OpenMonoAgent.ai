@@ -54,13 +54,17 @@ public sealed class ShimTokens(RosterDb db, IClock clock)
 {
     private readonly ConcurrentDictionary<string, (string Hash, string TurnSetAt)> _tokens = new(StringComparer.Ordinal);
 
-    private (string SetAt, string? Routine)? ActiveTurn(string bot)
+    private (string SetAt, string? Routine, string? Assignment)? ActiveTurn(string bot)
     {
-        var row = db.Query("SELECT set_at, expires_at, routine FROM turn_context WHERE bot=$b;", r => (r.GetString(0), r.GetString(1), RosterDb.Str(r, "routine")), ("$b", bot)).FirstOrDefault();
+        var row = db.Query("SELECT COALESCE(owner, set_at), expires_at, routine, assignment FROM turn_context WHERE bot=$b;",
+            r => (r.GetString(0), r.GetString(1), RosterDb.Str(r, "routine"), RosterDb.Str(r, "assignment")), ("$b", bot)).FirstOrDefault();
         if (row.Item1 is null) return null;
         if (DateTimeOffset.Parse(row.Item2, System.Globalization.CultureInfo.InvariantCulture) <= clock.UtcNow) return null;
-        return (row.Item1, row.Item3);
+        return (row.Item1, row.Item3, row.Item4);
     }
+
+    /// <summary>The turn identity (lease owner) a token is bound to, for tests and tools.</summary>
+    public string? CurrentTurn(string bot) => ActiveTurn(bot)?.SetAt;
 
     public string? Claim(string bot)
     {
@@ -73,9 +77,13 @@ public sealed class ShimTokens(RosterDb db, IClock clock)
     }
 
     /// <summary>Valid only for this bot, during the same turn it was claimed in.</summary>
-    public bool Check(string bot, string? token, out string? routine)
+    public bool Check(string bot, string? token, out string? routine) => Check(bot, token, out routine, out _);
+
+    /// <summary>Also gives the assignment the turn works on, from the roster's own turn record.</summary>
+    public bool Check(string bot, string? token, out string? routine, out string? assignment)
     {
         routine = null;
+        assignment = null;
         if (string.IsNullOrEmpty(token) || !_tokens.TryGetValue(bot, out var t)) return false;
         if (!SecureFile.FixedTimeEquals(t.Hash, SecureFile.Sha256Hex(token))) return false;
         var turn = ActiveTurn(bot);
@@ -85,6 +93,7 @@ public sealed class ShimTokens(RosterDb db, IClock clock)
             return false;
         }
         routine = turn.Value.Routine;
+        assignment = turn.Value.Assignment;
         return true;
     }
 }
@@ -93,25 +102,55 @@ public sealed class ShimTokens(RosterDb db, IClock clock)
 public sealed class RosterToolHost
 {
     private readonly Dictionary<string, IRosterTool> _tools = new(StringComparer.Ordinal);
-    private readonly Func<string, IReadOnlyCollection<string>> _denied;
+    private readonly Func<string, IReadOnlyCollection<string>>? _denied;
+    private readonly Func<string, string, bool>? _allowed;
 
     public RosterToolHost(Func<string, IReadOnlyCollection<string>> deniedForBot) => _denied = deniedForBot;
+
+    /// <summary>Allow-list form: a tool is served to a bot only when <paramref name="isAllowed"/> says so for (bot, tool).</summary>
+    public RosterToolHost(Func<string, string, bool> isAllowed) => _allowed = isAllowed;
 
     public void Add(IRosterTool tool) => _tools[tool.Name] = tool;
 
     public IReadOnlyList<IRosterTool> For(string bot)
     {
-        var denied = _denied(bot);
+        if (_allowed is not null) return [.. _tools.Values.Where(t => _allowed(bot, t.Name)).OrderBy(t => t.Name, StringComparer.Ordinal)];
+        var denied = _denied!(bot);
         return [.. _tools.Values.Where(t => !denied.Contains(t.Name) && !denied.Contains("mcp__roster__" + t.Name)).OrderBy(t => t.Name, StringComparer.Ordinal)];
     }
 
+    /// <summary>
+    /// The roster's own check of a bot's roster tools: only what the team file
+    /// allows, minus what it denies. memory_read (revision lookups) comes with
+    /// any memory tool. Unknown bots get nothing.
+    /// </summary>
+    /// <summary>Roster tools the shim uses itself; never shown to the model.</summary>
+    public static readonly string[] InternalTools = ["desktop_endpoint"];
+
+    public static bool BotMayUse(Team.BotSpec? spec, string tool)
+    {
+        if (spec is null) return false;
+        if (tool == "desktop_endpoint") return spec.Desktop != "off";
+        bool Allowed(string t) => spec.ToolsAllow.Contains("mcp__roster__" + t) && !spec.ToolsDeny.Contains("mcp__roster__" + t);
+        if (tool == "memory_read") return new[] { "memory_update", "memory_forget", "memory_read_topic", "memory_load" }.Any(Allowed);
+        return Allowed(tool);
+    }
+
     public JsonArray ListJson(string bot)
-        => new([.. For(bot).Select(t => (JsonNode)new JsonObject { ["name"] = t.Name, ["description"] = t.Description, ["inputSchema"] = t.InputSchema.DeepClone() })]);
+        => new([.. For(bot).Where(t => !InternalTools.Contains(t.Name)).Select(t => (JsonNode)new JsonObject { ["name"] = t.Name, ["description"] = t.Description, ["inputSchema"] = t.InputSchema.DeepClone() })]);
+
+    /// <summary>Where refused calls are recorded (a bot asking for a tool it does not have, or one that does not exist).</summary>
+    public Db.AuditLog? Audit { get; set; }
 
     public async Task<ToolResult> CallAsync(ToolCaller caller, string name, JsonObject args, CancellationToken ct)
     {
         var tool = For(caller.Bot).FirstOrDefault(t => t.Name == name);
-        if (tool is null) return ToolResult.Fail($"No roster tool \"{name}\" for {caller.Bot}.", 404);
+        if (tool is null)
+        {
+            var shown = name.Length > 64 ? name[..64] : name;
+            Audit?.Write("bot:" + caller.Bot, "tool.refused", shown, _tools.ContainsKey(name) ? "not on this bot's list" : "no such roster tool");
+            return ToolResult.Fail($"No roster tool \"{shown}\" for {caller.Bot}.", 404);
+        }
         try
         {
             var r = await tool.CallAsync(caller, args, ct).ConfigureAwait(false);

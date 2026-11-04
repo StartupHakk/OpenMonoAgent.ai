@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# The HTTPS front for oma-bot web-single (plan 7.19). Caddy gets and renews the
+# certificate itself, redirects port 80 to https, and forwards to the roster,
+# which listens on 127.0.0.1:7477 only. The X-Forwarded headers are set fresh
+# here, never passed through from the client.
+{
+	admin off
+	email {$OMABOT_ACME_EMAIL}
+}
+
+{$OMABOT_WEB_HOST} {
+	request_body {
+		max_size 1MB
+	}
+	header {
+		-Server
+	}
+	reverse_proxy 127.0.0.1:7477 {
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Host {host}
+		transport http {
+			dial_timeout 5s
+			response_header_timeout 60s
+		}
+	}
+}

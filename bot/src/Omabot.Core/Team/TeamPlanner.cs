@@ -53,6 +53,7 @@ public sealed record TeamPlan(IReadOnlyList<PlanItem> Items, IReadOnlyList<strin
 public sealed class TeamPlanner(RosterDb db, RosterConfig config, RosterPaths paths, IClock clock, AuditLog audit)
 {
     private readonly BotStore _bots = new(db, clock);
+    private readonly BotVersions _versions = new(db, clock);
 
     public LiveState Live()
     {
@@ -63,7 +64,7 @@ public sealed class TeamPlanner(RosterDb db, RosterConfig config, RosterPaths pa
 
     public TeamPlan Plan(TeamFile file)
     {
-        var resolved = new TeamResolver(config, paths).Resolve(file, Live());
+        var resolved = new TeamResolver(config, paths, clock).Resolve(file, Live());
         var items = new List<PlanItem>();
         var rows = _bots.All();
         foreach (var r in resolved.Bots)
@@ -90,6 +91,8 @@ public sealed class TeamPlanner(RosterDb db, RosterConfig config, RosterPaths pa
         AddItems(items, "route", resolved.Routes.Select(r => (string.Join(",", r.Words.Select(w => w.ToLowerInvariant())) + "->" + r.To, (object)r)));
         if (resolved.BlockedHosts.Count > 0)
             AddItems(items, "blocked_hosts", [("all", (object)resolved.BlockedHosts.OrderBy(h => h, StringComparer.Ordinal).ToList())]);
+        if (resolved.Approvers is not null)
+            AddItems(items, "approvers", [("all", (object)resolved.Approvers.Select(a => new { a.Bot, a.Kinds }).ToList())]);
         return new TeamPlan(items, resolved.Warnings);
     }
 
@@ -162,6 +165,8 @@ public sealed class TeamPlanner(RosterDb db, RosterConfig config, RosterPaths pa
         List("accepts_from", a.AcceptsFrom, b.AcceptsFrom);
         List("manages", a.Manages, b.Manages);
         List("keywords", a.Keywords, b.Keywords);
+        List("auto_allow", a.AutoAllow ?? [], b.AutoAllow ?? []);
+        Val("preset", a.Preset ?? "", b.Preset ?? "");
         List("secrets", [.. a.Secrets.Select(kv => kv.Key + "=" + kv.Value)], [.. b.Secrets.Select(kv => kv.Key + "=" + kv.Value)]);
         var ra = JsonSerializer.Serialize(a.Routines);
         var rb = JsonSerializer.Serialize(b.Routines);
@@ -194,11 +199,13 @@ public sealed class TeamPlanner(RosterDb db, RosterConfig config, RosterPaths pa
                             var port = _bots.NextPort(c, config.Bots.PortBase, config.Bots.PortCount);
                             _bots.Insert(c, tx, item.Spec, port);
                             audit.Write(c, tx, actor, "bot.create", item.Spec.Name, $"spec {item.Spec.Hash()[..12]} port {port}");
+                            _versions.Record(c, tx, item.Spec, actor, "team apply: created");
                         }
                         else
                         {
                             _bots.UpdateSpec(c, tx, item.ExistingId!.Value, item.Spec);
                             audit.Write(c, tx, actor, "bot.update", item.Spec.Name, item.Detail);
+                            _versions.Record(c, tx, item.Spec, actor, "team apply: " + item.Detail);
                         }
                     });
                     provision?.Invoke(item.Spec);
@@ -229,11 +236,8 @@ public sealed class TeamPlanner(RosterDb db, RosterConfig config, RosterPaths pa
     {
         try
         {
-            DateTimeOffset? next = null;
-            if (r.Cron is not null) next = Routines.CronRules.Next(r.Cron, r.Timezone, clock.UtcNow);
-            if (next is null) return null;
-            var tz = TimeZoneInfo.FindSystemTimeZoneById(r.Timezone);
-            return TimeZoneInfo.ConvertTime(next.Value, tz).ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+            var next = Routines.RoutineRules.Next(r, clock.UtcNow, clock.UtcNow);
+            return next is null ? null : Routines.RoutineRules.LocalShort(next.Value, r.Timezone);
         }
         catch (Exception ex) when (ex is Cronos.CronFormatException or TimeZoneNotFoundException)
         {

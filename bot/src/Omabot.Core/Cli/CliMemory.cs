@@ -123,7 +123,7 @@ public sealed class RosterServices
     private readonly BotStore _bots;
     private readonly IUpkeepModel? _model;
 
-    public RosterServices(RosterDb db, IClock clock, RosterPaths paths, IUpkeepModel? model)
+    public RosterServices(RosterDb db, IClock clock, RosterPaths paths, IUpkeepModel? model, Action<RosterToolHost>? register = null)
     {
         _db = db;
         _clock = clock;
@@ -131,16 +131,19 @@ public sealed class RosterServices
         _bots = new BotStore(db, clock);
         _model = model;
         Tokens = new ShimTokens(db, clock);
-        Tools = new RosterToolHost(bot => _bots.Find(bot)?.Spec.ToolsDeny ?? []);
+        Tools = new RosterToolHost((bot, tool) => RosterToolHost.BotMayUse(_bots.Find(bot)?.Spec, tool));
+        register?.Invoke(Tools);
         MemoryTools.Register(Tools, bot => _bots.Find(bot) is { } r ? MemoryStores.For(db, clock, paths, r.Spec) : null);
         Tools.Add(new RosterTool("list_bots", "Names, titles and what each bot accepts.", RosterTool.Schema(), (_, _, _) =>
         {
             var arr = new JsonArray([.. _bots.All().Where(b => b.Enabled).Select(b => (JsonNode)new JsonObject
             {
-                ["name"] = b.Name, ["title"] = b.Spec.Title, ["state"] = b.State,
+                ["name"] = b.Name, ["title"] = b.Spec.Title, ["state"] = b.State, ["role"] = b.Spec.Role,
+                ["version"] = Runtime.BotChanges.Version(b.Spec),
                 ["accepts_from"] = new JsonArray([.. b.Spec.AcceptsFrom.Select(x => (JsonNode)x)]),
             })]);
-            return Task.FromResult(new ToolResult(true, string.Join('\n', _bots.All().Where(b => b.Enabled).Select(b => b.Name + (b.Spec.Title is null ? "" : " (" + b.Spec.Title + ")"))), arr));
+            return Task.FromResult(new ToolResult(true, string.Join('\n', _bots.All().Where(b => b.Enabled).Select(b =>
+                b.Name + (b.Spec.Title is null ? "" : " (" + b.Spec.Title + ")") + " version " + Runtime.BotChanges.Version(b.Spec))), arr));
         }));
         Shim = new ShimServer(Tools, Tokens);
     }

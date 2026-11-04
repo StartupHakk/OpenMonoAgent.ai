@@ -72,6 +72,17 @@ public sealed class AcpClient(HttpClient http, string baseUrl)
     public Task<AcpTurnResult> AnswerAsync(string session, AcpPause pause, bool allow, string? value = null, Action<SseEvent>? onEvent = null, CancellationToken ct = default)
         => TurnAsync(session, pause.Answer(allow, value), onEvent, ct);
 
+    /// <summary>
+    /// Sets plan or build mode on a session (a plain JSON call, not SSE). It
+    /// takes the session's turn lock, so it fails with Busy while a turn runs.
+    /// </summary>
+    public async Task<bool> SetModeAsync(string session, string mode, CancellationToken ct = default)
+    {
+        if (mode is not ("plan" or "build")) throw new ArgumentException("mode must be plan or build.", nameof(mode));
+        using var r = await http.PostAsJsonAsync(Url($"/sessions/{Uri.EscapeDataString(session)}/turn"), new { mode }, ct).ConfigureAwait(false);
+        return r.IsSuccessStatusCode;
+    }
+
     public async Task<bool> AbortAsync(string session, CancellationToken ct = default)
     {
         using var r = await http.PostAsJsonAsync(Url($"/sessions/{Uri.EscapeDataString(session)}/turn"), new { abort = true }, ct).ConfigureAwait(false);

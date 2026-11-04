@@ -33,7 +33,8 @@ bots:
               mcp__roster__list_bots, mcp__roster__assign, mcp__roster__consult, mcp__roster__notify,
               mcp__roster__assignment_status, mcp__roster__ask, mcp__roster__report,
               mcp__roster__memory_update, mcp__roster__memory_read_topic,
-              mcp__roster__doctor_results, mcp__roster__gateway_metrics, mcp__roster__room_post, mcp__roster__room_read]
+              mcp__roster__doctor_results, mcp__roster__gateway_metrics, mcp__roster__room_post, mcp__roster__room_read,
+              mcp__roster__bot_update, mcp__roster__bot_create, mcp__roster__bot_pause, mcp__roster__bot_resume]
     accepts_from: [person, health]
 
   - name: health
@@ -50,7 +51,7 @@ bots:
       - name: health-watch
         interval_minutes: 5
         checks:
-          - command: { run: "oma-bot doctor --json --quiet" }
+          - doctor
         instructions: Report each failed check in one line to head-honcho and Spencer.
         notify: errors_only
 

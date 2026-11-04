@@ -6,7 +6,7 @@ using Omabot.Db;
 namespace Omabot.Gateway;
 
 /// <summary>A model nickname. Backend empty means any backend whose labels include <see cref="Labels"/>.</summary>
-public sealed record ModelRoute(string Nickname, string UpstreamModel, string Backend, string Endpoint, string KeyFile, IReadOnlyList<string> Labels);
+public sealed record ModelRoute(string Nickname, string UpstreamModel, string Backend, string Endpoint, string KeyFile, IReadOnlyList<string> Labels, int? ContextSize = null);
 
 /// <summary>
 /// Maps a model nickname (what bots ask for) to an upstream model on a
@@ -33,10 +33,11 @@ public static class ModelRoutes
                 var upstream = j.GetProperty("upstream_model").GetString()!;
                 var backendName = j.TryGetProperty("backend", out var be) && be.ValueKind == JsonValueKind.String ? be.GetString()! : null;
                 var labels = j.TryGetProperty("labels", out var lb) ? lb.EnumerateArray().Select(x => x.GetString() ?? "").ToList() : [];
+                int? ctx = j.TryGetProperty("context_size", out var cs) && cs.ValueKind == JsonValueKind.Number ? cs.GetInt32() : null;
                 if (backendName is not null && backends.TryGetValue(backendName, out var b))
-                    routes[nick] = new ModelRoute(nick, upstream, b.Name, b.Endpoint, b.KeyFile, labels);
+                    routes[nick] = new ModelRoute(nick, upstream, b.Name, b.Endpoint, b.KeyFile, labels, ctx);
                 else
-                    routes[nick] = new ModelRoute(nick, upstream, "", defaultEndpoint, defaultKey, labels); // any backend with the labels
+                    routes[nick] = new ModelRoute(nick, upstream, "", defaultEndpoint, defaultKey, labels, ctx); // any backend with the labels
             }
         }
         return routes;

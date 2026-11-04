@@ -18,6 +18,8 @@ public sealed class CliEnv
     public Func<ISupervisorClient?> Supervisor { get; init; } = () => null;
     public Func<int, AcpClient> Acp { get; init; } = port => new AcpClient(SharedHttp, $"http://127.0.0.1:{port}");
     public LaunchOptions? Launch { get; init; }
+    /// <summary>The handler the HTTPS front check uses; null means system trust and no redirects.</summary>
+    public Func<HttpMessageHandler?> HttpsHandler { get; init; } = () => null;
     /// <summary>Tests turn off the per-bot shim sockets.</summary>
     public bool NoShimSockets { get; init; }
 

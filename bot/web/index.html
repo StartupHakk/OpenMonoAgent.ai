@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>oma-bot roster</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script type="module" src="/assets/app.js"></script>
+</head>
+<body>
+  <header>
+    <h1>oma-bot roster</h1>
+    <nav id="nav" aria-label="Pages">
+      <button data-page="bots">Bots</button>
+      <button data-page="approvals">Approvals</button>
+      <button data-page="routines">Routines</button>
+      <button data-page="rooms">Rooms</button>
+      <button data-page="memory">Memory</button>
+      <button data-page="audit">Audit</button>
+    </nav>
+    <span id="who"></span>
+    <button id="logout" class="quiet">Sign out</button>
+    <button id="logout-all" class="quiet" hidden>Sign out everywhere</button>
+  </header>
+  <main>
+    <section id="notices" aria-live="polite"></section>
+    <section id="page"></section>
+  </main>
+  <p id="signin" hidden>Sign in with a link from <code>oma-bot web open</code> on this computer.</p>
+  <form id="login" hidden>
+    <h2>Sign in</h2>
+    <label>Account <input name="name" autocomplete="username" required maxlength="32"></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password" required maxlength="128"></label>
+    <label>Code <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required maxlength="6"></label>
+    <button type="submit">Sign in</button>
+    <p id="login-error" class="error" role="alert"></p>
+  </form>
+  <footer><a href="/source" rel="noopener">Source code (AGPL-3.0)</a></footer>
+</body>
+</html>

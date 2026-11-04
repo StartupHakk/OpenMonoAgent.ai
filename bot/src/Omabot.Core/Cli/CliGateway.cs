@@ -36,6 +36,12 @@ public sealed partial class CliApp
                 a.NoMore();
                 if (!File.Exists(GatewayStateFile)) { env.Out.WriteLine("The roster service is not running (no gateway state). Start it with oma-bot serve."); return Exit.Ok; }
                 env.Out.WriteLine(File.ReadAllText(GatewayStateFile).TrimEnd());
+                {
+                    var since = env.Clock.UtcNow.AddHours(-24).ToString("O");
+                    var recent = GatewayEventLog.Read(Path.Combine(env.Paths.Logs, "gateway-events.log")).Where(e => string.CompareOrdinal(e.At, since) >= 0).ToList();
+                    if (recent.Count > 0)
+                        env.Out.WriteLine("Last 24 hours: " + string.Join(", ", recent.GroupBy(e => e.Kind).OrderBy(g => g.Key, StringComparer.Ordinal).Select(g => $"{g.Key} {g.Count()}")));
+                }
                 return Exit.Ok;
             case "slots":
             {
@@ -52,8 +58,10 @@ public sealed partial class CliApp
             }
             case "bench":
                 return await BenchCmd(a, config, ct).ConfigureAwait(false);
+            case "toolbench":
+                return await ToolBenchCmd(a, config, ct).ConfigureAwait(false);
             default:
-                throw new ArgsException("Usage: oma-bot gateway status | slots | bench");
+                throw new ArgsException("Usage: oma-bot gateway status | slots | bench | toolbench");
         }
     }
 
@@ -106,6 +114,30 @@ public sealed partial class CliApp
             audit.Write("person", "gateway.bench.save", name, $"node class {ncName} slots {discovery.Slots?.ToString(CultureInfo.InvariantCulture) ?? "unknown"} r1 {nc.TokensPerSecond}");
             env.Out.WriteLine($"Saved measured numbers to node class {ncName} in roster.json.{(discovery.Slots is null ? " Slots stay unknown because the server did not report them." : "")}");
         }
+        return Exit.Ok;
+    }
+
+    /// <summary>`oma-bot gateway toolbench`: the 40 tool tasks at each parallel level, scored before and after repair (plan 7.8, LOAD-04).</summary>
+    private async Task<int> ToolBenchCmd(Args a, RosterConfig config, CancellationToken ct)
+    {
+        var name = a.Option("--backend") ?? "main";
+        var model = a.Option("--model");
+        var levels = (a.Option("--levels") ?? "1,2,4").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(x => int.TryParse(x, out var n) && n is >= 1 and <= 16 ? n : throw new ArgsException("--levels takes numbers 1 to 16, like 1,2,4.")).ToList();
+        a.NoMore();
+        var b = BackendRegistry.Effective(config).FirstOrDefault(x => x.Name == name)
+            ?? throw new ArgsException($"No backend named {name}. Set gateway.upstream or gateway.backends in roster.json.");
+        if (UpstreamPolicy.Check(b.Endpoint, config.Gateway.AllowPlainHttpUpstream) is { } policy) throw new ArgsException(policy);
+        model ??= b.Models.Values.FirstOrDefault() ?? FirstTeamModel() ?? throw new ArgsException("Pass --model with the upstream model name.");
+        env.Out.WriteLine($"Running {ToolBench.Tasks().Count} tool tasks on {name} ({model}) at {string.Join(", ", levels)} parallel requests. This sends real requests to the inference server.");
+        var scores = await ToolBench.RunAsync(UpstreamHttp, b.Endpoint, ReadKey(b.KeyFile), model, levels, ct).ConfigureAwait(false);
+        var md = ToolBench.Report(scores, model, env.Clock.UtcNow);
+        var reports = Path.Combine(env.Paths.Home, "reports");
+        SecureFile.EnsureDirNoClobber(reports);
+        var file = Path.Combine(reports, $"toolbench-{name}-{env.Clock.UtcNow:yyyyMMdd-HHmmss}.md");
+        SecureFile.WriteAllTextAtomic(file, md);
+        env.Out.WriteLine(md);
+        env.Out.WriteLine($"Report written to {file}.");
         return Exit.Ok;
     }
 

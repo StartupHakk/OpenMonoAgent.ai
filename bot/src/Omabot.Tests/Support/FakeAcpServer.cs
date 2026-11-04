@@ -28,6 +28,19 @@ public sealed class FakeAcpServer : IAsyncDisposable
     public Func<FakeSession, string, IEnumerable<(string Event, object Data)>> OnMessage { get; set; } =
         (s, m) => [("text_delta", new { content = "echo: " + m }), ("usage", new { input_tokens = 10, output_tokens = 5, total_tokens = 15 }), ("done", new { })];
 
+    /// <summary>Called for each accepted pause answer (body key and raw JSON); returns the frames of the resumed turn.</summary>
+    public Func<FakeSession, string, string, IEnumerable<(string Event, object Data)>> OnAnswer { get; set; } =
+        (_, _, _) => [("text_delta", new { content = "resumed" }), ("done", new { })];
+
+    /// <summary>Resolves the session's open pause the way a process inside the container could (threat T3).</summary>
+    public bool AnswerFromInside(string sessionId, string answer)
+    {
+        if (!Sessions.TryGetValue(sessionId, out var s) || s.PendingPause is null) return false;
+        s.Answers.Add("inside:" + answer);
+        s.PendingPause = null;
+        return true;
+    }
+
     public sealed class FakeSession
     {
         public string Id { get; init; } = "";
@@ -38,6 +51,10 @@ public sealed class FakeAcpServer : IAsyncDisposable
         public string? PendingKind { get; set; }
         public List<string> Answers { get; } = [];
         public bool Busy { get; set; }
+        /// <summary>New OMA ACP sessions start in plan mode.</summary>
+        public string Mode { get; set; } = "plan";
+        /// <summary>Mode of the session when each message arrived.</summary>
+        public List<string> ModeAtMessage { get; } = [];
     }
 
     private FakeAcpServer(WebApplication app, int port)
@@ -81,17 +98,25 @@ public sealed class FakeAcpServer : IAsyncDisposable
                 return;
             }
             if (s.Busy) { ctx.Response.StatusCode = 409; await ctx.Response.WriteAsJsonAsync(new { error = "session_busy" }); return; }
+            if (root.TryGetProperty("mode", out var modeEl))
+            {
+                s.Mode = string.Equals(modeEl.GetString(), "plan", StringComparison.OrdinalIgnoreCase) ? "plan" : "build";
+                await ctx.Response.WriteAsJsonAsync(new { mode = s.Mode });
+                return;
+            }
             IEnumerable<(string, object)> frames;
             if (root.TryGetProperty("message", out var msg))
             {
                 s.TurnCount++;
                 s.Messages.Add(msg.GetString() ?? "");
+                s.ModeAtMessage.Add(s.Mode);
                 frames = self.OnMessage(s, msg.GetString() ?? "");
             }
             else
             {
                 var key = root.EnumerateObject().First();
-                var pid = key.Value.GetProperty("id").GetString();
+                // plan_decision carries no id; it answers the session's open plan.
+                var pid = key.Value.ValueKind == JsonValueKind.Object ? key.Value.GetProperty("id").GetString() : s.PendingKind == "plan_ready" ? s.PendingPause : null;
                 if (s.PendingPause is null || pid != s.PendingPause)
                 {
                     ctx.Response.StatusCode = 400;
@@ -100,7 +125,7 @@ public sealed class FakeAcpServer : IAsyncDisposable
                 }
                 s.Answers.Add(key.Name + ":" + key.Value.GetRawText());
                 s.PendingPause = null;
-                frames = [("text_delta", new { content = "resumed" }), ("done", new { })];
+                frames = self.OnAnswer(s, key.Name, key.Value.GetRawText()).ToList();
             }
             ctx.Response.ContentType = "text/event-stream";
             foreach (var (ev, data) in frames)
@@ -110,6 +135,11 @@ public sealed class FakeAcpServer : IAsyncDisposable
                 {
                     using var d = JsonDocument.Parse(json);
                     s.PendingPause = d.RootElement.GetProperty("id").GetString();
+                    s.PendingKind = ev;
+                }
+                else if (ev == "plan_ready")
+                {
+                    s.PendingPause = "plan";
                     s.PendingKind = ev;
                 }
                 await ctx.Response.WriteAsync($"event: {ev}\ndata: {json}\n\n", Encoding.UTF8);

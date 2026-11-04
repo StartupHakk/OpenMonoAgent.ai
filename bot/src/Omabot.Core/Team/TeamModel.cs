@@ -70,6 +70,8 @@ public sealed class RoutineDef
     public long? DailyTokenBudget { get; set; }
     public bool Enabled { get; set; } = true;
     public bool AllowExternal { get; set; }
+    public string Session { get; set; } = "fresh";
+    public string HostExec { get; set; } = "off";
     public int Line { get; set; }
 }
 
@@ -108,6 +110,16 @@ public sealed class BotDef
     public List<string>? Manages { get; set; }
     public List<string>? Keywords { get; set; }
     public Dictionary<string, SecretRef>? Secrets { get; set; }
+    public List<string>? AutoAllow { get; set; }
+    public string? Preset { get; set; }
+}
+
+/// <summary>A bot Spencer names to answer some kinds of approval card (plan 7.6). Never the requester.</summary>
+public sealed class ApproverDef
+{
+    public string Bot { get; set; } = "";
+    public List<string> Kinds { get; set; } = [];
+    public int Line { get; set; }
 }
 
 public sealed class DefaultsDef
@@ -150,7 +162,7 @@ public sealed class RoomDef
     public string Name { get; set; } = "";
     public string? Team { get; set; }
     public List<string> Members { get; set; } = [];
-    public string Responder { get; set; } = "lead";
+    public string Responder { get; set; } = "mentions";
     public TextValue? Brief { get; set; }
     public int MaxPostsPerHour { get; set; } = 30;
     public int Line { get; set; }
@@ -169,4 +181,6 @@ public sealed class TeamFile
     public List<RouteDef> Routes { get; set; } = [];
     public List<RoomDef> Rooms { get; set; } = [];
     public List<string> BlockedHosts { get; set; } = [];
+    /// <summary>Null when the file has no approvers key (left as it is); an empty list clears the list.</summary>
+    public List<ApproverDef>? Approvers { get; set; }
 }

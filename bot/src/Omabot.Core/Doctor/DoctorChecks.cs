@@ -14,7 +14,7 @@ public enum CheckStatus { Ok, Warn, Fail, Skip }
 
 public sealed record CheckResult(string Name, CheckStatus Status, string Message);
 
-public sealed record DoctorOptions(string AppDir, bool Offline = true, ISupervisorClient? Supervisor = null, HttpClient? Http = null);
+public sealed record DoctorOptions(string AppDir, bool Offline = true, ISupervisorClient? Supervisor = null, HttpClient? Http = null, HttpMessageHandler? HttpsHandler = null);
 
 /// <summary>
 /// `oma-bot doctor` (plan 7.13). Fails closed: any failed check fails the
@@ -41,6 +41,9 @@ public sealed class DoctorChecks(RosterPaths paths, IClock clock)
         results.AddRange(FileModes());
         results.AddRange(Binds(config));
         results.Add(Upstream(config));
+        var web = WebChecks(config).ToList();
+        results.AddRange(web);
+        if (!options.Offline && config.Mode != "local" && web.All(r => r.Status != CheckStatus.Fail)) results.Add(await WebFront(config, options, ct).ConfigureAwait(false));
 
         if (!File.Exists(paths.Db))
         {
@@ -64,6 +67,11 @@ public sealed class DoctorChecks(RosterPaths paths, IClock clock)
         {
             var up = await options.Supervisor.PingAsync(ct).ConfigureAwait(false);
             results.Add(up ? new("supervisor", CheckStatus.Ok, "Supervisor answers.") : new("supervisor", CheckStatus.Warn, "Supervisor is not running. Start it with oma-bot supervisor (or the systemd unit)."));
+            if (up)
+            {
+                var image = Supervision.BotLauncher.ImageProblem(config, await options.Supervisor.ImageIdAsync(config.Bots.Image, ct).ConfigureAwait(false));
+                results.Add(image is null ? new("agent_image", CheckStatus.Ok, $"{config.Bots.Image} is the accepted image.") : new("agent_image", CheckStatus.Fail, image));
+            }
         }
         if (!options.Offline && options.Http is not null) results.Add(await Inference(config, options.Http, ct).ConfigureAwait(false));
         return results;
@@ -90,12 +98,46 @@ public sealed class DoctorChecks(RosterPaths paths, IClock clock)
 
     private static IEnumerable<CheckResult> Binds(RosterConfig config)
     {
-        yield return config.Api.BindAddress == "127.0.0.1" || (config.Mode != "local" && config.Web.BehindHttpsFront)
+        yield return System.Net.IPAddress.TryParse(config.Api.BindAddress, out var apiIp) && System.Net.IPAddress.IsLoopback(apiIp)
             ? new("bind_api", CheckStatus.Ok, $"Roster API binds {config.Api.BindAddress}.")
-            : new("bind_api", CheckStatus.Fail, $"Roster API binds {config.Api.BindAddress}. In local mode it must bind 127.0.0.1.");
+            : new("bind_api", CheckStatus.Fail, $"Roster API binds {config.Api.BindAddress}. It must bind a loopback address; web modes reach it through the HTTPS front.");
         yield return config.Gateway.BindAddress is "0.0.0.0" or "::" or "*"
             ? new("bind_gateway", CheckStatus.Fail, "Gateway binds every address. Bind the docker bridge address (172.17.0.1) only.")
             : new("bind_gateway", CheckStatus.Ok, $"Gateway binds {config.Gateway.BindAddress}.");
+    }
+
+    /// <summary>Web mode needs HTTPS through the front, a built login method, the admin secret and an owner (plan 7.20 item 1).</summary>
+    private IEnumerable<CheckResult> WebChecks(RosterConfig config)
+    {
+        if (config.Mode == "local")
+        {
+            if (File.Exists(paths.UsersDb) && SecureFile.IsUnix)
+                yield return SecureFile.IsPrivate(paths.UsersDb) && SecureFile.IsPrivate(paths.Web)
+                    ? new("web_users_db", CheckStatus.Ok, $"{paths.UsersDb} is private.")
+                    : new("web_users_db", CheckStatus.Fail, $"{paths.UsersDb} or its folder is readable by others. Run chmod 700 {paths.Web} and chmod 600 {paths.UsersDb}.");
+            yield break;
+        }
+        var problems = Web.WebMode.Problems(config, paths);
+        if (problems.Count == 0) yield return new("web_mode", CheckStatus.Ok, $"Web mode {config.Mode} for {config.Web.PublicOrigin}: HTTPS front, login, admin secret and an owner are in place.");
+        var n = 0;
+        foreach (var p in problems) yield return new($"web_mode_{++n}", CheckStatus.Fail, p);
+    }
+
+    private async Task<CheckResult> WebFront(RosterConfig config, DoctorOptions options, CancellationToken ct)
+    {
+        var nonce = Web.WebMode.NewNonce();
+        SecureFile.WriteAllTextAtomic(paths.WebCheckNonce, nonce);
+        try
+        {
+            var problem = await Web.WebMode.FrontProblemAsync(config, nonce, options.HttpsHandler, ct).ConfigureAwait(false);
+            return problem is null
+                ? new("web_front", CheckStatus.Ok, $"{config.Web.PublicOrigin} has a valid certificate and reaches this roster.")
+                : new("web_front", CheckStatus.Fail, problem);
+        }
+        finally
+        {
+            File.Delete(paths.WebCheckNonce);
+        }
     }
 
     private static CheckResult Upstream(RosterConfig config)

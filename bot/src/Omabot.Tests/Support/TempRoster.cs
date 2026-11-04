@@ -15,7 +15,8 @@ public sealed class TempRoster : IDisposable
     public RosterConfig Config { get; }
     public ManualClock Clock { get; } = new(new DateTimeOffset(2026, 11, 3, 17, 0, 0, TimeSpan.Zero));
 
-    public TempRoster()
+    /// <param name="tenant">When set, the roster is a web-multi user roster with the isolated settings made for that slot.</param>
+    public TempRoster(int? tenant = null)
     {
         Root = Path.Combine(Path.GetTempPath(), "omabot-test-" + Guid.NewGuid().ToString("N")[..10]);
         Directory.CreateDirectory(Root);
@@ -25,8 +26,15 @@ public sealed class TempRoster : IDisposable
         AppDir = Path.Combine(Root, "app");
         Directory.CreateDirectory(Path.Combine(AppDir, "hooks"));
         SecureFile.EnsureDir(Paths.Home);
-        Config = new RosterConfig { WorkspaceRoots = [WorkRoot] };
-        Config.Gateway.Upstream = "https://relay.example.test/v1";
+        var host = new RosterConfig { WorkspaceRoots = [WorkRoot] };
+        host.Gateway.Upstream = "https://relay.example.test/v1";
+        host.Images.AcceptedDigest = "sha256:fake";
+        Config = host;
+        if (tenant is { } t)
+        {
+            Config = Web.Tenants.ConfigFor(host, Paths, "user" + t.ToString(System.Globalization.CultureInfo.InvariantCulture), t);
+            Config.WorkspaceRoots = [WorkRoot];
+        }
         Config.Save(Paths);
     }
 

@@ -56,7 +56,7 @@ public sealed class TeamParser
         ScanSecrets(root, "");
         if (_errors.Count > 0) throw new TeamFileException(_errors);
 
-        var map = Map(root, "", "version", "defaults", "models", "teams", "bots", "routines", "routes", "rooms", "blocked_hosts");
+        var map = Map(root, "", "version", "defaults", "models", "teams", "bots", "routines", "routes", "rooms", "blocked_hosts", "approvers");
         if (!map.TryGetValue("version", out var versionNode))
             Error("version", 1, "version: 1 is required.");
         else if (Int(versionNode, "version") is not 1)
@@ -72,9 +72,22 @@ public sealed class TeamParser
         if (map.TryGetValue("routes", out var ro)) team.Routes = Seq(ro, "routes").Select((n, i) => ParseRoute(n, $"routes[{i}]")).ToList();
         if (map.TryGetValue("rooms", out var rm)) team.Rooms = Seq(rm, "rooms").Select((n, i) => ParseRoom(n, $"rooms[{i}]")).ToList();
         if (map.TryGetValue("blocked_hosts", out var bh)) team.BlockedHosts = StrList(bh, "blocked_hosts");
+        if (map.TryGetValue("approvers", out var ap))
+            team.Approvers = ap is YamlScalarNode { Value: null or "" or "[]" } ? [] : Seq(ap, "approvers").Select((n, i) => ParseApprover(n, $"approvers[{i}]")).ToList();
 
         if (_errors.Count > 0) throw new TeamFileException(_errors);
         return team;
+    }
+
+    private ApproverDef ParseApprover(YamlNode node, string path)
+    {
+        var map = Map(node, path, "bot", "kinds");
+        var a = new ApproverDef { Line = Line(node) };
+        if (map.TryGetValue("bot", out var b)) a.Bot = Str(b, Join(path, "bot")) ?? "";
+        if (map.TryGetValue("kinds", out var k)) a.Kinds = StrList(k, Join(path, "kinds"));
+        if (a.Bot.Length == 0) Error(path, a.Line, "bot is required.");
+        if (a.Kinds.Count == 0) Error(path, a.Line, "kinds is required (for example [permission]).");
+        return a;
     }
 
     // ---- secrets -------------------------------------------------------
@@ -178,7 +191,7 @@ public sealed class TeamParser
     [
         "name", "was", "team", "role", "title", "description", "seen_as", "personality", "plan_prompt", "instructions",
         "model", "permission_profile", "tools", "bash", "workspace", "shared_workspace", "host_exec", "desktop", "web",
-        "memory", "timezone", "idle_sleep_minutes", "limits", "routines", "rooms", "accepts_from", "manages", "keywords", "secrets",
+        "memory", "timezone", "idle_sleep_minutes", "limits", "routines", "rooms", "accepts_from", "manages", "keywords", "secrets", "auto_allow", "preset",
     ];
 
     private BotDef ParseBot(YamlNode node, string path)
@@ -244,6 +257,8 @@ public sealed class TeamParser
                 case "manages": b.Manages = StrList(v, p); break;
                 case "keywords": b.Keywords = StrList(v, p); break;
                 case "secrets": b.Secrets = ParseSecrets(v, p); break;
+                case "auto_allow": b.AutoAllow = StrList(v, p); break;
+                case "preset": b.Preset = Str(v, p); break;
             }
         }
         if (string.IsNullOrWhiteSpace(b.Name)) Error(path, b.Line, "name is required.");
@@ -282,12 +297,13 @@ public sealed class TeamParser
     {
         var allowed = new List<string>
         {
-            "name", "was", "cron", "interval_minutes", "at", "watch", "timezone", "checks", "instructions", "notify",
-            "daily_token_budget", "enabled", "allow_external",
+            "name", "was", "cron", "interval_minutes", "at", "watch", "weekdays", "monthly", "yearly", "timezone", "checks",
+            "instructions", "notify", "daily_token_budget", "enabled", "allow_external", "session", "host_exec",
         };
         if (topLevel) allowed.Add("bot");
         var map = Map(node, path, [.. allowed]);
         var r = new RoutineDef { Line = Line(node) };
+        var presets = 0;
         foreach (var (key, v) in map)
         {
             var p = Join(path, key);
@@ -300,6 +316,22 @@ public sealed class TeamParser
                 case "interval_minutes": r.IntervalMinutes = Int(v, p); break;
                 case "at": r.At = Str(v, p); break;
                 case "watch": r.Watch = Str(v, p); break;
+                case "weekdays" or "monthly" or "yearly":
+                {
+                    presets++;
+                    var text = Str(v, p) ?? "";
+                    string? err;
+                    var cron = key switch
+                    {
+                        "weekdays" => Routines.RoutineRules.WeekdaysCron(text, out err),
+                        "monthly" => Routines.RoutineRules.MonthlyCron(text, out err),
+                        _ => Routines.RoutineRules.YearlyCron(text, out err),
+                    };
+                    if (cron is null) Error(p, Line(v), err ?? "Not a valid preset.");
+                    else if (r.Cron is not null) Error(p, Line(v), "Give exactly one trigger.");
+                    else r.Cron = cron;
+                    break;
+                }
                 case "timezone": r.Timezone = Str(v, p); break;
                 case "checks": r.Checks = Seq(v, p).Select((n, i) => ParseCheck(n, $"{p}[{i}]")).ToList(); break;
                 case "instructions": r.Instructions = Text(v, p, 12000, chars: true)?.Text ?? ""; break;
@@ -307,22 +339,29 @@ public sealed class TeamParser
                 case "daily_token_budget": r.DailyTokenBudget = Int(v, p); break;
                 case "enabled": r.Enabled = Bool(v, p) ?? true; break;
                 case "allow_external": r.AllowExternal = Bool(v, p) ?? false; break;
+                case "session": r.Session = Str(v, p) ?? "fresh"; break;
+                case "host_exec": r.HostExec = Str(v, p) ?? "off"; break;
             }
         }
         if (string.IsNullOrWhiteSpace(r.Name)) Error(path, r.Line, "name is required.");
         if (topLevel && string.IsNullOrWhiteSpace(r.Bot)) Error(path, r.Line, "bot is required for a top-level routine.");
-        var triggers = new[] { r.Cron is not null, r.IntervalMinutes is not null, r.At is not null, r.Watch is not null }.Count(x => x);
-        if (triggers != 1) Error(path, r.Line, "Give exactly one trigger: cron, interval_minutes, at or watch.");
-        if (r.Notify is not ("errors_only" or "always" or "never"))
-            Error(Join(path, "notify"), r.Line, "notify must be errors_only, always or never.");
+        var cronGiven = map.ContainsKey("cron") ? 1 : 0;
+        var triggers = cronGiven + presets + new[] { r.IntervalMinutes is not null, r.At is not null, r.Watch is not null }.Count(x => x);
+        if (triggers != 1) Error(path, r.Line, "Give exactly one trigger: cron, interval_minutes, at, watch, weekdays, monthly or yearly.");
+        if (r.Notify == "always")
+            Error(Join(path, "notify"), r.Line, "notify: always is refused. Routines are quiet and notify only on errors (hard rule 8); use errors_only or never.");
+        else if (r.Notify is not ("errors_only" or "never"))
+            Error(Join(path, "notify"), r.Line, "notify must be errors_only or never.");
+        if (r.Session is not ("fresh" or "standing")) Error(Join(path, "session"), r.Line, "session must be fresh or standing.");
+        if (r.HostExec is not ("off" or "ask")) Error(Join(path, "host_exec"), r.Line, "host_exec must be off or ask. A routine never runs host commands without asking.");
         return r;
     }
 
-    private static readonly string[] CheckKinds = ["file_changed", "git_new_commits", "http_status", "command", "assignments_waiting", "always"];
+    private static readonly string[] CheckKinds = ["file_changed", "git_new_commits", "http_status", "command", "assignments_waiting", "doctor", "always"];
 
     private CheckDef ParseCheck(YamlNode node, string path)
     {
-        if (node is YamlScalarNode s && s.Value == "always") return new CheckDef { Kind = "always" };
+        if (node is YamlScalarNode s && s.Value is "always" or "doctor" or "assignments_waiting") return new CheckDef { Kind = s.Value };
         var map = Map(node, path, CheckKinds);
         if (map.Count != 1) { Error(path, Line(node), "Each check has exactly one kind."); return new CheckDef(); }
         var (kind, args) = map.First();
@@ -339,6 +378,10 @@ public sealed class TeamParser
         {
             c.Args["value"] = sv.Value;
         }
+        // The plan's example health routine runs `oma-bot doctor` as a command; that is the built-in doctor check.
+        if (c.Kind == "command" && c.Args.TryGetValue("run", out var run) && run.TrimStart().StartsWith("oma-bot doctor", StringComparison.Ordinal))
+            return new CheckDef { Kind = "doctor" };
+        if (Routines.Checks.Problem(c) is { } problem) Error(Join(path, kind), Line(node), problem);
         return c;
     }
 
@@ -364,14 +407,14 @@ public sealed class TeamParser
                 case "name": r.Name = Str(v, p) ?? ""; break;
                 case "team": r.Team = Str(v, p); break;
                 case "members": r.Members = StrList(v, p); break;
-                case "responder": r.Responder = Str(v, p) ?? "lead"; break;
+                case "responder": r.Responder = (Str(v, p) ?? "mentions") switch { "named" => "mentions", "all" => "everyone", var x => x }; break;
                 case "brief": r.Brief = Text(v, p, MaxRoomBriefChars, chars: true); break;
                 case "max_posts_per_hour": r.MaxPostsPerHour = Int(v, p) ?? 30; break;
             }
         }
         if (string.IsNullOrWhiteSpace(r.Name)) Error(path, r.Line, "name is required.");
-        if (r.Responder is not ("lead" or "named" or "all"))
-            Error(Join(path, "responder"), r.Line, "responder must be lead, named or all.");
+        if (r.Responder is not ("mentions" or "lead" or "everyone"))
+            Error(Join(path, "responder"), r.Line, "responder must be mentions, lead or everyone.");
         return r;
     }
 

@@ -56,6 +56,13 @@ public sealed class BotSpec
     public List<string> Keywords { get; set; } = [];
     /// <summary>Secret name to "file:PATH" or "env:NAME". Never a value.</summary>
     public SortedDictionary<string, string> Secrets { get; set; } = new(StringComparer.Ordinal);
+    /// <summary>A sampling preset from bots.presets in roster.json. Null when unset, so older spec hashes stay the same.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Preset { get; set; }
+
+    /// <summary>Team file auto rules the approval broker may answer at once ("Tool" or "Tool: literal"). Null when unset, so older spec hashes stay the same.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? AutoAllow { get; set; }
 
     private static readonly JsonSerializerOptions CanonicalJson = new()
     {
@@ -70,6 +77,15 @@ public sealed class BotSpec
         ?? throw new InvalidDataException("Stored bot spec is empty.");
 
     public string Hash() => SecureFile.Sha256Hex(ToJson());
+
+    /// <summary>Hash of what the container depends on. Routines and broker auto rules are left out, so changing them never restarts a bot.</summary>
+    public string ContainerHash()
+    {
+        var c = Clone();
+        c.Routines = [];
+        c.AutoAllow = null;
+        return c.Hash();
+    }
 
     public BotSpec Clone() => FromJson(ToJson());
 
@@ -90,6 +106,10 @@ public sealed class RoutineSpec
     public long DailyTokenBudget { get; set; } = 50000;
     public bool Enabled { get; set; } = true;
     public bool AllowExternal { get; set; }
+    /// <summary>fresh (a new ACP session per run, the default) or standing (the bot's standing session).</summary>
+    public string Session { get; set; } = "fresh";
+    /// <summary>off (HostExec is denied in runs of this routine) or ask (every HostExec asks a person).</summary>
+    public string HostExec { get; set; } = "off";
 
     public string Describe()
     {

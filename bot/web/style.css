@@ -1,0 +1,30 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+:root { color-scheme: light dark; --line: #8884; --warn: #b36b00; --bad: #b3261e; --ok: #2e7d32; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.45 system-ui, sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; padding: .6rem 1rem; border-bottom: 1px solid var(--line); }
+header h1 { font-size: 1.05rem; margin: 0 1rem 0 0; }
+nav { display: flex; flex-wrap: wrap; gap: .3rem; flex: 1; }
+button { font: inherit; padding: .3rem .7rem; border: 1px solid var(--line); border-radius: .4rem; background: transparent; cursor: pointer; }
+button[aria-current="page"] { font-weight: 600; border-color: currentColor; }
+button.allow { border-color: var(--ok); }
+button.deny { border-color: var(--bad); }
+button.quiet { opacity: .8; }
+main { padding: 1rem; max-width: 1100px; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+.card { border: 1px solid var(--line); border-radius: .5rem; padding: .7rem .9rem; margin: 0 0 .8rem; }
+.card pre, pre.block { white-space: pre-wrap; word-break: break-word; margin: .4rem 0; padding: .5rem; border: 1px solid var(--line); border-radius: .3rem; }
+.muted { opacity: .7; }
+.notice { padding: .4rem .7rem; margin-bottom: .4rem; border-left: 3px solid var(--warn); }
+.notice.alarm, .notice.error { border-color: var(--bad); }
+.message { padding: .35rem 0; border-bottom: 1px solid var(--line); }
+.message b { margin-right: .4rem; }
+textarea, input[type=text] { font: inherit; width: 100%; padding: .4rem; border: 1px solid var(--line); border-radius: .3rem; background: transparent; }
+.row { display: flex; gap: .5rem; margin-top: .5rem; }
+.error { color: var(--bad); }
+[hidden] { display: none !important; }
+#login { max-width: 22rem; margin: 3rem auto; display: grid; gap: .6rem; }
+#login label { display: grid; gap: .2rem; }
+#login input { font: inherit; padding: .4rem; border: 1px solid var(--line); border-radius: .4rem; }
+footer { margin: 2rem 1rem 1rem; font-size: .85rem; }
