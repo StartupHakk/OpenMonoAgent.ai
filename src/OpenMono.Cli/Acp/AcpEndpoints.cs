@@ -41,6 +41,7 @@ public static class AcpEndpoints
         app.MapGet("/api/v1/backends", GetBackends);
         app.MapPost("/api/v1/backends", PostBackend);
         app.MapDelete("/api/v1/backends/{name}", DeleteBackend);
+        app.MapPut("/api/v1/backends/{name}/default", SetDefaultBackend);
         app.MapPost("/api/v1/sessions/{id}/backend", SetSessionBackend);
 
         // Flat per-session model menu (backends × advertised models) for the
@@ -86,7 +87,7 @@ public static class AcpEndpoints
 
 
 
-    private static async Task<IResult> PostSession(HttpContext ctx, AcpSessionStore store, AppConfig config)
+    private static async Task<IResult> PostSession(HttpContext ctx, AcpSessionStore store, AppConfig config, BackendRegistry registry)
     {
         CreateSessionBody? body = null;
         try
@@ -102,6 +103,18 @@ public static class AcpEndpoints
         }
 
         var session = store.Create(body?.Model, config, backendName: body?.Backend);
+
+        // A new session with no explicit backend follows the registry default, so
+        // "set default" in the extension actually changes what new sessions use.
+        if (string.IsNullOrWhiteSpace(session.State.ActiveBackend)
+            && !registry.DefaultName.Equals(BackendRegistry.DefaultBackendName, StringComparison.OrdinalIgnoreCase))
+        {
+            session.State.ActiveBackend = registry.DefaultName;
+            if (string.IsNullOrWhiteSpace(session.State.Model))
+                session.State.Model = registry.Get(registry.DefaultName)?.DefaultModel ?? config.Llm.Model;
+            store.Save(session);
+        }
+
         return Results.Ok(new
         {
             session_id = session.Id,
@@ -549,7 +562,7 @@ public static class AcpEndpoints
     /// Lists all configured inference backends. Returns names, endpoints, default
     /// models, and whether a key is currently stored in memory. Never exposes key values.
     /// </summary>
-    private static IResult GetBackends(BackendRegistry registry)
+    private static IResult GetBackends(BackendRegistry registry, AppConfig config)
     {
         var list = registry.All
             .Select(b => new
@@ -564,7 +577,12 @@ public static class AcpEndpoints
             })
             .ToList();
 
-        return Results.Ok(new { backends = list });
+        return Results.Ok(new
+        {
+            backends = list,
+            default_backend = registry.DefaultName,
+            default_model = registry.Get(registry.DefaultName)?.DefaultModel ?? config.Llm.Model,
+        });
     }
 
     /// <summary>
@@ -611,7 +629,10 @@ public static class AcpEndpoints
                     && (string.IsNullOrWhiteSpace(session.State.Model)
                         || model is null
                         || string.Equals(model, session.State.Model, StringComparison.OrdinalIgnoreCase));
-                var isDefault = string.Equals(b.Name, BackendRegistry.DefaultBackendName, StringComparison.OrdinalIgnoreCase);
+                var isDefault = string.Equals(b.Name, registry.DefaultName, StringComparison.OrdinalIgnoreCase)
+                    && (string.IsNullOrWhiteSpace(b.DefaultModel)
+                        || model is null
+                        || string.Equals(model, b.DefaultModel, StringComparison.OrdinalIgnoreCase));
                 var label = string.IsNullOrWhiteSpace(b.Nickname) ? b.Name : b.Nickname!;
                 var rendered = isOffline
                     ? $"[{label}] OFFLINE  {model ?? b.DefaultModel ?? "(no default model)"}  {b.Endpoint}"
@@ -637,8 +658,8 @@ public static class AcpEndpoints
             session_id = session.Id,
             active_backend = session.State.ActiveBackend,
             active_model = session.State.Model,
-            default_backend = BackendRegistry.DefaultBackendName,
-            default_model = registry.Get(BackendRegistry.DefaultBackendName)?.DefaultModel ?? config.Llm.Model,
+            default_backend = registry.DefaultName,
+            default_model = registry.Get(registry.DefaultName)?.DefaultModel ?? config.Llm.Model,
             models = rows,
         });
     }
@@ -718,6 +739,56 @@ public static class AcpEndpoints
         clientPool.Invalidate(name);
         TrySaveBackends(registry, config);
         return Results.NoContent();
+    }
+
+    /// <summary>
+    /// Points the registry default (what a new session uses) at <paramref name="name"/>.
+    /// Optional JSON body <c>{ "model": "..." }</c> also re-points that backend's default
+    /// model. Wire contract mirrors the extension's setDefaultBackend: 200 with
+    /// <c>{ ok, default_backend, default_model }</c>; 404 unknown backend.
+    /// </summary>
+    private static async Task<IResult> SetDefaultBackend(
+        HttpContext ctx,
+        string name,
+        BackendRegistry registry,
+        LlmClientPool clientPool,
+        AppConfig config,
+        CancellationToken ct)
+    {
+        if (!registry.Has(name))
+            return Results.NotFound(new { error = "unknown_backend", detail = $"backend '{name}' not found" });
+
+        string? model = null;
+        try
+        {
+            if (ctx.Request.ContentLength is > 0)
+            {
+                using var doc = await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ct);
+                if (doc.RootElement.TryGetProperty("model", out var mEl)
+                    && mEl.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(mEl.GetString()))
+                    model = mEl.GetString();
+            }
+        }
+        catch (JsonException ex)
+        {
+            return Results.BadRequest(new { error = "invalid_json", detail = ex.Message });
+        }
+
+        BackendDefinition def;
+        try { def = registry.SetDefault(name, model); }
+        catch (KeyNotFoundException) { return Results.NotFound(new { error = "unknown_backend" }); }
+
+        // The default backend's client may have been built with the old default model.
+        clientPool.Invalidate(def.Name);
+        TrySaveBackends(registry, config);
+
+        return Results.Ok(new
+        {
+            ok = true,
+            default_backend = def.Name,
+            default_model = def.DefaultModel,
+        });
     }
 
     /// <summary>
@@ -807,6 +878,12 @@ public static class AcpEndpoints
             session.State.Model = def.DefaultModel;
 
         store.Save(session);
+
+        // The model list is per-backend: re-seed the catalog so /model and the
+        // suggestion overlay show the new backend's models.
+        ModelCatalog.Set([session.State.Model ?? ""]);
+        _ = ModelCatalog.RefreshAsync(def.Endpoint, registry.GetKey(name),
+            fallback: [session.State.Model ?? ""], ct: CancellationToken.None);
 
         return Results.Ok(new
         {

@@ -252,6 +252,84 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     var routingLlm = new RoutingLlmClient(session, backendRegistry, clientPool, llm);
     ansiTui?.SetBackendsProvider(() => backendRegistry.All);
 
+    // ── Settings hot-reload ────────────────────────────────────────────────────────
+    // openmono config set llm.* (or a manual edit of settings.json) is picked up in a
+    // running session: the file is watched, and on change the default backend is re-synced
+    // from llm.*, the process-wide client is rebuilt when endpoint/api_key changed, and
+    // the session's active model follows llm.model. See ReloadSettingsLlmAsync.
+    using var settingsReloader = new SettingsReloader(
+        Path.Combine(config.DataDirectory, "settings.json"),
+        () => ReloadSettingsLlmAsync(routingLlm),
+        msg => renderer.WriteWarning(msg));
+
+    async Task ReloadSettingsLlmAsync(RoutingLlmClient routing)
+    {
+        // Re-load the same precedence chain the process started with. On a parse error
+        // the loader falls back to the previous in-memory values, so a torn write is
+        // tolerated; the next clean write triggers again.
+        var newConfig = ConfigLoader.Load(workdir, configPath);
+        newConfig.ResolveVision();
+
+        var endpointChanged = newConfig.Llm.Endpoint != config.Llm.Endpoint;
+        var apiKeyChanged = newConfig.Llm.ApiKey != config.Llm.ApiKey;
+
+        // Sampling params (temperature/top_p/top_k/context) are read live from
+        // config.Llm on every turn, so mutating the live object is enough for them.
+        config.Llm.MergeFrom(newConfig.Llm);
+
+        // Re-sync the "default" backend in the registry so GET /backends, /models and
+        // the ACP default-backend path (which resolves through the pool) see the new
+        // endpoint/model/key.
+        var def = backendRegistry.Get(BackendRegistry.DefaultBackendName);
+        if (def is not null)
+        {
+            backendRegistry.Add(def with
+            {
+                Endpoint = newConfig.Llm.Endpoint,
+                DefaultModel = string.IsNullOrEmpty(newConfig.Llm.Model) ? def.DefaultModel : newConfig.Llm.Model,
+            });
+            if (!string.IsNullOrWhiteSpace(newConfig.Llm.ApiKey))
+                backendRegistry.SetKey(BackendRegistry.DefaultBackendName, newConfig.Llm.ApiKey!);
+        }
+
+        // Re-seed the model catalog so /model and inline suggestions offer the
+        // (possibly new) endpoint's models. Only seed when a model is configured, so a
+        // model-less endpoint change does not wipe the catalog before the refresh lands.
+        if (!string.IsNullOrEmpty(newConfig.Llm.Model))
+            ModelCatalog.Set([newConfig.Llm.Model]);
+        _ = ModelCatalog.RefreshAsync(newConfig.Llm.Endpoint, newConfig.Llm.ApiKey);
+
+        // A live model switch takes effect on the next LLM call via the routing
+        // client's session-model injection (default-backend path).
+        if (!string.IsNullOrEmpty(newConfig.Llm.Model))
+            session.Model = newConfig.Llm.Model;
+
+        // Endpoint or key changed: the baked-in default-backend client must be rebuilt.
+        // The TUI default path uses the process-wide fallback (swap it atomically so we
+        // keep OnModelReported + active-provider selection); the ACP default path routes
+        // through the pool, so invalidate its entry to force a rebuild next turn.
+        if (endpointChanged || apiKeyChanged)
+        {
+            var rebuilt = providerRegistry.CreateClient(newConfig);
+            if (rebuilt is OpenAiCompatClient oai)
+            {
+                oai.OnDebug = debugCallback;
+                oai.OnModelReported = m => config.Llm.Model = m;
+            }
+            if (rebuilt is AnthropicClient ant) ant.OnDebug = debugCallback;
+            var oldFallback = routing.Fallback;
+            routing.SetFallback(rebuilt);
+            if (ReferenceEquals(oldFallback, llm))
+                llm.Dispose(); // the process-wide client is replaced; free its HttpClient.
+            clientPool.Invalidate(BackendRegistry.DefaultBackendName);
+            renderer.WriteInfo($"Applied settings change: {config.Llm.Endpoint} (takes effect on your next message).");
+        }
+        else
+        {
+            renderer.WriteInfo($"Applied settings change: model={config.Llm.Model ?? "(unchanged)"} (takes effect on your next message).");
+        }
+    }
+
     var fileHistory = new FileHistory(config);
     session.Meta.FileHistory = fileHistory;
 

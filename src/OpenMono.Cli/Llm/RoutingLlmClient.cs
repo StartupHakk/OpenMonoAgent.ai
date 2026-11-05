@@ -26,7 +26,7 @@ public sealed class RoutingLlmClient : ILlmClient
     private readonly SessionState _session;
     private readonly BackendRegistry _registry;
     private readonly LlmClientPool _pool;
-    private readonly ILlmClient _fallback;
+    private volatile ILlmClient _fallback;
     private bool _disposed;
 
     public RoutingLlmClient(
@@ -58,6 +58,11 @@ public sealed class RoutingLlmClient : ILlmClient
         if (string.IsNullOrWhiteSpace(name)
             || name.Equals(BackendRegistry.DefaultBackendName, StringComparison.OrdinalIgnoreCase))
         {
+            // Same session-model rule on the default backend: an empty options.Model
+            // (compaction/checkpoint summaries) must follow a mid-session /model switch
+            // instead of reverting to the client's startup model.
+            if (string.IsNullOrEmpty(options.Model) && !string.IsNullOrWhiteSpace(_session.Model))
+                return (_fallback, options with { Model = _session.Model });
             return (_fallback, options);
         }
 
@@ -80,6 +85,17 @@ public sealed class RoutingLlmClient : ILlmClient
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
     }
+
+    /// <summary>
+    /// Atomically swaps the process-wide fallback client used by the default-backend
+    /// path (TUI). Called by the settings hot-reload when <c>llm.endpoint</c> /
+    /// <c>llm.api_key</c> change so a live session tracks the new endpoint without a
+    /// restart. The caller owns disposal of the swapped-out client.
+    /// </summary>
+    public void SetFallback(ILlmClient fallback) => _fallback = fallback;
+
+    /// <summary>The current fallback client (the process-wide default-backend client).</summary>
+    public ILlmClient Fallback => _fallback;
 
     public void Dispose()
     {

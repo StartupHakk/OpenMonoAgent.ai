@@ -30,6 +30,39 @@ public sealed class BackendRegistry : IDisposable
     /// <summary>Default backend name — the one a session uses when no backend is set.</summary>
     public const string DefaultBackendName = "default";
 
+    private string _defaultName = DefaultBackendName;
+
+    /// <summary>
+    /// The registry's default backend — what a brand-new session uses. Seeded to
+    /// <see cref="DefaultBackendName"/>; changed via <see cref="SetDefault"/> (the
+    /// extension's "default model" control / PUT /api/v1/backends/{name}/default).
+    /// </summary>
+    public string DefaultName
+    {
+        get { lock (_backends) return _defaultName; }
+    }
+
+    /// <summary>
+    /// Points the registry default at <paramref name="name"/> (must exist) and optionally
+    /// re-points that backend's default model. Returns the resulting definition.
+    /// </summary>
+    public BackendDefinition SetDefault(string name, string? model = null)
+    {
+        lock (_backends)
+        {
+            var def = _backends.TryGetValue(name, out var d)
+                ? d
+                : throw new KeyNotFoundException($"Unknown backend '{name}'");
+            if (!string.IsNullOrWhiteSpace(model))
+            {
+                def = def with { DefaultModel = model };
+                _backends[name] = def;
+            }
+            _defaultName = name;
+            return def;
+        }
+    }
+
     public BackendRegistry() { }
 
     /// <summary>
@@ -81,16 +114,23 @@ public sealed class BackendRegistry : IDisposable
         try
         {
             var doc = JsonDocument.Parse(json);
+
+            // Top-level default backend marker (skip: not an object in the loop below).
+            if (doc.RootElement.TryGetProperty("_default_backend", out var defEl)
+                && defEl.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(defEl.GetString()))
+            {
+                lock (_backends) _defaultName = defEl.GetString()!;
+            }
+
             foreach (var prop in doc.RootElement.EnumerateObject())
             {
                 var name = prop.Name;
                 if (string.IsNullOrWhiteSpace(name)) continue;
 
-                if (prop.Value.ValueKind != JsonValueKind.Object)
-                {
-                    Log.Warn($"BackendRegistry: '{name}' is not an object — skipped.");
-                    continue;
-                }
+                // Legacy per-backend "default" flags are tolerated; a top-level
+                // object is the registry file shape, skip any non-object entries.
+                if (prop.Value.ValueKind != JsonValueKind.Object) continue;
 
                 var def = new BackendDefinition
                 {
@@ -135,9 +175,11 @@ public sealed class BackendRegistry : IDisposable
     /// </summary>
     public void SaveToFile(string path)
     {
-        var dict = new Dictionary<string, BackendEntry>(StringComparer.OrdinalIgnoreCase);
+        var dict = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
         foreach (var kv in _backends)
             dict[kv.Key] = new BackendEntry(kv.Value, GetKey(kv.Key));
+        // Preserve which backend is the registry default across restarts.
+        dict["_default_backend"] = DefaultName;
 
         var options = new JsonSerializerOptions
         {
@@ -183,6 +225,11 @@ public sealed class BackendRegistry : IDisposable
     {
         if (_backends.TryRemove(name, out _))
             _keys.TryRemove(name, out _);
+        lock (_backends)
+        {
+            if (string.Equals(_defaultName, name, StringComparison.OrdinalIgnoreCase))
+                _defaultName = DefaultBackendName;
+        }
     }
 
     public BackendDefinition? Get(string name) => _backends.GetValueOrDefault(name);

@@ -85,7 +85,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
     private ILlmClient ResolveLlmClient()
     {
         var backendName = string.IsNullOrWhiteSpace(_acpSession.State.ActiveBackend)
-            ? BackendRegistry.DefaultBackendName
+            ? _backendRegistry.DefaultName
             : _acpSession.State.ActiveBackend;
 
         var backend = _backendRegistry.Get(backendName)

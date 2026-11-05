@@ -150,6 +150,8 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
 
     private volatile bool _laneActive;
     private string _laneOverlay = "";
+    private List<string>? _actionLaneLines;
+    private string _actionLaneHint = "";
 
     private volatile bool _atOverlayActive;
     private string _atOverlay = "";
@@ -695,9 +697,60 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         _laneOverlay = "";
     }
 
+    /// <summary>
+    /// Registers an AskUser/secret question as an overlay anchored ABOVE the live
+    /// input box. Unlike the fixed bottom-up menu lanes, this one is repositioned
+    /// on every repaint relative to the current input box height, so the answer
+    /// the user types (drawn by <see cref="DrawInputText"/>) can never be
+    /// overprinted by the question — the "two boxes on top of each other" bug.
+    /// </summary>
+    internal void SetActionLane(string question, string hint = "")
+    {
+        Sz();
+        var w = _tw - _sideW;
+        _actionLaneLines = Wrap($"{B}{Fbb}? {question}{R}", Math.Max(1, w - 2));
+        _actionLaneHint  = hint;
+    }
+
+    internal void ClearActionLane()
+    {
+        _actionLaneLines = null;
+        _actionLaneHint  = "";
+    }
+
     private void AppendLaneOverlay(StringBuilder sb)
     {
         if (_laneActive) sb.Append(_laneOverlay);
+        AppendActionLane(sb);
+    }
+
+    private void AppendActionLane(StringBuilder sb)
+    {
+        var lines = _actionLaneLines;
+        if (lines is null) return;
+        Sz();
+        var mainW       = Math.Max(1, _tw - _sideW);
+        var contentRows = InputContentRows(_getBgInput(), mainW);
+        var topDivider  = Math.Max(1, _th - contentRows - 3); // input box top divider row
+        var n           = Math.Min(lines.Count, 6);
+        var row         = topDivider;
+        for (var i = 0; i < n; i++)
+        {
+            row--;
+            if (row < 1) break;
+            sb.Append($"{E}[{row};1H{BgMain}{PadR(" " + lines[i], mainW)}{R}");
+        }
+        if (lines.Count > n)
+        {
+            row--;
+            if (row >= 1)
+                sb.Append($"{E}[{row};1H{BgMain}{PadR($"  {Fk}... ({lines.Count - n} more — full text in transcript above){R}", mainW)}{R}");
+        }
+        if (_actionLaneHint.Length > 0 && row > 1)
+        {
+            row--;
+            sb.Append($"{E}[{row};1H{BgMain}{PadR(_actionLaneHint, mainW)}{R}");
+        }
     }
 
     internal void SetAtOverlay(string overlay)

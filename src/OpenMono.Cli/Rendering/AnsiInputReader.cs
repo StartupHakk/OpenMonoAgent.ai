@@ -458,17 +458,25 @@ internal sealed class AnsiInputReader(
         var saved = SnapshotBgInput();
         painter.AddMessage(new AnsiPainter.Msg("sys", $"? {question}"));
         StopBackgroundInput();
-        painter.Sz();
-        var wrapped = AnsiPainter.Wrap($"? {question}", Math.Max(1, painter.ComputeLayout("").MainW - 2));
-        painter.PaintActionLaneLines(wrapped,
-            $"  {AnsiPainter.Fk}Type your answer and press Enter{AnsiPainter.R}");
-        painter.PaintConvThrottled(force: true);
 
-        var ans = ReadInputCore(interactive: true);
+        // The question lives in the lane (registered as a lane overlay so the paint
+        // thread suppresses the normal input box while it is up, and redraws it on
+        // every full repaint). ReadInputCore draws the answer in the same lane.
+        string ans;
+        try
+        {
+            painter.SetActionLane(question);
+            painter.PaintConvThrottled(force: true);
+            ans = ReadInputCore(interactive: true);
+        }
+        finally
+        {
+            painter.ClearActionLane();
+            painter.Paint();
+            StartBackgroundInput(saved);
+        }
         painter.AddMessage(new AnsiPainter.Msg("user", ans));
-        painter.PaintActionLane("", "", "");
         painter.Paint();
-        StartBackgroundInput(saved);
         return Task.FromResult(ans);
     }
 
@@ -485,20 +493,18 @@ internal sealed class AnsiInputReader(
         var saved = SnapshotBgInput();
         painter.AddMessage(new AnsiPainter.Msg("sys", $"? {question}"));
         StopBackgroundInput();
-        painter.Sz();
-        var wrapped = AnsiPainter.Wrap($"? {question}", Math.Max(1, painter.ComputeLayout("").MainW - 2));
-        painter.PaintActionLaneLines(wrapped,
-            $"  {AnsiPainter.Fk}Secret input — masked, Enter confirm · Esc cancel{AnsiPainter.R}");
-        painter.PaintConvThrottled(force: true);
 
         char[] secret;
         try
         {
+            painter.SetActionLane(question,
+                $"  {AnsiPainter.Fk}Secret input — masked, Enter confirm · Esc cancel{AnsiPainter.R}");
+            painter.PaintConvThrottled(force: true);
             secret = ReadSecretCore(ct);
         }
         finally
         {
-            painter.PaintActionLane("", "", "");
+            painter.ClearActionLane();
             painter.Paint();
             StartBackgroundInput(saved);
         }
@@ -831,6 +837,14 @@ internal sealed class AnsiInputReader(
             var queued = painter.DequeueMessage();
             if (queued is not null) return queued;
         }
+
+        // Single-reader discipline: ReadInputCore owns the console here. Any overlay
+        // (model picker, AskUser, permission menu) leaves a background key-reader
+        // running on exit (StartBackgroundInput) — if that thread is still alive
+        // when the main loop re-enters ReadInputCore, BOTH readers steal keystrokes
+        // and each draws its own buffer into the input lane: the "two boxes on top
+        // of each other, one character in each" garbling. Stop it before reading.
+        StopBackgroundInput();
 
         painter.Sz();
         painter.Write($"{AnsiPainter.E}[?25h");
@@ -1220,7 +1234,12 @@ internal sealed class AnsiInputReader(
 
         string? ans;
         try { ans = ReadSelectMenu(title, options, initial, ct); }
-        finally { painter.ClearLane(); StartBackgroundInput(saved); }
+        finally
+        {
+            painter.ClearLane();
+            painter.Paint();
+            StartBackgroundInput(saved);
+        }
         return Task.FromResult(ans);
     }
 

@@ -260,6 +260,13 @@ public sealed class ModelsCommand : ICommand
         context.Session.ActiveBackend = name;
         context.Session.Model = def.DefaultModel;
 
+        // The model list is per-backend: re-seed the catalog now so the next
+        // /model menu (and the inline suggestion overlay) offers the new
+        // backend's models, not the previous backend's.
+        ModelCatalog.Set([def.DefaultModel ?? ""]);
+        var apiKey = registry.HasKey(name) ? registry.GetKey(name) : null;
+        _ = ModelCatalog.RefreshAsync(def.Endpoint, apiKey, fallback: [def.DefaultModel ?? ""]);
+
         context.Renderer.WriteInfo($"Switched to backend '{name}': {def.Endpoint}");
         context.Renderer.WriteInfo($"  Model: {context.Session.Model ?? "(default)"}");
         context.Renderer.WriteInfo("  Takes effect on your next message.");
