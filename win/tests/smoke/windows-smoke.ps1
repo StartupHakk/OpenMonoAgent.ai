@@ -316,6 +316,8 @@ exit `$LASTEXITCODE
   # with LF before the container is created.
   $crlfMarker = Join-Path $work 'image-crlf'
   Set-Content -Path $crlfMarker -Value 'crlf'
+  # The agent scenario cached the LF image id; the rebuilt image must be probed again.
+  Remove-Item (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.openmono\win\agent-image-lf.txt') -ErrorAction SilentlyContinue
   Remove-Item $env:FAKE_DOCKER_OUT -ErrorAction SilentlyContinue
   $crlfBody = @"
 & '$launcher' start
