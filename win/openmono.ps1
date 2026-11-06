@@ -20,6 +20,7 @@
                              any other args are passed to the agent unchanged
     logs                   Follow the Foundry Local daemon logs
     doctor                 Check the machine (Docker, Foundry, GPU, CUDA, routes, ACP)
+    diag [--out FILE.zip]  Write a redacted diagnostics bundle for bug reports
     help                   This text
 
   Runs on PowerShell 7 (pwsh.exe) or Windows PowerShell 5.1 (powershell.exe).
@@ -243,6 +244,7 @@ try {
     'agent' { Invoke-Agent $rest }
     'logs' { Invoke-Logs }
     'doctor' { Invoke-Launcher doctor --workdir (Get-Location).Path; exit $LASTEXITCODE }
+    'diag' { Invoke-Launcher diag --workdir (Get-Location).Path @rest; exit $LASTEXITCODE }
     'help' { Show-Help }
     '--help' { Show-Help }
     '-h' { Show-Help }

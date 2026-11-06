@@ -30,6 +30,7 @@ C:\path\to\OpenMonoAgent.ai\win\openmono.ps1 agent --acp-only   # ACP on 127.0.0
 | `agent [args]` | `docker compose run --rm ... agent [args]`, the same launch as bash `openmono agent`. `--vision` serves the Foundry vision model for the session |
 | `logs` | `foundry server logs --follow` |
 | `doctor` | PowerShell, Docker, compose, agent image, Foundry CLI, GPU, CUDA and cuDNN, server health, the container-to-host route, ACP, graph |
+| `diag` | Writes a zip for bug reports: GPU and VRAM, Foundry version, status and last server log, CUDA `PATH` entries, doctor output, inference state, settings with secrets and the home path redacted |
 
 Runs on PowerShell 7 (`pwsh.exe`) or Windows PowerShell 5.1 (`powershell.exe`).
 

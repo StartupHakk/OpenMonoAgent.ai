@@ -38,6 +38,9 @@ public static class LauncherCli
             case "doctor":
                 return await DoctorAsync(deps, parsed, stdout, ct);
 
+            case "diag":
+                return await DiagAsync(deps, parsed, stdout, ct);
+
             case "help":
                 stdout.WriteLine(Usage);
                 return 0;
@@ -85,7 +88,8 @@ public static class LauncherCli
         + "openmono-win inference down [--force]\n"
         + "openmono-win inference status [--json]\n"
         + "openmono-win agent-plan --workdir DIR --compose FILE [--vision] [--model ALIAS] [--no-git-auth] -- <agent args>\n"
-        + "openmono-win doctor [--workdir DIR] [--json]";
+        + "openmono-win doctor [--workdir DIR] [--json]\n"
+        + "openmono-win diag [--out FILE.zip] [--workdir DIR]";
 
     private static int Report(UpResult result, bool json, TextWriter stdout, TextWriter stderr)
     {
@@ -208,27 +212,8 @@ public static class LauncherCli
 
     private static async Task<int> DoctorAsync(LauncherDeps deps, LauncherArgs parsed, TextWriter stdout, CancellationToken ct)
     {
-        var workDir = parsed.Value("--workdir") ?? Directory.GetCurrentDirectory();
-        var pathDirs = (deps.GetEnv("PATH") ?? "")
-            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-        var checks = await new DoctorRunner(deps).RunAsync(new DoctorInput(
-            workDir,
-            OperatingSystem.IsWindows(),
-            pathDirs,
-            File.Exists,
-            dir => Directory.Exists(dir) && Directory.EnumerateFileSystemEntries(dir).Any(),
-            dir =>
-            {
-                try
-                {
-                    return Directory.Exists(dir) ? Directory.GetFiles(dir).Select(Path.GetFileName).OfType<string>().ToList() : [];
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
-                    return [];
-                }
-            }), ct);
+        var input = BuildDoctorInput(deps, parsed.Value("--workdir") ?? Directory.GetCurrentDirectory());
+        var checks = await new DoctorRunner(deps).RunAsync(input, ct);
 
         if (parsed.Flag("--json"))
         {
@@ -256,6 +241,44 @@ public static class LauncherCli
 
         return DoctorRunner.ExitCode(checks);
     }
+    private static async Task<int> DiagAsync(LauncherDeps deps, LauncherArgs parsed, TextWriter stdout, CancellationToken ct)
+    {
+        var input = BuildDoctorInput(deps, parsed.Value("--workdir") ?? Directory.GetCurrentDirectory());
+        var checks = await new DoctorRunner(deps).RunAsync(input, ct);
+        var files = await new DiagnosticsBundle(deps).CollectAsync(checks, input.PathDirectories, ct);
+
+        var outPath = parsed.Value("--out")
+            ?? Path.Combine(deps.HomeDir, ".openmono", "win",
+                $"openmono-diag-{DateTime.UtcNow:yyyyMMdd-HHmmss}.zip");
+        DiagnosticsBundle.WriteZip(outPath, files);
+        stdout.WriteLine($"Diagnostics bundle (secrets and home path redacted): {outPath}");
+        stdout.WriteLine("Contents: " + string.Join(", ", files.Keys.Order(StringComparer.Ordinal)));
+        return 0;
+    }
+
+    public static DoctorInput BuildDoctorInput(LauncherDeps deps, string workDir)
+    {
+        var pathDirs = (deps.GetEnv("PATH") ?? "")
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        return new DoctorInput(
+            workDir,
+            OperatingSystem.IsWindows(),
+            pathDirs,
+            File.Exists,
+            dir => Directory.Exists(dir) && Directory.EnumerateFileSystemEntries(dir).Any(),
+            dir =>
+            {
+                try
+                {
+                    return Directory.Exists(dir) ? Directory.GetFiles(dir).Select(Path.GetFileName).OfType<string>().ToList() : [];
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    return [];
+                }
+            });
+    }
 }
 
 // Tiny parser: "inference up" style two-word commands, --flag, --key value,
@@ -264,7 +287,7 @@ public sealed class LauncherArgs
 {
     private static readonly HashSet<string> ValueKeys = new(StringComparer.Ordinal)
     {
-        "--model", "--port", "--workdir", "--compose",
+        "--model", "--port", "--workdir", "--compose", "--out",
     };
 
     private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
