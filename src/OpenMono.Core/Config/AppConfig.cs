@@ -95,20 +95,6 @@ public class LlmConfig
     public double MinP { get; set; } = 0.0;
     public double RepetitionPenalty { get; set; } = 1.0;
 
-    // "foundry" when the endpoint is Foundry Local on the Windows host (set by
-    // the Windows launcher through OPENMONO_LLM_BACKEND). Foundry's
-    // OpenAI-compatible API rejects llama.cpp request extensions with a 400.
-    public string? Backend { get; set; }
-
-    // false when the served model cannot call tools (OPENMONO_TOOL_CALLING=0);
-    // tools are then left out of Foundry requests. Unset means it can.
-    public bool? ToolCalling { get; set; }
-
-    public const string FoundryBackend = "foundry";
-
-    [JsonIgnore]
-    public bool IsFoundry => string.Equals(Backend, FoundryBackend, StringComparison.OrdinalIgnoreCase);
-
     [JsonIgnore]
     public bool ContextSizeExplicit { get; set; }
 
@@ -128,8 +114,6 @@ public class LlmConfig
         if (source.PresencePenalty != 0) PresencePenalty = source.PresencePenalty;
         if (source.MinP > 0) MinP = source.MinP;
         if (source.RepetitionPenalty > 0) RepetitionPenalty = source.RepetitionPenalty;
-        if (!string.IsNullOrEmpty(source.Backend)) Backend = source.Backend;
-        if (source.ToolCalling.HasValue) ToolCalling = source.ToolCalling;
     }
 }
 

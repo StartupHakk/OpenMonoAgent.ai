@@ -231,16 +231,6 @@ public static class ConfigLoader
         if (!string.IsNullOrEmpty(model))
             config.Llm.Model = model;
 
-        var backend = Environment.GetEnvironmentVariable("OPENMONO_LLM_BACKEND");
-        if (!string.IsNullOrEmpty(backend))
-            config.Llm.Backend = backend;
-
-        var toolCalling = Environment.GetEnvironmentVariable("OPENMONO_TOOL_CALLING");
-        if (toolCalling is "0" or "false" or "False")
-            config.Llm.ToolCalling = false;
-        else if (toolCalling is "1" or "true" or "True")
-            config.Llm.ToolCalling = true;
-
         var apiKey = Environment.GetEnvironmentVariable("OPENMONO_API_KEY");
         if (!string.IsNullOrEmpty(apiKey))
             config.Llm.ApiKey = apiKey;

@@ -162,7 +162,6 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     if (llm is OpenAiCompatClient openAiClient)
     {
         openAiClient.OnDebug = debugCallback;
-        openAiClient.OnWarning = msg => renderer.WriteWarning(msg);
         openAiClient.OnModelReported = m => config.Llm.Model = m;
     }
     if (llm is AnthropicClient anthropicClient) anthropicClient.OnDebug = debugCallback;
@@ -666,24 +665,32 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
         }
         catch (HttpRequestException ex)
         {
-            if (ex.StatusCode is null && !OpenMono.Llm.LlmErrorHints.IsTransportFailure(ex))
+            if (ex.StatusCode is null)
             {
                 renderer.WriteError($"LLM error: {ex.Message}");
-                renderer.WriteInfo(OpenMono.Llm.LlmErrorHints.ForProviderError(ex.Message, config.Llm));
-            }
-            else if (ex.StatusCode is null)
-            {
-                renderer.WriteError($"LLM error: {ex.Message}");
-                if (config.Llm.IsFoundry)
-                    renderer.WriteInfo($"Foundry Local is not reachable at {config.Llm.Endpoint}. "
-                        + "On the Windows host run: .\\win\\openmono.ps1 start");
-                else
-                    await TryRecoverLlamaServerAsync(renderer, config.WorkingDirectory, config.Llm.Endpoint, config.Llm.ApiKey);
+                await TryRecoverLlamaServerAsync(renderer, config.WorkingDirectory, config.Llm.Endpoint, config.Llm.ApiKey);
             }
             else
             {
                 renderer.WriteError($"LLM error: {ex.Message}");
-                renderer.WriteInfo(OpenMono.Llm.LlmErrorHints.For(ex.StatusCode.Value, config.Llm, ex.Message));
+                var hint = ex.StatusCode switch
+                {
+                    System.Net.HttpStatusCode.InternalServerError =>
+                        "llama-server returned 500. Likely causes: context too long (KV cache overflow), " +
+                        "out of GPU memory, or model crash.\n" +
+                        "Check logs: docker logs llama-server --tail 40",
+                    System.Net.HttpStatusCode.ServiceUnavailable =>
+                        "llama-server is busy or still loading — wait a moment and try again.\n" +
+                        "Check status: curl http://localhost:7474/health",
+                    System.Net.HttpStatusCode.TooManyRequests =>
+                        "llama-server rate limit hit — wait a moment and try again.",
+                    System.Net.HttpStatusCode.BadRequest =>
+                        "llama-server rejected the request (400). The conversation may be malformed.\n" +
+                        "Try starting a new session: /new",
+                    _ =>
+                        "Check: curl http://localhost:7474/health",
+                };
+                renderer.WriteInfo(hint);
             }
             Log.Error("LLM connection failed", ex);
         }
@@ -929,33 +936,6 @@ static async Task<int?> TryDetectCtxFromSlotsAsync(System.Net.Http.HttpClient ht
     return null;
 }
 
-// Foundry Local answers GET /openai/loadedmodels with the ids it has loaded (a JSON array of
-// strings). Other servers answer 404; any failure means "unknown".
-static async Task<IReadOnlyList<string>> TryListLoadedModelsAsync(System.Net.Http.HttpClient http, string baseUrl)
-{
-    try
-    {
-        var json = await http.GetStringAsync($"{baseUrl}/openai/loadedmodels");
-        using var doc = System.Text.Json.JsonDocument.Parse(json);
-        var root = doc.RootElement;
-        if (root.ValueKind == System.Text.Json.JsonValueKind.Object && root.TryGetProperty("data", out var data))
-            root = data;
-        if (root.ValueKind != System.Text.Json.JsonValueKind.Array)
-            return [];
-        return root.EnumerateArray()
-            .Select(e => e.ValueKind == System.Text.Json.JsonValueKind.String ? e.GetString()
-                : e.ValueKind == System.Text.Json.JsonValueKind.Object && e.TryGetProperty("id", out var id) ? id.GetString() : null)
-            .Where(id => !string.IsNullOrWhiteSpace(id))
-            .Select(id => id!)
-            .ToList();
-    }
-    catch (Exception ex)
-    {
-        Log.Debug($"/openai/loadedmodels unavailable ({ex.GetType().Name})");
-        return [];
-    }
-}
-
 static async Task TryDetectActualModelAsync(AppConfig config)
 {
     using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(5) };
@@ -1093,16 +1073,17 @@ static async Task TryDetectActualModelAsync(AppConfig config)
         if (doc.RootElement.TryGetProperty("data", out var data)
             && data.ValueKind == System.Text.Json.JsonValueKind.Array)
         {
-            var ids = data.EnumerateArray()
-                .Where(item => item.TryGetProperty("id", out var idEl) && idEl.ValueKind == System.Text.Json.JsonValueKind.String)
-                .Select(item => item.GetProperty("id").GetString()!)
-                .ToList();
-            var loaded = ids.Count > 1 ? await TryListLoadedModelsAsync(http, baseUrl) : [];
-            if (OpenMono.Llm.ServedModelPicker.Pick(config.Llm.Model, ids, loaded) is { } name)
+            foreach (var item in data.EnumerateArray())
             {
-                config.Llm.Model = name;
-                Log.Debug($"Detected model from /v1/models: {name}");
-                return;
+                if (item.TryGetProperty("id", out var idEl)
+                    && idEl.ValueKind == System.Text.Json.JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(idEl.GetString()))
+                {
+                    var name = idEl.GetString()!;
+                    config.Llm.Model = name;
+                    Log.Debug($"Detected model from /v1/models: {name}");
+                    return;
+                }
             }
         }
     }

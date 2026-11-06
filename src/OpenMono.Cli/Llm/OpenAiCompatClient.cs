@@ -24,33 +24,26 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
         TimeSpan.FromSeconds(16),
     ];
 
+    private static readonly Regex QwenFunctionRegex = new(
+        @"<function=(\w+)>(.*?)</function>",
+        RegexOptions.Singleline | RegexOptions.Compiled);
+
+    private static readonly Regex QwenParamRegex = new(
+        @"<parameter=(\w+)>\s*(.*?)\s*</parameter>",
+        RegexOptions.Singleline | RegexOptions.Compiled);
+
     public string? ApiKey { get; init; }
     public Action<string>? OnDebug { get; set; }
     public Action<string>? OnModelReported { get; set; }
-    public Action<string>? OnWarning { get; set; }
     private string? _reportedModel;
 
     private readonly string _model;
-    private readonly bool _foundry;
-    // Structured `tools` in the request body. Starts from OPENMONO_TOOL_CALLING and is
-    // switched off for the rest of the session when Foundry refuses it for the served
-    // variant; tools are then described in the prompt and parsed from the reply text.
-    private bool _toolCalling;
-
-    public bool StructuredToolCalling => _toolCalling;
 
     public OpenAiCompatClient(LlmConfig config)
-        : this(config, new HttpClient { Timeout = TimeSpan.FromMinutes(10) })
-    {
-    }
-
-    internal OpenAiCompatClient(LlmConfig config, HttpClient http)
     {
         _endpoint = config.Endpoint.TrimEnd('/');
         _model = config.Model;
-        _foundry = config.IsFoundry;
-        _toolCalling = config.ToolCalling ?? true;
-        _http = http;
+        _http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
         EnsureRequestGate(config.MaxConcurrentRequests);
     }
 
@@ -84,24 +77,21 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
         var lastException = default(Exception);
         TimeSpan? pendingRetryAfter = null;
         var retryDelay = TimeSpan.Zero;
-        var toolFallbackUsed = false;
-        var skipDelay = false;
 
         for (var attempt = 0; attempt <= MaxRetries; attempt++)
         {
             HttpResponseMessage? response = null;
             var yieldedToCaller = false;
             string? retryableStreamError = null;
-            var retryWithoutTools = false;
             ct.ThrowIfCancellationRequested();
 
-            if (attempt > 0 && !skipDelay)
+            if (attempt > 0)
             {
                 retryDelay = RetryPolicy.NextDelay(attempt, pendingRetryAfter, Random.Shared.NextDouble());
                 await Task.Delay(retryDelay, ct);
             }
 
-            var requestBody = BuildRequestBody(messages, tools, options, _model, _foundry, _toolCalling);
+            var requestBody = BuildRequestBody(messages, tools, options, _model);
             var requestJson = JsonSerializer.Serialize(requestBody, JsonOptions.Default);
 
             if (attempt == 0)
@@ -112,10 +102,6 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                 OnDebug?.Invoke($"[LLM] Model: {resolvedModel} | Messages: {messages.Count} | Tools: {toolCount} | MaxTokens: {options.MaxTokens}");
                 Log.Debug($"LLM request: model={resolvedModel} messages={messages.Count} tools={toolCount} endpoint={_endpoint}");
 
-            }
-            else if (skipDelay)
-            {
-                OnDebug?.Invoke("[LLM] Retrying the turn without tools");
             }
             else
             {
@@ -133,8 +119,6 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
             if (ApiKey is not null)
                 request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", ApiKey);
 
-            skipDelay = false;
-            LlmRequestRejectedException? rejected = null;
             try
             {
                 response = await _http.SendAsync(
@@ -151,46 +135,9 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                         throw new ContextOverflowException(body.Length > 300 ? body[..300] : body);
                     }
                     response.Content = new StringContent(body, Encoding.UTF8, "application/json");
-
-                    // Foundry answers 500 for a request it cannot serve (Echo12 saw the
-                    // tool-marker error this way); the same body fails again.
-                    if (response.StatusCode == System.Net.HttpStatusCode.InternalServerError
-                        && (_foundry || LlmProviderErrorException.IsToolMarkerError(body)))
-                    {
-                        Log.Warn($"LLM request failed (HTTP 500): {Truncate(body, 500)}");
-                        response.Dispose();
-                        response = null;
-                        if (LlmProviderErrorException.IsToolMarkerError(body) && CanDropTools(tools, toolFallbackUsed))
-                        {
-                            DisableTools(body);
-                            retryWithoutTools = true;
-                        }
-                        else
-                        {
-                            rejected = new LlmRequestRejectedException(body, System.Net.HttpStatusCode.InternalServerError);
-                        }
-                    }
                 }
 
-                // A 400 is the same on every attempt: keep the server's reason
-                // (unsupported field, model cannot take tools, ...) and do not retry.
-                if (response?.StatusCode == System.Net.HttpStatusCode.BadRequest)
-                {
-                    var body = await response.Content.ReadAsStringAsync(ct);
-                    Log.Warn($"LLM request rejected (HTTP 400): {Truncate(body, 500)}");
-                    response.Dispose();
-                    response = null;
-                    if (LlmProviderErrorException.IsToolMarkerError(body) && CanDropTools(tools, toolFallbackUsed))
-                    {
-                        DisableTools(body);
-                        retryWithoutTools = true;
-                    }
-                    else
-                    {
-                        rejected = new LlmRequestRejectedException(body);
-                    }
-                }
-                else if (response is not null && IsRetryableStatus(response.StatusCode))
+                if (IsRetryableStatus(response.StatusCode))
                 {
                     lastException = new HttpRequestException(
                         $"HTTP {(int)response.StatusCode} {response.StatusCode}",
@@ -201,7 +148,7 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                     continue;
                 }
 
-                response?.EnsureSuccessStatusCode();
+                response.EnsureSuccessStatusCode();
             }
             catch (HttpRequestException ex) when (attempt < MaxRetries)
             {
@@ -219,17 +166,6 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                 response = null;
             }
 
-            if (rejected is not null)
-                throw rejected;
-
-            if (retryWithoutTools)
-            {
-                toolFallbackUsed = true;
-                skipDelay = true;
-                attempt--;
-                continue;
-            }
-
             if (response is null)
                 continue;
 
@@ -244,10 +180,8 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
             var toolCalls = new Dictionary<int, ToolCallAccumulator>();
             var malformedChunks = 0;
             var fullText = new StringBuilder();
-            var emittedText = 0;
             var suppressText = false;
             var outputTruncated = false;
-            string? sseEvent = null;
 
             string? line;
             while ((line = await reader.ReadLineAsync(ct)) is not null)
@@ -255,16 +189,9 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                 ct.ThrowIfCancellationRequested();
 
                 if (string.IsNullOrEmpty(line)) continue;
-                if (line.StartsWith("event:", StringComparison.Ordinal))
-                {
-                    sseEvent = line["event:".Length..].Trim();
-                    continue;
-                }
-                if (!line.StartsWith("data:", StringComparison.Ordinal)) continue;
+                if (!line.StartsWith("data: ", StringComparison.Ordinal)) continue;
 
-                var data = line.StartsWith("data: ", StringComparison.Ordinal) ? line["data: ".Length..] : line["data:".Length..];
-                var errorEvent = string.Equals(sseEvent, "error", StringComparison.OrdinalIgnoreCase);
-                sseEvent = null;
+                var data = line["data: ".Length..];
                 if (data == "[DONE]")
                 {
                     foreach (var tc in toolCalls.Values.Where(t => t.IsComplete))
@@ -302,31 +229,25 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
 
                     if (toolCalls.Count == 0 && suppressText)
                     {
-                        var textCalls = FoundryTextTools.Parse(fullText.ToString(emittedText, fullText.Length - emittedText), tools, _foundry);
-                        if (textCalls.Count == 0)
-                        {
-                            // Unparseable markup: show it rather than lose the reply.
-                            yield return new StreamChunk { TextDelta = fullText.ToString(emittedText, fullText.Length - emittedText) };
-                        }
-
                         var idx = 0;
-                        foreach (var (name, args) in textCalls)
+                        foreach (Match m in QwenFunctionRegex.Matches(fullText.ToString()))
                         {
-                            Log.Info($"[OMA_TOOLCALL] Text tool call: {name} args={Truncate(args, 200)}");
+                            var name = m.Groups[1].Value;
+                            var body = m.Groups[2].Value;
+                            var args = new Dictionary<string, string>();
+                            foreach (Match p in QwenParamRegex.Matches(body))
+                                args[p.Groups[1].Value] = p.Groups[2].Value.Trim();
+
                             yield return new StreamChunk
                             {
                                 ToolCallDelta = new ToolCall
                                 {
                                     Id = $"call_xml_{idx++}",
                                     Name = name,
-                                    Arguments = args,
+                                    Arguments = JsonSerializer.Serialize(args),
                                 }
                             };
                         }
-                    }
-                    else if (!suppressText && emittedText < fullText.Length)
-                    {
-                        yield return new StreamChunk { TextDelta = fullText.ToString(emittedText, fullText.Length - emittedText) };
                     }
 
                     if (outputTruncated)
@@ -336,61 +257,43 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                     yield break;
                 }
 
-                JsonDocument? doc = null;
+                JsonDocument? doc;
                 try
                 {
                     doc = JsonDocument.Parse(data);
                 }
                 catch (JsonException)
                 {
-                    if (!errorEvent)
-                    {
-                        malformedChunks++;
-                        if (malformedChunks > 50)
-                            throw new InvalidOperationException(
-                                $"Too many malformed SSE chunks ({malformedChunks}). Stream is corrupt.");
-                        continue;
-                    }
+                    malformedChunks++;
+                    if (malformedChunks > 50)
+                        throw new InvalidOperationException(
+                            $"Too many malformed SSE chunks ({malformedChunks}). Stream is corrupt.");
+                    continue;
                 }
 
-                if (StreamErrorMessage(doc?.RootElement, data, errorEvent) is { } errorMsg)
+                using (doc)
                 {
-                    doc?.Dispose();
+                    var root = doc.RootElement;
 
-                    // Deterministic: the same body fails again. Switch to text tools once
-                    // for the session and retry the turn, otherwise surface it unretried.
-                    if (LlmProviderErrorException.IsToolMarkerError(errorMsg))
+                    if (root.TryGetProperty("error", out var errorEl))
                     {
-                        if (!yieldedToCaller && CanDropTools(tools, toolFallbackUsed))
+                        var errorMsg = errorEl.TryGetProperty("message", out var msgEl)
+                            ? msgEl.GetString() : "Unknown API error";
+
+                        if (ContextOverflowException.IsOverflow(errorMsg))
                         {
-                            DisableTools(errorMsg);
-                            retryWithoutTools = true;
+                            Log.Warn($"[Overflow] Provider reported context overflow mid-stream: {Truncate(errorMsg, 200)}");
+                            throw new ContextOverflowException(errorMsg ?? "context overflow");
+                        }
+
+                        if (!yieldedToCaller && attempt < MaxRetries)
+                        {
+                            retryableStreamError = errorMsg;
                             break;
                         }
 
-                        throw new LlmProviderErrorException(errorMsg);
+                        throw new HttpRequestException($"LLM API error: {errorMsg}");
                     }
-
-                    if (ContextOverflowException.IsOverflow(errorMsg))
-                    {
-                        Log.Warn($"[Overflow] Provider reported context overflow mid-stream: {Truncate(errorMsg, 200)}");
-                        throw new ContextOverflowException(errorMsg);
-                    }
-
-                    // Foundry reports request errors this way (unsupported parameter, ...);
-                    // resending the same body only repeats them.
-                    if (!_foundry && !yieldedToCaller && attempt < MaxRetries)
-                    {
-                        retryableStreamError = errorMsg;
-                        break;
-                    }
-
-                    throw new LlmProviderErrorException(errorMsg);
-                }
-
-                using (doc!)
-                {
-                    var root = doc!.RootElement;
 
                     chunkCount++;
 
@@ -457,17 +360,12 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                                 fullText.Append(text);
                                 if (!suppressText)
                                 {
-                                    var pending = fullText.ToString(emittedText, fullText.Length - emittedText);
-                                    var marker = FoundryTextTools.MarkerIndex(pending, _foundry);
-                                    var emit = marker >= 0
-                                        ? pending[..marker]
-                                        : pending[..^FoundryTextTools.PartialMarkerLength(pending, _foundry)];
-                                    suppressText = marker >= 0;
-                                    if (emit.Length > 0)
+                                    if (fullText.ToString().Contains("<function="))
+                                        suppressText = true;
+                                    else
                                     {
-                                        emittedText += emit.Length;
                                         yieldedToCaller = true;
-                                        yield return new StreamChunk { TextDelta = emit, Usage = usage };
+                                        yield return new StreamChunk { TextDelta = text, Usage = usage };
                                     }
                                 }
                             }
@@ -524,17 +422,9 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
             }
             }
 
-            if (retryWithoutTools)
-            {
-                toolFallbackUsed = true;
-                skipDelay = true;
-                attempt--;
-                continue;
-            }
-
             if (retryableStreamError is not null)
             {
-                lastException = new LlmProviderErrorException(retryableStreamError);
+                lastException = new HttpRequestException($"LLM API error: {retryableStreamError}");
                 pendingRetryAfter = null;
                 continue;
             }
@@ -550,43 +440,6 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
         }
     }
 
-    private bool CanDropTools(JsonElement? tools, bool alreadyDropped) =>
-        _foundry && _toolCalling && !alreadyDropped && FoundryTextTools.HasTools(tools);
-
-    private void DisableTools(string? reason)
-    {
-        _toolCalling = false;
-        Log.Warn($"[OMA_LLM] Foundry refused structured tool calling; using text tool calls for this session: {Truncate(reason, 300)}");
-        OnDebug?.Invoke("[LLM] Foundry refused structured tool calling; tools go in the prompt for this session");
-        OnWarning?.Invoke($"Foundry Local refused structured tool calling for {_model} (the variant publishes no tool markers). "
-            + "This session describes the tools in the prompt instead and reads tool calls from the reply text.");
-    }
-
-    // An SSE error: {"error": "..."}, {"error": {"message": ...}}, or an `event: error`
-    // frame whose data is the error itself (JSON or plain text).
-    internal static string? StreamErrorMessage(JsonElement? root, string data, bool errorEvent)
-    {
-        if (root is { ValueKind: JsonValueKind.Object } obj && obj.TryGetProperty("error", out var errorEl))
-        {
-            return errorEl.ValueKind switch
-            {
-                JsonValueKind.String => errorEl.GetString() ?? "Unknown API error",
-                JsonValueKind.Object when errorEl.TryGetProperty("message", out var m) && m.ValueKind == JsonValueKind.String
-                    => m.GetString() ?? "Unknown API error",
-                JsonValueKind.Object => errorEl.GetRawText(),
-                _ => "Unknown API error",
-            };
-        }
-
-        if (!errorEvent)
-            return null;
-        if (root is { ValueKind: JsonValueKind.Object } o && o.TryGetProperty("message", out var msg) && msg.ValueKind == JsonValueKind.String)
-            return msg.GetString() ?? "Unknown API error";
-        if (root is { ValueKind: JsonValueKind.String } str)
-            return str.GetString() ?? "Unknown API error";
-        return string.IsNullOrWhiteSpace(data) ? "Unknown API error" : data.Trim();
-    }
-
     private static bool IsRetryableStatus(System.Net.HttpStatusCode status) =>
         status is System.Net.HttpStatusCode.TooManyRequests
             or System.Net.HttpStatusCode.InternalServerError
@@ -596,13 +449,11 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
 
     private static string Truncate(string? s, int max) => string.IsNullOrEmpty(s) ? "" : (s.Length <= max ? s : s[..max] + "…");
 
-    internal static object BuildRequestBody(
+    private static object BuildRequestBody(
         IReadOnlyList<Message> messages,
         JsonElement? tools,
         LlmOptions options,
-        string configModel,
-        bool foundry = false,
-        bool toolCalling = true)
+        string configModel)
     {
         var model = string.IsNullOrEmpty(options.Model) ? configModel : options.Model;
 
@@ -615,12 +466,37 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
         var systemCount = messages.Count(m => m.Role == MessageRole.System);
         Log.Info($"[OMA_LLM_REQUEST] Building request with {messages.Count} messages: {msgRoles} (system={systemCount})");
 
-        var apiMessages = foundry && !toolCalling && FoundryTextTools.HasTools(tools)
-            ? FoundryTextTools.RewriteMessages(messages, tools!.Value, ToApiMessage)
-            : messages.Select(ToApiMessage).ToList();
-
-        if (foundry)
-            return BuildFoundryBody(model, apiMessages, tools, options, toolCalling);
+        var apiMessages = messages.Select<Message, object>(m => m.Role switch
+        {
+            MessageRole.System => new { role = "system", content = m.Content },
+            MessageRole.User when m.ContentParts is { Count: > 0 } =>
+                new { role = "user", content = (object)m.ContentParts.Select<ContentPart, object>(p => p switch {
+                    TextPart t  => (object)new { type = "text", text = t.Text },
+                    ImagePart i => new { type = "image_url", image_url = new { url = i.Url } },
+                    _           => new { type = "text", text = "" }
+                }).ToList() },
+            MessageRole.User => new { role = "user", content = m.Content },
+            MessageRole.Assistant when m.ToolCalls is { Count: > 0 } =>
+                new
+                {
+                    role = "assistant",
+                    content = m.Content ?? (object)"",
+                    tool_calls = m.ToolCalls.Select(tc => new
+                    {
+                        id = tc.Id,
+                        type = "function",
+                        function = new { name = tc.Name, arguments = tc.Arguments }
+                    })
+                },
+            MessageRole.Assistant => new { role = "assistant", content = m.Content },
+            MessageRole.Tool => (object)new
+            {
+                role = "tool",
+                tool_call_id = m.ToolCallId,
+                content = m.Content,
+            },
+            _ => new { role = "user", content = m.Content },
+        }).ToList();
 
         var body = new Dictionary<string, object?>
         {
@@ -679,69 +555,6 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                 type = "json_schema",
                 json_schema = new { name = "playbook_step_output", strict = true, schema },
             };
-        }
-
-        return body;
-    }
-
-    private static object ToApiMessage(Message m) => m.Role switch
-    {
-        MessageRole.System => new { role = "system", content = m.Content },
-        MessageRole.User when m.ContentParts is { Count: > 0 } =>
-            new { role = "user", content = (object)m.ContentParts.Select<ContentPart, object>(p => p switch {
-                TextPart t  => (object)new { type = "text", text = t.Text },
-                ImagePart i => new { type = "image_url", image_url = new { url = i.Url } },
-                _           => new { type = "text", text = "" }
-            }).ToList() },
-        MessageRole.User => new { role = "user", content = m.Content },
-        MessageRole.Assistant when m.ToolCalls is { Count: > 0 } =>
-            new
-            {
-                role = "assistant",
-                content = m.Content ?? (object)"",
-                tool_calls = m.ToolCalls.Select(tc => new
-                {
-                    id = tc.Id,
-                    type = "function",
-                    function = new { name = tc.Name, arguments = tc.Arguments }
-                })
-            },
-        MessageRole.Assistant => new { role = "assistant", content = m.Content },
-        MessageRole.Tool => (object)new
-        {
-            role = "tool",
-            tool_call_id = m.ToolCallId,
-            content = m.Content,
-        },
-        _ => new { role = "user", content = m.Content },
-    };
-
-    // Foundry Local's OpenAI-compatible API answers 400 to fields it does not
-    // know (top_k, min_p, repetition_penalty, chat_template_kwargs,
-    // reasoning_effort, stream_options, ...), and to tools when the model
-    // cannot call them. Send standard OpenAI fields only.
-    private static Dictionary<string, object?> BuildFoundryBody(
-        string model,
-        List<object> apiMessages,
-        JsonElement? tools,
-        LlmOptions options,
-        bool toolCalling)
-    {
-        var body = new Dictionary<string, object?>
-        {
-            ["model"] = model,
-            ["messages"] = apiMessages,
-            ["temperature"] = options.Temperature,
-            ["top_p"] = options.TopP,
-            ["max_tokens"] = options.MaxTokens,
-            ["stream"] = true,
-        };
-
-        if (toolCalling && tools.HasValue && tools.Value.ValueKind == JsonValueKind.Array &&
-            tools.Value.GetArrayLength() > 0)
-        {
-            body["tools"] = tools.Value;
-            body["tool_choice"] = "auto";
         }
 
         return body;
