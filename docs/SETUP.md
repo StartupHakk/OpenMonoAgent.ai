@@ -78,6 +78,11 @@ The GTX 1650 is ignored. CPU_FAN is never written. If CHA_FAN1 cannot be
 identified, the service logs the error and leaves every fan header alone.
 Other machines do not get this unit.
 
+On the ASUS PRIME X299-DELUXE the installer also loads the `nct6775` module
+(persisted for boot). That board's NCT6796 chip publishes pwm nodes and no
+fan labels. When labels are absent, the service uses pwm1 as CHA_FAN1 and
+does not write pwm2. Any other board with no CHA_FAN1 label is left alone.
+
 This service only affects fans whose PWM line is driven by CHA_FAN1. The two
 Misieren V100 blowers (12 V, 3.8 A each, about 7.6 A together) must keep 12 V
 and ground on a PSU adapter, not on a typical SATA-powered hub (those hubs are

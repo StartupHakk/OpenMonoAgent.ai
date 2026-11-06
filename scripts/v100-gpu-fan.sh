@@ -14,6 +14,11 @@
 # CHA_FAN1 is set to 100 percent when that channel is known. If CHA_FAN1
 # cannot be identified, nothing is written.
 #
+# NCT6796D on the ASUS PRIME X299-DELUXE does not publish fan or pwm labels.
+# On that board only, and only when those label files are absent, pwm1 is
+# CHA_FAN1. pwm2 is the CPU header and is never written. Any other board
+# with no labels is left alone.
+#
 # Usage:
 #   scripts/v100-gpu-fan.sh            # control loop (systemd)
 #   scripts/v100-gpu-fan.sh --once     # one cycle, then exit
@@ -40,11 +45,15 @@ V100_FAN_LOG_FILE="${V100_FAN_LOG_FILE:-$V100_FAN_STATE_DIR/v100-gpu-fan.log}"
 V100_FAN_SYSFS="${V100_FAN_SYSFS:-/sys/class/hwmon}"
 V100_FAN_INSTALL_BIN="${V100_FAN_INSTALL_BIN:-/usr/local/lib/openmono/v100-gpu-fan.sh}"
 V100_FAN_UNIT_PATH="${V100_FAN_UNIT_PATH:-/etc/systemd/system/openmono-v100-gpu-fan.service}"
+V100_FAN_MODULES_CONF="${V100_FAN_MODULES_CONF:-/etc/modules-load.d/openmono-nct6775.conf}"
+# Saved when CHA_FAN1 was chosen by the Prime X299-DELUXE pwm1 rule.
+V100_FAN_BOARD_SOURCE="prime-x299-deluxe-nct6796-pwm1"
 
 # Last resolved channel for this process. Re-detected every cycle.
 V100_FAN_PWM=""
 V100_FAN_ENABLE=""
 V100_FAN_LABEL_FILE=""
+V100_FAN_SOURCE=""
 
 fan_log() {
     local line
@@ -225,8 +234,69 @@ v100_fan_find_pwm() {
     printf '%s' "$uniq" | head -1
 }
 
+# Board name from DMI. Tests may set V100_FAN_BOARD_NAME, including empty.
+v100_fan_board_name() {
+    if [ -n "${V100_FAN_BOARD_NAME+set}" ]; then
+        printf '%s' "$V100_FAN_BOARD_NAME"
+        return 0
+    fi
+    local f
+    for f in /sys/class/dmi/id/board_name /sys/devices/virtual/dmi/id/board_name; do
+        if [ -r "$f" ]; then
+            tr -d '\r' < "$f"
+            return 0
+        fi
+    done
+    return 1
+}
+
+v100_fan_is_prime_x299_deluxe() {
+    local name
+    name="$(v100_fan_board_name 2>/dev/null || true)"
+    [ "$(fan_norm_label "$name")" = "prime_x299_deluxe" ]
+}
+
+# True when this hwmon directory has no fan*_label or pwm*_label files.
+v100_fan_labels_absent() {
+    local dir="$1" f
+    for f in "$dir"/fan*_label "$dir"/pwm*_label; do
+        [ -e "$f" ] && return 1
+    done
+    return 0
+}
+
+# PRIME X299-DELUXE + nct6796, labels absent: pwm1 is CHA_FAN1.
+# Prints "pwm|enable". Returns 1 for any other board, any labeled chip,
+# or more than one matching chip. Never returns pwm2.
+v100_fan_find_board_pwm() {
+    local root="${1:-$V100_FAN_SYSFS}" dir name hits="" pwm enable real
+    v100_fan_is_prime_x299_deluxe || return 1
+    [ -d "$root" ] || return 1
+    for dir in "$root"/hwmon*; do
+        [ -d "$dir" ] || continue
+        [ -f "$dir/name" ] || continue
+        name="$(tr -d '[:space:]' < "$dir/name" 2>/dev/null || true)"
+        [ "$(fan_norm_label "$name")" = "nct6796" ] || continue
+        v100_fan_labels_absent "$dir" || continue
+        pwm="$dir/pwm1"
+        enable="$dir/pwm1_enable"
+        [ -e "$pwm" ] && [ -e "$enable" ] || continue
+        case "$(basename "$pwm")" in
+            pwm1) ;;
+            *) continue ;;
+        esac
+        real="$(readlink -f "$pwm" 2>/dev/null || printf '%s' "$pwm")"
+        hits="${hits}${real}|${pwm}|${enable}"$'\n'
+    done
+    [ -n "$hits" ] || return 1
+    local uniq
+    uniq="$(printf '%s' "$hits" | awk -F'|' 'NF && !seen[$1]++ { print $2 "|" $3 }')"
+    [ "$(printf '%s\n' "$uniq" | awk 'NF{c++} END{print c+0}')" -eq 1 ] || return 1
+    printf '%s' "$uniq" | head -1
+}
+
 v100_fan_save_channel() {
-    local pwm="$1" enable="$2" label_file="$3"
+    local pwm="$1" enable="$2" label_file="${3:-}" source="${4:-}"
     [ -n "$pwm" ] || return 0
     mkdir -p "$V100_FAN_STATE_DIR" 2>/dev/null || return 0
     [ -w "$V100_FAN_STATE_DIR" ] || return 0
@@ -236,13 +306,29 @@ v100_fan_save_channel() {
         printf 'pwm=%s\n' "$pwm"
         printf 'enable=%s\n' "$enable"
         printf 'label_file=%s\n' "$label_file"
+        printf 'source=%s\n' "$source"
     } > "$tmp"
     mv -f "$tmp" "$V100_FAN_STATE_FILE" 2>/dev/null || rm -f "$tmp"
 }
 
+# Saved board fallback is still pwm1 on an unlabeled nct6796, on this board.
+v100_fan_saved_board_ok() {
+    local pwm="$1" enable="$2" dir name
+    [ "$(basename "$pwm")" = "pwm1" ] || return 1
+    [ -e "$pwm" ] && [ -e "$enable" ] || return 1
+    [ "$(basename "$enable")" = "pwm1_enable" ] || return 1
+    dir="$(dirname "$pwm")"
+    [ -f "$dir/name" ] || return 1
+    name="$(tr -d '[:space:]' < "$dir/name" 2>/dev/null || true)"
+    [ "$(fan_norm_label "$name")" = "nct6796" ] || return 1
+    v100_fan_labels_absent "$dir" || return 1
+    v100_fan_is_prime_x299_deluxe || return 1
+    return 0
+}
+
 # Load a previously identified channel only if its label still says CHA_FAN1.
 v100_fan_load_channel() {
-    local pwm="" enable="" label_file="" line key val label
+    local pwm="" enable="" label_file="" source="" line key val label
     [ -f "$V100_FAN_STATE_FILE" ] || return 1
     while IFS= read -r line || [ -n "$line" ]; do
         key="${line%%=*}"
@@ -251,35 +337,60 @@ v100_fan_load_channel() {
             pwm) pwm="$val" ;;
             enable) enable="$val" ;;
             label_file) label_file="$val" ;;
+            source) source="$val" ;;
         esac
     done < "$V100_FAN_STATE_FILE"
     [ -n "$pwm" ] && [ -e "$pwm" ] && [ -n "$enable" ] && [ -e "$enable" ] || return 1
+    if [ "$source" = "$V100_FAN_BOARD_SOURCE" ]; then
+        v100_fan_saved_board_ok "$pwm" "$enable" || return 1
+        V100_FAN_PWM="$pwm"
+        V100_FAN_ENABLE="$enable"
+        V100_FAN_LABEL_FILE=""
+        V100_FAN_SOURCE="$source"
+        return 0
+    fi
     [ -n "$label_file" ] && [ -f "$label_file" ] || return 1
     label="$(tr -d '\r' < "$label_file" 2>/dev/null || true)"
     fan_is_cha_fan1 "$label" || return 1
     V100_FAN_PWM="$pwm"
     V100_FAN_ENABLE="$enable"
     V100_FAN_LABEL_FILE="$label_file"
+    V100_FAN_SOURCE=""
     return 0
 }
 
-# Set V100_FAN_PWM / ENABLE / LABEL_FILE. Prefer a fresh detect. Fall back to
-# the saved channel only when that label still reads CHA_FAN1.
+# Set V100_FAN_PWM / ENABLE / LABEL_FILE. Prefer a fresh label detect.
+# On the Prime X299-DELUXE, an unlabeled nct6796 uses pwm1. A saved channel
+# is reused only when it still checks out. Anything else writes nothing.
 v100_fan_resolve() {
     local found pwm enable label_file
     V100_FAN_PWM=""
     V100_FAN_ENABLE=""
     V100_FAN_LABEL_FILE=""
+    V100_FAN_SOURCE=""
     if found="$(v100_fan_find_pwm "$V100_FAN_SYSFS")"; then
         IFS='|' read -r pwm enable label_file <<< "$found"
         V100_FAN_PWM="$pwm"
         V100_FAN_ENABLE="$enable"
         V100_FAN_LABEL_FILE="$label_file"
-        v100_fan_save_channel "$pwm" "$enable" "$label_file" || true
+        v100_fan_save_channel "$pwm" "$enable" "$label_file" "" || true
+        return 0
+    fi
+    if found="$(v100_fan_find_board_pwm "$V100_FAN_SYSFS")"; then
+        IFS='|' read -r pwm enable <<< "$found"
+        [ "$(basename "$pwm")" = "pwm1" ] || return 1
+        V100_FAN_PWM="$pwm"
+        V100_FAN_ENABLE="$enable"
+        V100_FAN_SOURCE="$V100_FAN_BOARD_SOURCE"
+        v100_fan_save_channel "$pwm" "$enable" "" "$V100_FAN_BOARD_SOURCE" || true
+        if [ "${_FAN_LOGGED_BOARD:-0}" -eq 0 ]; then
+            fan_log "CHA_FAN1 label absent on nct6796, using pwm1 for PRIME X299-DELUXE"
+            _FAN_LOGGED_BOARD=1
+        fi
         return 0
     fi
     if v100_fan_load_channel; then
-        fan_log "CHA_FAN1 detect failed this cycle, reusing the last label-checked channel"
+        fan_log "CHA_FAN1 detect failed this cycle, reusing the last checked channel"
         return 0
     fi
     fan_log "error: CHA_FAN1 was not identified. No pwm written."
@@ -368,7 +479,44 @@ _fan_note_reading() {
     fi
 }
 
+# The nct6775 driver is what publishes NCT6796 pwm nodes. Skip this when
+# tests point sysfs at a fake tree.
+v100_fan_load_module() {
+    [ "$V100_FAN_SYSFS" = "/sys/class/hwmon" ] || return 0
+    local dir name
+    for dir in "$V100_FAN_SYSFS"/hwmon*; do
+        [ -f "$dir/name" ] || continue
+        name="$(tr -d '[:space:]' < "$dir/name" 2>/dev/null || true)"
+        [ "$(fan_norm_label "$name")" = "nct6796" ] && return 0
+    done
+    if command -v modprobe >/dev/null 2>&1; then
+        modprobe nct6775 2>/dev/null || fan_log "warning: modprobe nct6775 failed. Motherboard pwm nodes may be missing."
+    fi
+}
+
+v100_fan_modules_conf() {
+    printf '%s\n' "# NCT6796D chassis fan control for the v100 profile." "nct6775"
+}
+
+v100_fan_unit_body() {
+    cat <<EOF
+[Unit]
+Description=OpenMono V100 chassis fan (CHA_FAN1 only)
+After=systemd-modules-load.service multi-user.target
+
+[Service]
+Type=simple
+ExecStart=${V100_FAN_INSTALL_BIN}
+Restart=always
+RestartSec=${V100_FAN_LOOP_SEC}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
 v100_fan_loop() {
+    v100_fan_load_module || true
     fan_log "starting CHA_FAN1 control loop, interval ${V100_FAN_LOOP_SEC}s, floor ${V100_FAN_MIN_PCT} percent at or below ${V100_FAN_FLOOR_C} C, full at ${V100_FAN_CEIL_C} C"
     while true; do
         v100_fan_cycle || true
@@ -391,22 +539,12 @@ v100_fan_install() {
     fi
     local src unit_body
     src="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
-    unit_body="$(cat <<EOF
-[Unit]
-Description=OpenMono V100 chassis fan (CHA_FAN1 only)
-After=multi-user.target
-
-[Service]
-Type=simple
-ExecStart=${V100_FAN_INSTALL_BIN}
-Restart=always
-RestartSec=${V100_FAN_LOOP_SEC}
-
-[Install]
-WantedBy=multi-user.target
-EOF
-)"
-    _fan_as_root mkdir -p "$(dirname "$V100_FAN_INSTALL_BIN")" "$V100_FAN_STATE_DIR"
+    unit_body="$(v100_fan_unit_body)"
+    _fan_as_root mkdir -p "$(dirname "$V100_FAN_INSTALL_BIN")" "$(dirname "$V100_FAN_MODULES_CONF")" "$V100_FAN_STATE_DIR"
+    v100_fan_modules_conf | _fan_as_root tee "$V100_FAN_MODULES_CONF" >/dev/null
+    if command -v modprobe >/dev/null 2>&1; then
+        _fan_as_root modprobe nct6775 2>/dev/null || fan_log "warning: modprobe nct6775 failed. The module file is installed and loads at next boot."
+    fi
     _fan_as_root cp "$src" "$V100_FAN_INSTALL_BIN"
     _fan_as_root chmod 0755 "$V100_FAN_INSTALL_BIN"
     printf '%s\n' "$unit_body" | _fan_as_root tee "$V100_FAN_UNIT_PATH" >/dev/null
