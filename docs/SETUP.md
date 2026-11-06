@@ -29,6 +29,35 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/StartupHakk/OpenMonoAgent.ai/refs/heads/main/get-openmono.sh)
 ```
 
+### Dual Tesla V100S workstation (`v100` branch)
+
+This branch is a separate install profile. `main` is unchanged. A fresh install
+from `v100` uses the validated serving config only when the machine has two or
+more Tesla V100S 32GB cards. The GeForce GTX 1650 is never selected for
+inference. Any other machine keeps the stock installer.
+
+On that workstation the defaults are Strata, Unsloth UD-Q3_K_XL
+(`--family unsloth --model UD-Q3_K_XL`, served as
+`qwen3.8-flash-next-unsloth-ud-q3_k_xl`), 4 parallel slots, 128k context,
+int8 KV, vision off, MTP drafting, and `--gpu` set to the V100S indices
+(0,1 when those cards are enumerated first). Bind stays `0.0.0.0` and the
+port stays 7474.
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/StartupHakk/OpenMonoAgent.ai/refs/heads/v100/get-openmono.sh) v100
+```
+
+If the repo is already cloned:
+
+```bash
+git fetch origin v100
+git checkout v100
+openmono setup
+```
+
+`--model=`, `--cpu`, `OPENMONO_INFERENCE_BACKEND`, and `--options` still override
+those defaults.
+
 The installer will ask you one question before it does anything:
 
 > [!IMPORTANT]

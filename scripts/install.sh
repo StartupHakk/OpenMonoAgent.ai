@@ -385,9 +385,70 @@ ok "Install directory: $INSTALL_DIR"
 
 next_step "Checking system requirements"
 
+# Dual Tesla V100S profile for this branch. A fresh install applies the
+# validated Strata serving config only when nvidia-smi lists two or more
+# Tesla V100S 32GB cards. The GeForce GTX 1650 (display/boot) is never an
+# inference GPU. Every other machine keeps the stock path below.
+#
+# Sets _V100_GPUS (comma-separated nvidia-smi indices, e.g. 0,1) and
+# _V100_VRAM_MB. Returns 0 when the profile matches. Tests may set
+# V100_GPU_QUERY to CSV lines "index, name, memory_mib" instead of nvidia-smi.
+v100_profile_detect() {
+    _V100_GPUS=""
+    _V100_VRAM_MB=0
+    local query="${V100_GPU_QUERY:-}"
+    if [ -z "$query" ]; then
+        command -v nvidia-smi >/dev/null 2>&1 || return 1
+        query="$(nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader,nounits 2>/dev/null || true)"
+    fi
+    [ -n "$query" ] || return 1
+    local parsed count
+    parsed="$(printf '%s\n' "$query" | awk -F',' '
+        {
+            idx=$1; name=$2; mem=$3
+            gsub(/^[ \t]+|[ \t]+$/, "", idx)
+            gsub(/^[ \t]+|[ \t]+$/, "", name)
+            gsub(/^[ \t]+|[ \t]+$/, "", mem)
+            lname=tolower(name)
+            if (lname ~ /1650/ || lname ~ /geforce/) next
+            if (lname ~ /v100s/ || lname ~ /v100-s/ || lname ~ /v100 s/) {
+                if ((mem + 0) >= 30000) print idx, (mem + 0)
+            }
+        }
+    ')"
+    [ -n "$parsed" ] || return 1
+    count="$(printf '%s\n' "$parsed" | awk 'NF{c++} END{print c+0}')"
+    [ "${count:-0}" -ge 2 ] || return 1
+    _V100_GPUS="$(printf '%s\n' "$parsed" | awk 'NF{printf "%s%s", (n?",":""), $1; n++}')"
+    _V100_VRAM_MB="$(printf '%s\n' "$parsed" | awk 'NF{print $2; exit}')"
+    [ -n "$_V100_GPUS" ] && [ "${_V100_VRAM_MB:-0}" -ge 30000 ]
+}
+
+# Write inference.ctx_size for the v100 profile so a later apply keeps 128k.
+# settings.json is the source of truth; apply_settings.sh reads it on start.
+_v100_persist_ctx() {
+    local n="$1" settings
+    [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt 0 ] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    settings="${OPENMONO_SETTINGS_FILE:-$HOME/.openmono/settings.json}"
+    mkdir -p "$(dirname "$settings")"
+    [[ -f "$settings" ]] || echo '{}' > "$settings"
+    if jq --argjson n "$n" '.inference = (.inference // {}) | .inference.ctx_size = $n' \
+        "$settings" > "${settings}.tmp" 2>/dev/null; then
+        mv "${settings}.tmp" "$settings"
+        chmod 0600 "$settings" 2>/dev/null || true
+    else
+        rm -f "${settings}.tmp"
+    fi
+}
+
 # GPU_MODE is exported by install_prereqs.sh (1 = GPU, 0 = CPU).
 _VRAM_MB=0
 _GPU_TIER=0
+_V100_PROFILE=0
+_V100_SERVING=0
+_V100_GPUS=""
+_V100_VRAM_MB=0
 MODEL_NAME=""
 MODEL_ACCURACY=""
 MODEL_ALIAS=""
@@ -403,15 +464,28 @@ CAN_STRATA=0
 if [ "$OPENMONO_ROLE" != "agent" ]; then
     if [ "${GPU_MODE:-0}" = "1" ]; then
         if command -v nvidia-smi &>/dev/null; then
-            _VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | awk 'NR==1{print $1}')
-            _VRAM_MB=${_VRAM_MB:-0}
-            if   [ "$_VRAM_MB" -ge 24000 ]; then _GPU_TIER=24; ok "GPU VRAM: $(( (_VRAM_MB + 512) / 1024 ))GB — full accuracy tier (24GB+)"
-            elif [ "$_VRAM_MB" -ge 16000 ]; then _GPU_TIER=16; warn "GPU VRAM: $(( (_VRAM_MB + 512) / 1024 ))GB — lower accuracy tier (16GB). For best results use 24GB+ VRAM."
-            elif [ "$_VRAM_MB" -ge 12000 ]; then _GPU_TIER=12; warn "GPU VRAM: $(( (_VRAM_MB + 512) / 1024 ))GB — lower accuracy tier (12GB). For best results use 24GB+ VRAM."
-            elif [ "$_VRAM_MB" -ge 8000 ]; then _GPU_TIER=8; warn "GPU VRAM: $(( (_VRAM_MB + 512) / 1024 ))GB — 8GB tier (Bonsai PTQ1_0 only, small context). For best results use 24GB+ VRAM."
+            # Stock tiering reads GPU 0 only. On a dual V100S box the GTX 1650
+            # can be enumerated first (4GB) and the installer then drops to CPU.
+            # When two Tesla V100S 32GB cards are present, tier from those cards
+            # and remember their indices for --gpu. Other hardware is unchanged.
+            if v100_profile_detect; then
+                _V100_PROFILE=1
+                _VRAM_MB="$_V100_VRAM_MB"
+                _GPU_TIER=24
+                GPU_MODE=1
+                ok "Dual Tesla V100S detected — inference GPUs ${_V100_GPUS}. The GeForce GTX 1650 is not used."
+                ok "GPU VRAM: $(( (_VRAM_MB + 512) / 1024 ))GB — full accuracy tier (24GB+)"
             else
-                warn "GPU mode selected but only $(( (_VRAM_MB + 512) / 1024 ))GB VRAM — minimum is 8GB. Falling back to CPU mode."
-                GPU_MODE=0
+                _VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | awk 'NR==1{print $1}')
+                _VRAM_MB=${_VRAM_MB:-0}
+                if   [ "$_VRAM_MB" -ge 24000 ]; then _GPU_TIER=24; ok "GPU VRAM: $(( (_VRAM_MB + 512) / 1024 ))GB — full accuracy tier (24GB+)"
+                elif [ "$_VRAM_MB" -ge 16000 ]; then _GPU_TIER=16; warn "GPU VRAM: $(( (_VRAM_MB + 512) / 1024 ))GB — lower accuracy tier (16GB). For best results use 24GB+ VRAM."
+                elif [ "$_VRAM_MB" -ge 12000 ]; then _GPU_TIER=12; warn "GPU VRAM: $(( (_VRAM_MB + 512) / 1024 ))GB — lower accuracy tier (12GB). For best results use 24GB+ VRAM."
+                elif [ "$_VRAM_MB" -ge 8000 ]; then _GPU_TIER=8; warn "GPU VRAM: $(( (_VRAM_MB + 512) / 1024 ))GB — 8GB tier (Bonsai PTQ1_0 only, small context). For best results use 24GB+ VRAM."
+                else
+                    warn "GPU mode selected but only $(( (_VRAM_MB + 512) / 1024 ))GB VRAM — minimum is 8GB. Falling back to CPU mode."
+                    GPU_MODE=0
+                fi
             fi
         else
             warn "GPU mode selected but nvidia-smi not found. Falling back to CPU mode."
@@ -462,6 +536,39 @@ if [ "$OPENMONO_ROLE" != "agent" ]; then
             CAN_STRATA=0
             info "RAM: ${_MEM_GB}GB — Strata (Qwen3.8-Flash-Next, ~70GB weights) not offered; it needs a 48GB-class box."
         fi
+    fi
+    # v100 branch: on this workstation, and only this workstation, the default
+    # install is the validated Strata config. Explicit --model / --cpu /
+    # OPENMONO_INFERENCE_BACKEND and --options still win. Other hardware falls
+    # through to mc_auto_pick unchanged.
+    if [ "$_V100_PROFILE" = "1" ] \
+        && [ "${OPENMONO_SETUP_OPTIONS:-0}" != "1" ] \
+        && { [ "${OPENMONO_MODEL:-auto}" = "auto" ] || [ "${OPENMONO_MODEL}" = "flash-next" ]; } \
+        && { [ -z "${OPENMONO_INFERENCE_BACKEND:-}" ] || [ "${OPENMONO_INFERENCE_BACKEND}" = "strata" ]; }; then
+        _V100_SERVING=1
+        CAN_STRATA=1
+        if [ "${OPENMONO_MODEL:-auto}" = "auto" ]; then
+            OPENMONO_MODEL=flash-next
+        fi
+        export OPENMONO_MODEL
+        # Honor a flag or env the user already set; fill only what they left empty.
+        if [ -n "${OPENMONO_VISION:-}" ] && [ -z "${STRATA_VISION:-}" ]; then
+            case "$OPENMONO_VISION" in
+                no|off|false|0) STRATA_VISION=no ;;
+                yes|on|true|1)  STRATA_VISION=yes ;;
+                cpu)            STRATA_VISION=cpu ;;
+            esac
+        fi
+        : "${STRATA_FAMILY:=unsloth}"
+        : "${STRATA_MODEL:=UD-Q3_K_XL}"
+        : "${STRATA_CONTEXT:=131072}"
+        : "${STRATA_VISION:=no}"
+        : "${STRATA_KV:=int8}"
+        : "${STRATA_MTP:=on}"
+        : "${OPENMONO_PARALLEL_SLOTS:=4}"
+        export STRATA_FAMILY STRATA_MODEL STRATA_CONTEXT STRATA_VISION STRATA_KV STRATA_MTP OPENMONO_PARALLEL_SLOTS
+        info "v100 profile: Strata family=${STRATA_FAMILY} model=${STRATA_MODEL} (qwen3.8-flash-next-unsloth-ud-q3_k_xl), slots=${OPENMONO_PARALLEL_SLOTS}, context=${STRATA_CONTEXT} (128k), kv=${STRATA_KV}, vision=${STRATA_VISION}, drafting=MTP, gpus=${_V100_GPUS}"
+        info "Pass --options to choose the model, vision and parallel slots yourself"
     fi
     # Unified picker: only offers what this box can run. Sets INFERENCE_BACKEND.
     # Without --options, hardware decides the model: export the policy pick so the
@@ -519,6 +626,13 @@ if [ "$OPENMONO_ROLE" != "agent" ]; then
         info "Parallel slots: $OM_PARALLEL_SLOTS (pass --options to change)"
     fi
     PARALLEL_SLOTS="$OM_PARALLEL_SLOTS"
+    # Stock non-interactive installs leave settings.json empty and let the
+    # first start copy docker/.env. The v100 profile writes the validated
+    # slots and 128k context now so a later start cannot fall back to 1 slot.
+    if [ "$_V100_SERVING" = "1" ]; then
+        om_persist_parallel_slots "$PARALLEL_SLOTS"
+        _v100_persist_ctx "$STRATA_CONTEXT"
+    fi
     # Warn about what this many slots costs on the backend actually selected.
     # Warn-only by design: Strata silently reduces an over-large count itself and
     # llama.cpp just needs the user to know KV memory scales with the count.
@@ -630,11 +744,25 @@ if [ "$INFERENCE_BACKEND" = "strata" ] && [ "$OPENMONO_ROLE" != "agent" ]; then
     # them; a non-TTY always gets --yes.
     if [[ ! -t 0 || "${OPENMONO_SETUP_OPTIONS:-0}" != "1" ]]; then
         _strata_flags+=(--yes)
-        if [[ ! -t 0 ]]; then
+        if [ "${_V100_SERVING:-0}" = "1" ]; then
+            info "v100 profile — passing --yes with the validated Strata flags (family, quant, context, KV, vision, MTP, GPUs)."
+        elif [[ ! -t 0 ]]; then
             info "Non-interactive shell — passing --yes (recommended size for this box)."
         else
             info "Default setup — passing --yes (Strata picks the recommended model and context for this box). Pass --options to choose."
         fi
+    fi
+    # strata.sh already maps STRATA_FAMILY / STRATA_MODEL / STRATA_CONTEXT /
+    # STRATA_VISION / INFERENCE_PARALLEL onto setup.sh. KV, MTP and the GPU
+    # list are not env-mapped there; they are forwarded as extra arguments.
+    # --gpu 0,1 is what Strata accepts for two cards (it treats a comma list
+    # as --gpus). Indices come from the V100S name match, which is 0,1 when
+    # those cards are enumerated first and something else when the 1650 is.
+    if [ "${_V100_SERVING:-0}" = "1" ]; then
+        _strata_flags+=(--kv "${STRATA_KV:-int8}" --mtp "${STRATA_MTP:-on}" --gpu "$_V100_GPUS")
+    elif [ "${_V100_PROFILE:-0}" = "1" ]; then
+        _strata_flags+=(--gpu "$_V100_GPUS")
+        info "v100 profile — inference GPUs ${_V100_GPUS} (GTX 1650 excluded)"
     fi
     if ! STRATA_YES="$([[ ! -t 0 || "${OPENMONO_SETUP_OPTIONS:-0}" != "1" ]] && echo 1 || echo 0)" bash "$SCRIPT_DIR/strata.sh" install "${_strata_flags[@]}"; then
         die "Strata install failed — retry: bash scripts/strata.sh install (see docs/STRATA.md). Strata's own output: ~/.openmono/strata-setup.log"
