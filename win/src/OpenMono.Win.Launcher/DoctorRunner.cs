@@ -212,6 +212,19 @@ public sealed class DoctorRunner
                     : "No llama.cpp build installed yet.",
                 "Run: .\\win\\openmono.ps1 setup (downloads the official llama.cpp Windows build)"));
 
+        if (usable is { Accel: not Accel.Cpu })
+        {
+            var listed = _deps.Server.ListDevices(usable.ServerPath, usable.Directory);
+            var device = LlamaDevices.FirstFor(usable.Accel, listed);
+            checks.Add(listed is null
+                ? new DoctorCheck("llama.cpp device", CheckLevel.Info, $"Could not list the devices of llama.cpp {usable.Id}.")
+                : device is not null
+                    ? new DoctorCheck("llama.cpp device", CheckLevel.Ok, $"llama.cpp {usable.Id} sees {device}.")
+                    : new DoctorCheck("llama.cpp device", CheckLevel.Warn,
+                        $"llama.cpp {usable.Id} sees no {LlamaDevices.Prefix(usable.Accel)} device; start falls back to the next backend.",
+                        "Update the GPU driver, then run: .\\win\\openmono.ps1 setup"));
+        }
+
         var settings = HostSettings.Load(HostSettings.PathFor(_deps.HomeDir));
         var rung = (settings.LlmModel is { } kept ? ladder.Find(kept) : null) ?? plan.RungFor(plan.Accels[0]);
         var modelsDir = ModelStore.ModelsDirFor(catalog, _deps.GetEnv);

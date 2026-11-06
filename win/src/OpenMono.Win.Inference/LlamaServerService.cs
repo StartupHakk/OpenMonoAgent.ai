@@ -19,6 +19,10 @@ public sealed record ServeResult(
 //     since llama-server serves exactly the model it was started with.
 public sealed class LlamaServerService
 {
+    // One check a second: ten minutes covers a 16.5 GB GGUF read from a slow
+    // disk. A server that exits ends the wait at once.
+    public const int DefaultHealthAttempts = 600;
+
     private readonly IServerProcessHost _host;
     private readonly ServerHealthChecker _health;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
@@ -28,7 +32,7 @@ public sealed class LlamaServerService
         IServerProcessHost host,
         ServerHealthChecker health,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
-        int healthAttempts = 180)
+        int healthAttempts = DefaultHealthAttempts)
     {
         _host = host;
         _health = health;
@@ -92,11 +96,7 @@ public sealed class LlamaServerService
 
         if (health.Reachable)
         {
-            var what = health.Models.Count > 0 ? string.Join(", ", health.Models) : "an unknown model";
-            return new ServeResult(false, null, false, log,
-                $"Port {config.Port} is taken by a server OpenMono did not start (serving {what}, not {config.Alias}). "
-                + "llama-server serves only the model it was started with, so OpenMono will not reuse it. "
-                + "Stop that server, then run .\\win\\openmono.ps1 start again.");
+            return new ServeResult(false, null, false, log, PortTaken(config.Port, health, config.Alias));
         }
 
         Directory.CreateDirectory(Path.GetDirectoryName(config.LogFile)!);
@@ -119,6 +119,8 @@ public sealed class LlamaServerService
             return new ServeResult(true, started, true, log, null);
         }
 
+        // Only a build that exits falls back to the next backend; one that is
+        // still loading would load the same model again, slower.
         var crashed = !_host.IsRunning(started);
         if (!crashed)
         {
@@ -128,8 +130,16 @@ public sealed class LlamaServerService
         return new ServeResult(false, null, false, log,
             crashed
                 ? $"llama-server {build.Id} exited while loading {config.Alias}. Last log lines:{Environment.NewLine}{Tail(config.LogFile)}"
-                : $"llama-server {build.Id} did not become healthy on {endpoint} in time ({ready.Error}). See {config.LogFile}.",
-            Crashed: true);
+                : $"llama-server {build.Id} did not become healthy on {endpoint} in time ({ready.Error ?? "still loading"}); it was stopped. See {config.LogFile}.",
+            Crashed: crashed);
+    }
+
+    public static string PortTaken(int port, ServerHealth health, string alias)
+    {
+        var what = health.Models.Count > 0 ? string.Join(", ", health.Models) : "an unknown model";
+        return $"Port {port} is taken by a server OpenMono did not start (serving {what}, not {alias}). "
+            + "llama-server serves only the model it was started with, so OpenMono will not reuse it. "
+            + "Stop that server, then run .\\win\\openmono.ps1 start again.";
     }
 
     public static string Tail(string logFile, int lines = 20)

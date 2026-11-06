@@ -15,6 +15,10 @@ public interface IServerProcessHost
     // llama-server processes whose executable lives under the directory: the
     // ones OpenMono installed, even when the state file is gone.
     IReadOnlyList<int> FindUnder(string directory);
+
+    // Output of `llama-server --list-devices`, or null when it could not run
+    // to the end.
+    string? ListDevices(string executable, string workingDirectory);
 }
 
 // llama-server must outlive `openmono-win inference up`, and openmono.ps1
@@ -91,6 +95,41 @@ public sealed class ServerProcessHost : IServerProcessHost
         }
 
         return pids;
+    }
+
+    public string? ListDevices(string executable, string workingDirectory)
+    {
+        var startInfo = new ProcessStartInfo(executable, LlamaDevices.Arguments)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+
+        try
+        {
+            using var process = Process.Start(startInfo);
+            if (process is null)
+            {
+                return null;
+            }
+
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(60_000))
+            {
+                process.Kill(entireProcessTree: true);
+                return null;
+            }
+
+            return stdout.Result + Environment.NewLine + stderr.Result;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return null;
+        }
     }
 
     public void Stop(int pid)

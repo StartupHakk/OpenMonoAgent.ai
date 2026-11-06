@@ -121,21 +121,47 @@ public sealed class FakeServerHost : IServerProcessHost
 
     public Func<string, bool> Crashes { get; set; } = _ => false;
 
+    // Launches of these builds keep running but never finish loading (/health 503).
+    public Func<string, bool> HangsLoading { get; set; } = _ => false;
+
+    // What a crashing build writes to --log-file before it exits.
+    public string CrashLog { get; set; } = "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected";
+
     public string? OwnRoot { get; set; }
 
     public int Start(string executable, IReadOnlyList<string> arguments, string workingDirectory)
     {
         var pid = _nextPid++;
         Launches.Add(new Launch(pid, executable, arguments));
+        var launch = Launches[^1];
         if (Crashes(executable))
         {
+            if (launch.Value("--log-file") is { } logFile)
+            {
+                File.AppendAllText(logFile, "main: loading model" + Environment.NewLine + CrashLog + Environment.NewLine);
+            }
+
             return pid;
         }
 
         _running.Add(pid);
-        var launch = Launches[^1];
+        if (HangsLoading(executable))
+        {
+            _server.Load(launch.Value("--alias"), pid);
+            return pid;
+        }
+
         _server.Serve(launch.Value("--alias")!, pid);
         return pid;
+    }
+
+    // The process died without the launcher (killed in Task Manager, a reboot).
+    public void Die(int pid)
+    {
+        if (_running.Remove(pid) && _server.Pid == pid)
+        {
+            _server.Down();
+        }
     }
 
     public bool IsRunning(int pid) => _running.Contains(pid);
@@ -152,21 +178,71 @@ public sealed class FakeServerHost : IServerProcessHost
     public IReadOnlyList<int> FindUnder(string directory) =>
         _running.Where(pid => Launches.Any(l => l.Pid == pid
             && l.Executable.StartsWith(directory, StringComparison.OrdinalIgnoreCase))).ToList();
+
+    public List<string> DeviceQueries { get; } = [];
+
+    // `--list-devices` output per executable; null means it could not run.
+    public Func<string, string?> Devices { get; set; } = DefaultDevices;
+
+    public static string DefaultDevices(string executable) =>
+        "Available devices:" + Environment.NewLine + (
+            executable.Contains("-cuda-", StringComparison.Ordinal) ? "  CUDA0: NVIDIA GeForce RTX 4090 (24563 MiB, 23012 MiB free)"
+            : executable.Contains("-vulkan", StringComparison.Ordinal) ? "  Vulkan0: NVIDIA GeForce RTX 4090 (24563 MiB, 23012 MiB free)"
+            : "  (none)") + Environment.NewLine;
+
+    public string? ListDevices(string executable, string workingDirectory)
+    {
+        DeviceQueries.Add(executable);
+        return Devices(executable);
+    }
 }
 
 // The HTTP side of a llama-server on 127.0.0.1:<port>: refused while down,
 // /health 200 and /v1/models listing the alias while up.
 public sealed class FakeLlamaServer
 {
+    private const string LoadingBody = """{"error":{"code":503,"message":"Loading model","type":"unavailable_error"}}""";
+
     public FakeLlamaServer(FakeHttpHandler http, int port = 7474)
     {
         var host = $"127.0.0.1:{port}";
-        http.Route(host + "/health", () => Alias is null
-            ? throw new HttpRequestException("No connection could be made because the target machine actively refused it.")
-            : FakeHttpHandler.Json("""{"status":"ok"}"""));
-        http.Route(host + "/v1/models", () => Alias is null
-            ? throw new HttpRequestException("refused")
-            : FakeHttpHandler.Json(System.Text.Json.JsonSerializer.Serialize(new { data = new[] { new { id = Alias } } })));
+        http.Route(host + "/health", () =>
+        {
+            HealthChecks++;
+            if (Loading && LoadingChecksLeft-- == 0)
+            {
+                Loading = false;
+                Alias = PendingAlias;
+            }
+
+            return Loading
+                ? FakeHttpHandler.Json(LoadingBody, System.Net.HttpStatusCode.ServiceUnavailable)
+                : Alias is null
+                    ? throw new HttpRequestException("No connection could be made because the target machine actively refused it.")
+                    : FakeHttpHandler.Json("""{"status":"ok"}""");
+        });
+        http.Route(host + "/v1/models", () => Loading
+            ? FakeHttpHandler.Json(LoadingBody, System.Net.HttpStatusCode.ServiceUnavailable)
+            : Alias is null
+                ? throw new HttpRequestException("refused")
+                : FakeHttpHandler.Json(System.Text.Json.JsonSerializer.Serialize(new { data = new[] { new { id = Alias } } })));
+    }
+
+    public bool Loading { get; private set; }
+
+    public int HealthChecks { get; private set; }
+
+    // -1: loads forever; otherwise /health answers 503 this many more times.
+    public int LoadingChecksLeft { get; set; } = -1;
+
+    public string? PendingAlias { get; private set; }
+
+    public void Load(string? alias, int? pid = null)
+    {
+        Loading = true;
+        Alias = null;
+        PendingAlias = alias;
+        Pid = pid;
     }
 
     public string? Alias { get; private set; }
@@ -183,5 +259,6 @@ public sealed class FakeLlamaServer
     {
         Alias = null;
         Pid = null;
+        Loading = false;
     }
 }

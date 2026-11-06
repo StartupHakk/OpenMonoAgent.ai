@@ -11,7 +11,7 @@ public sealed record LauncherDeps(
     Func<string, string?> GetEnv,
     IServerProcessHost Server,
     Func<TimeSpan, CancellationToken, Task>? Delay = null,
-    int HealthAttempts = 180,
+    int HealthAttempts = LlamaServerService.DefaultHealthAttempts,
     TextWriter? Progress = null,
     HttpClient? DownloadHttp = null);
 
@@ -112,20 +112,36 @@ public sealed class InferenceOrchestrator
                 : $"llm.model={kept} is set in settings.json but is not a Windows ladder model; llama-server serves the ladder model and the agent keeps llm.model.");
         }
 
+        // Someone else's llama-server with another model on the port is
+        // refused before anything is downloaded (the 24 GB GGUF is 16.5 GB).
+        var previous = _store.Load();
+        var expected = forced ?? plan.RungFor(plan.Accels[0]);
+        var occupant = await new ServerHealthChecker(_deps.Http).CheckAsync($"http://127.0.0.1:{options.Port}", ct);
+        var ownRunning = _deps.Server.FindUnder(InstallRoot).Count > 0
+            || (previous is { StartedByUs: true, ServerPid: { } ownPid } && _deps.Server.IsRunning(ownPid));
+        if (occupant.Ready && occupant.Models.Count > 0 && !ownRunning && !occupant.ListsModel(expected.Alias))
+        {
+            return Fail(log, LlamaServerService.PortTaken(options.Port, occupant, expected.Alias));
+        }
+
         var modelsDir = ModelStore.ModelsDirFor(catalog, _deps.GetEnv);
         var downloadHttp = _deps.DownloadHttp ?? _deps.Http;
         var store = new ModelStore(downloadHttp, modelsDir, _deps.GetEnv, _deps.Progress);
         var installer = new LlamaCppInstaller(downloadHttp, _deps.HomeDir, _deps.GetEnv, _deps.Progress);
         var service = new LlamaServerService(
             _deps.Server, new ServerHealthChecker(_deps.Http), _deps.Delay, _deps.HealthAttempts);
-        var previous = _store.Load();
         var withMmproj = settings.VisionEnabled != false;
         var logFile = Path.Combine(_deps.HomeDir, ".openmono", "win", "llama-server.log");
 
         string? lastError = null;
         foreach (var accel in plan.Accels)
         {
-            var rung = forced ?? plan.RungFor(accel);
+            // The 4 GB and CPU rungs share a GGUF; on the CPU build it gets the CPU rung's settings.
+            var rung = forced is null
+                ? plan.RungFor(accel)
+                : accel == Accel.Cpu && string.Equals(ladder.Cpu.Alias, forced.Alias, StringComparison.OrdinalIgnoreCase)
+                    ? ladder.Cpu
+                    : forced;
             log.Add($"{LlamaCppRelease.Describe(accel)}: {rung.Label}.");
 
             var install = await installer.EnsureAsync(accel, plan.DriverCuda, options.Update, ct);
@@ -135,6 +151,36 @@ public sealed class InferenceOrchestrator
                 lastError = install.Error;
                 log.Add($"llama.cpp {LlamaCppRelease.Describe(accel)} build unavailable: {install.Error}");
                 continue;
+            }
+
+            if (install.Error is not null)
+            {
+                log.Add($"WARNING: {install.Error} Keeping llama.cpp {install.Build.Id}.");
+            }
+
+            if (accel != Accel.Cpu)
+            {
+                var listed = _deps.Server.ListDevices(install.Build.ServerPath, install.Build.Directory);
+                var device = LlamaDevices.FirstFor(accel, listed);
+                if (listed is null)
+                {
+                    log.Add($"Could not list the devices of llama.cpp {install.Build.Id}; starting it anyway.");
+                }
+                else if (device is not null)
+                {
+                    log.Add($"llama.cpp {install.Build.Id} sees {device}.");
+                }
+                else
+                {
+                    lastError = NoDevice(accel, install.Build.Id);
+                    if (accel != plan.Accels[^1])
+                    {
+                        log.Add($"WARNING: {lastError} Falling back to the next backend.");
+                        continue;
+                    }
+
+                    log.Add($"WARNING: {lastError}");
+                }
             }
 
             var files = await store.EnsureAsync(rung, withMmproj, ct);
@@ -277,6 +323,12 @@ public sealed class InferenceOrchestrator
     }
 
     private static UpResult Fail(List<string> log, string error) => new(false, null, log, error);
+
+    private static string NoDevice(Accel accel, string buildId) => accel == Accel.Cuda
+        ? $"llama.cpp {buildId} sees no CUDA device, so it would run on the CPU: ggml-cuda.dll did not load. "
+            + "Check the NVIDIA driver and that cudart64_*.dll and cublas64_*.dll sit next to llama-server.exe (run setup to reinstall)."
+        : $"llama.cpp {buildId} sees no Vulkan device, so it would run on the CPU: ggml-vulkan.dll did not load. "
+            + "Update the GPU driver.";
 
     private static string Now() => DateTime.UtcNow.ToString("o", System.Globalization.CultureInfo.InvariantCulture);
 }

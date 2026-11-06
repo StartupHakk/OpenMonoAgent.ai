@@ -33,7 +33,7 @@ public sealed class LlamaRig : IDisposable
 
     public const string Cpu = "Qwen3.5-2B-UD-Q4_K_XL";
 
-    public LlamaRig(long vramGiB = 24, bool noGpu = false, string driverCuda = "12.8")
+    public LlamaRig(long vramGiB = 24, bool noGpu = false, string driverCuda = "12.8", int port = LlamaCppConstants.DefaultPort)
     {
         Home = Path.Combine(Path.GetTempPath(), "omw-" + Guid.NewGuid().ToString("N"));
         Repo = Path.Combine(Home, "repo");
@@ -49,7 +49,7 @@ public sealed class LlamaRig : IDisposable
         Runner.Respond("nvidia-smi", "", 0,
             $"| NVIDIA-SMI 572.16    Driver Version: 572.16    CUDA Version: {driverCuda}     |\n");
 
-        Llama = new FakeLlamaServer(Http);
+        Llama = new FakeLlamaServer(Http, port);
         Host = new FakeServerHost(Llama);
         Http.RespondJson("api.test/releases", () => ReleasesJson(Tag));
         foreach (var asset in AssetNames(Tag))
@@ -801,6 +801,31 @@ public sealed class DoctorRunnerTests
         var checks = await new DoctorRunner(rig.Deps()).RunAsync(Input());
 
         checks.Should().Contain(c => c.Name == "container route" && c.Level == CheckLevel.Fail);
+    }
+
+    [Fact]
+    public async Task DoctorNamesTheCudaDeviceOfTheInstalledBuild()
+    {
+        using var rig = new LlamaRig();
+        await rig.Orchestrator().UpAsync(new UpOptions());
+
+        var checks = await new DoctorRunner(rig.Deps()).RunAsync(Input());
+
+        checks.Should().Contain(c => c.Name == "llama.cpp device" && c.Level == CheckLevel.Ok
+            && c.Detail.Contains("sees CUDA0: NVIDIA GeForce RTX 4090"));
+    }
+
+    [Fact]
+    public async Task DoctorWarnsWhenTheCudaBuildSeesNoCudaDevice()
+    {
+        using var rig = new LlamaRig();
+        await rig.Orchestrator().UpAsync(new UpOptions());
+        rig.Host.Devices = _ => "Available devices:\n  (none)\n";
+
+        var checks = await new DoctorRunner(rig.Deps()).RunAsync(Input());
+
+        checks.Should().Contain(c => c.Name == "llama.cpp device" && c.Level == CheckLevel.Warn
+            && c.Detail.Contains("sees no CUDA device") && c.Fix!.Contains("driver"));
     }
 
     [Fact]
