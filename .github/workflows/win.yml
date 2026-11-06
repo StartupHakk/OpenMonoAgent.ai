@@ -67,6 +67,45 @@ jobs:
           dotnet build win/src/OpenMono.Win.Launcher -c Release
           dotnet win/src/OpenMono.Win.Launcher/bin/Release/net10.0/openmono-win.dll models check
 
+  # The real thing on a GPU-less Windows runner: openmono.ps1 installs the
+  # newest llama.cpp CPU build, downloads the CPU rung GGUF and projector
+  # (cached between runs), starts llama-server.exe, and win/tests/live
+  # checks a chat, the agent's read_file tool round trip, an image, reuse
+  # across PowerShell 7 and 5.1, and stop. Non-blocking: it depends on
+  # GitHub and Hugging Face downloads and a shared CPU.
+  llama-live:
+    runs-on: windows-latest
+    continue-on-error: true
+    timeout-minutes: 45
+    env:
+      OPENMONO_MODELS_DIR: ${{ github.workspace }}\.live-models
+      OPENMONO_LLAMA_CPP_DIR: ${{ runner.temp }}\llama.cpp
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: win
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/cache@v4
+        with:
+          path: .live-models
+          key: win-live-models-${{ hashFiles('scripts/models.json') }}
+      - name: Live llama.cpp check (PowerShell 7)
+        shell: pwsh
+        run: ./win/tests/live/llama-live.ps1
+      - name: Live llama.cpp check (Windows PowerShell 5.1)
+        shell: pwsh
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File win/tests/live/llama-live.ps1
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: llama-server log
+        if: always()
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:USERPROFILE '.openmono\win\llama-server.log'
+          if (Test-Path $log) { Get-Content $log -Tail 80 }
+
   powershell:
     runs-on: windows-latest
     steps:

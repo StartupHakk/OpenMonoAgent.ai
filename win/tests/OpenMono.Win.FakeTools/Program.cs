@@ -247,10 +247,41 @@ static async Task LlamaServer(string[] args)
     var port = int.Parse(Arg("--port") ?? "7474", System.Globalization.CultureInfo.InvariantCulture);
     var alias = Arg("--alias") ?? "model";
     var vision = Arg("--mmproj") is not null;
-    Log("llama-server build " + Path.GetFileName(AppContext.BaseDirectory.TrimEnd('\\', '/')));
+    var build = Path.GetFileName(AppContext.BaseDirectory.TrimEnd('\\', '/'));
+
+    // FAKE_LLAMA_NO_DEVICE=<text>: builds whose folder name contains it list
+    // no GPU, as a CUDA build whose ggml-cuda.dll cannot load does.
+    if (args.Contains("--list-devices"))
+    {
+        Log("llama-server list-devices " + build);
+        var blind = Environment.GetEnvironmentVariable("FAKE_LLAMA_NO_DEVICE") is { Length: > 0 } nd
+            && build.Contains(nd, StringComparison.OrdinalIgnoreCase);
+        Console.WriteLine("Available devices:");
+        Console.WriteLine(blind ? "  (none)"
+            : build.Contains("-cuda-", StringComparison.OrdinalIgnoreCase) ? "  CUDA0: Fake RTX 4090 (24563 MiB, 23012 MiB free)"
+            : build.Contains("-vulkan", StringComparison.OrdinalIgnoreCase) ? "  Vulkan0: Fake RTX 4090 (24563 MiB, 23012 MiB free)"
+            : "  (none)");
+        return;
+    }
+
+    Log("llama-server build " + build);
+
+    // FAKE_LLAMA_CRASH=<text>: builds whose folder name contains it exit while
+    // loading, as a CUDA build does on a driver it cannot use.
+    if (Environment.GetEnvironmentVariable("FAKE_LLAMA_CRASH") is { Length: > 0 } crash
+        && build.Contains(crash, StringComparison.OrdinalIgnoreCase))
+    {
+        if (Arg("--log-file") is { } crashLog)
+        {
+            File.AppendAllText(crashLog, $"ggml_cuda_init: failed to initialize CUDA: forward compatibility was attempted on non supported HW ({build}){Environment.NewLine}");
+        }
+
+        Environment.Exit(1);
+    }
+
     if (Arg("--log-file") is { } logFile)
     {
-        File.AppendAllText(logFile, $"main: server is listening on http://127.0.0.1:{port} - model {alias}, build {Path.GetFileName(AppContext.BaseDirectory.TrimEnd('\\', '/'))}{Environment.NewLine}");
+        File.AppendAllText(logFile, $"main: server is listening on http://127.0.0.1:{port} - model {alias}, build {build}{Environment.NewLine}");
     }
 
     var listener = new TcpListener(IPAddress.Loopback, port);
@@ -294,6 +325,12 @@ static async Task Respond(NetworkStream stream)
     if (request.StartsWith("GET /models/", StringComparison.Ordinal))
     {
         Log("download " + request.Split(' ')[1]);
+        if (Control("models") is { } status)
+        {
+            await Send(stream, int.Parse(status, System.Globalization.CultureInfo.InvariantCulture), "text/html", Encoding.UTF8.GetBytes("<html>error</html>"));
+            return;
+        }
+
         var mmproj = request.StartsWith("GET /models/mmproj", StringComparison.Ordinal);
         await SendZeros(stream, (mmproj ? 16L : 64L) * 1024 * 1024 + 1);
         return;
@@ -437,6 +474,24 @@ static async Task<string> ReadRequestAsync(NetworkStream stream)
     }
 
     return text.ToString();
+}
+
+// The download server outlives the scenarios, so per-scenario behavior comes
+// from FAKE_SERVER_CONTROL, a file of key=value lines read on every request
+// (models=404 fails every GGUF download).
+static string? Control(string key)
+{
+    var path = Environment.GetEnvironmentVariable("FAKE_SERVER_CONTROL");
+    if (string.IsNullOrEmpty(path) || !File.Exists(path))
+    {
+        return null;
+    }
+
+    return File.ReadAllLines(path)
+        .Select(l => l.Split('=', 2))
+        .Where(p => p.Length == 2 && p[0].Trim() == key)
+        .Select(p => p[1].Trim())
+        .FirstOrDefault();
 }
 
 static void Log(string line)

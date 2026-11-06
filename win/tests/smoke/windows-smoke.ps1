@@ -38,6 +38,24 @@
     foreign-server  `start` while another llama-server, serving a model of
                     its own, holds 127.0.0.1:7474: start fails and says so,
                     and no second server is started.
+    foreign-adopt   `start` while another llama-server already serves this
+                    machine's model: it is adopted, and neither `stop` nor
+                    `stop --force` ends it.
+    cuda-crash      `start` when the CUDA build exits while loading: the
+                    Vulkan build is installed and serves the same model, and
+                    the output says why.
+    cuda-no-device  `start` when the CUDA build lists no CUDA device (its
+                    ggml-cuda.dll did not load): it is never started and
+                    Vulkan serves the model.
+    no-nvidia-smi   `start` with no nvidia-smi.exe on PATH: no NVIDIA GPU is
+                    assumed and the CPU build serves the 2B.
+    bad-download    `start` with an empty models folder while every GGUF
+                    download returns 404: start fails with the URL and the
+                    status, no llama-server starts, no model file is left.
+    restart         `start` twice with LLAMA_THREADS changed in between: the
+                    first llama-server is replaced, never doubled.
+    commands        `models`, `models --json`, `status`, `doctor`, `diag`,
+                    `help`, and an unknown command.
     agent-crlf      `agent` when the agent image was built from CRLF files
                     (its entrypoint has \r): the image is rebuilt with LF
                     before the container starts.
@@ -131,6 +149,35 @@ function Stop-FakeLlama {
 # The download server keeps the FAKE_LOG it started with; its lines are
 # added to each scenario's calls.
 $serverLog = Join-Path $work 'server.log'
+$serverControl = Join-Path $work 'server-control.txt'
+
+# A wrapper body that runs one openmono.ps1 command expected to fail, prints
+# its stdout and stderr (the reason goes to stderr), and exits 0 only if the
+# command failed.
+function New-ExpectFailBody([string]$Command, [string]$Name, [string]$Before = '') {
+  $out = Join-Path $work "$Name.out"
+  $err = Join-Path $work "$Name.err"
+  return @"
+$Before
+`$p = Start-Process -FilePath '$exe' -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File "$launcher" $Command' -RedirectStandardOutput '$out' -RedirectStandardError '$err' -NoNewWindow -Wait -PassThru
+Get-Content '$out', '$err'
+if (`$p.ExitCode -eq 0) { Write-Host '$Command succeeded but should have failed'; exit 30 }
+exit 0
+"@
+}
+
+# A copy of $Base with $Extra's keys set (PowerShell's + throws on a shared key).
+function Merge-Env([hashtable]$Base, [hashtable]$Extra) {
+  $merged = @{}
+  foreach ($k in $Base.Keys) { $merged[$k] = $Base[$k] }
+  foreach ($k in $Extra.Keys) { $merged[$k] = $Extra[$k] }
+  return $merged
+}
+
+function Get-OwnLlama {
+  return @(Get-Process -Name 'llama-server' -ErrorAction SilentlyContinue |
+      Where-Object { $_.Path -and $_.Path.StartsWith($env:OPENMONO_LLAMA_CPP_DIR, [StringComparison]::OrdinalIgnoreCase) })
+}
 
 function Invoke-Scenario([string]$Name, [string]$Body, [hashtable]$Environment) {
   Stop-FakeLlama
@@ -179,6 +226,7 @@ function Assert-NotCalled([string]$Name, [object[]]$Calls, [string]$Pattern) {
 }
 
 $env:FAKE_LOG = $serverLog
+$env:FAKE_SERVER_CONTROL = $serverControl
 $server = Start-Process -FilePath (Join-Path $toolsBin 'FakeTool.exe') -ArgumentList 'server', '7480' -PassThru -WindowStyle Hidden
 try {
   $up = $false
@@ -338,6 +386,146 @@ exit 0
     if (-not $out.Contains($want)) { $failures.Add("[foreign-server] output missing [$want]") }
   }
 
+  $gpuEnv = @{
+    PATH = "$dockerBin;$toolsBin;$cleanPath"
+    OPENMONO_DOCKER_DESKTOP_DIR = $desktopDir
+    FAKE_DOCKER_ENGINE = $null
+    FAKE_WSL_STATE = $null
+    FAKE_NO_GPU = $null
+  }
+
+  # Someone else's llama-server already serves this machine's model: adopted,
+  # and stop (even --force) leaves it alone.
+  $adoptBody = @"
+`$foreign = Start-Process -FilePath '$foreignExe' -ArgumentList '--port 7474 --alias Qwen3.8-27B-UD-Q4_K_M' -PassThru -WindowStyle Hidden
+for (`$i = 0; `$i -lt 50; `$i++) {
+  try { Invoke-RestMethod -Uri 'http://127.0.0.1:7474/health' -TimeoutSec 2 | Out-Null; break } catch { Start-Sleep -Milliseconds 200 }
+}
+try {
+  & '$launcher' start
+  if (`$LASTEXITCODE -ne 0) { exit 10 }
+  & '$launcher' stop
+  if (`$LASTEXITCODE -ne 0) { exit 11 }
+  & '$launcher' stop --force
+  if (`$foreign.HasExited) { Write-Host 'stop ended a server OpenMono did not start'; exit 12 }
+  exit 0
+} finally {
+  Stop-Process -Id `$foreign.Id -Force -ErrorAction SilentlyContinue
+}
+"@
+  $calls = Invoke-Scenario 'foreign-adopt' $adoptBody $gpuEnv
+  Assert-NotCalled 'foreign-adopt' $calls 'llama-server build b9000*'
+  if (-not (Get-Output 'foreign-adopt').Contains('adopting it')) { $failures.Add('[foreign-adopt] start did not say it adopted the server') }
+
+  # The CUDA build exits while loading: Vulkan serves the same model.
+  $calls = Invoke-Scenario 'cuda-crash' $cpuBody (Merge-Env $gpuEnv @{ FAKE_LLAMA_CRASH = 'cuda' })
+  $env:FAKE_LLAMA_CRASH = $null
+  Assert-Called 'cuda-crash' $calls 'llama-server build b9000-cuda-12.4*'
+  Assert-Called 'cuda-crash' $calls 'download llama-b9000-bin-win-vulkan-x64.zip*'
+  Assert-Called 'cuda-crash' $calls 'llama-server build b9000-vulkan*'
+  Assert-Called 'cuda-crash' $calls 'llama-server --model *Qwen3.8-27B-UD-Q4_K_M.gguf *--n-gpu-layers 99 *'
+  $out = Get-Output 'cuda-crash'
+  foreach ($want in @('b9000-cuda-12.4 sees CUDA0: Fake RTX 4090', 'WARNING: the llama.cpp CUDA build failed', 'forward compatibility was attempted', 'llama.cpp b9000-vulkan')) {
+    if (-not $out.Contains($want)) { $failures.Add("[cuda-crash] output missing [$want]") }
+  }
+  if ((Test-Path $state) -and ((Get-Content $state -Raw | ConvertFrom-Json).accel -ne 'vulkan')) { $failures.Add('[cuda-crash] the state does not record the Vulkan build') }
+
+  # The CUDA build lists no CUDA device (ggml-cuda.dll did not load): it is
+  # never started, and Vulkan serves the model.
+  $calls = Invoke-Scenario 'cuda-no-device' $cpuBody (Merge-Env $gpuEnv @{ FAKE_LLAMA_NO_DEVICE = 'cuda' })
+  $env:FAKE_LLAMA_NO_DEVICE = $null
+  Assert-Called 'cuda-no-device' $calls 'llama-server list-devices b9000-cuda-12.4*'
+  Assert-NotCalled 'cuda-no-device' $calls 'llama-server build b9000-cuda-12.4*'
+  Assert-Called 'cuda-no-device' $calls 'llama-server build b9000-vulkan*'
+  $out = Get-Output 'cuda-no-device'
+  foreach ($want in @('sees no CUDA device', 'Falling back to the next backend', 'b9000-vulkan sees Vulkan0: Fake RTX 4090')) {
+    if (-not $out.Contains($want)) { $failures.Add("[cuda-no-device] output missing [$want]") }
+  }
+
+  # No nvidia-smi.exe anywhere on PATH.
+  $toolsNoSmi = Join-Path $work 'tools-no-smi'
+  New-Item -ItemType Directory -Force -Path $toolsNoSmi | Out-Null
+  Install-Fake $toolsNoSmi @('winget', 'wsl')
+  $noSmiPath = (@($cleanPath -split ';') | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'nvidia-smi.exe')) }) -join ';'
+  $calls = Invoke-Scenario 'no-nvidia-smi' $cpuBody (Merge-Env $gpuEnv @{ PATH = "$dockerBin;$toolsNoSmi;$noSmiPath" })
+  Assert-NotCalled 'no-nvidia-smi' $calls 'nvidia-smi*'
+  Assert-Called 'no-nvidia-smi' $calls 'llama-server build b9000-cpu*'
+  Assert-Called 'no-nvidia-smi' $calls 'llama-server --model *Qwen3.5-2B-UD-Q4_K_XL.gguf *'
+
+  # Every GGUF download fails with 404 on an empty models folder.
+  $emptyModels = Join-Path $work 'models-empty'
+  New-Item -ItemType Directory -Force -Path $emptyModels | Out-Null
+  Set-Content -Path $serverControl -Value 'models=404'
+  $calls = Invoke-Scenario 'bad-download' (New-ExpectFailBody 'start' 'bad-download') (Merge-Env $gpuEnv @{ OPENMONO_MODELS_DIR = $emptyModels })
+  Remove-Item $serverControl -ErrorAction SilentlyContinue
+  $env:OPENMONO_MODELS_DIR = Join-Path $work 'models'
+  Assert-Called 'bad-download' $calls 'download /models/Qwen3.8-27B-UD-Q4_K_M.gguf*'
+  Assert-NotCalled 'bad-download' $calls 'llama-server build*'
+  $out = Get-Output 'bad-download'
+  foreach ($want in @('Model download failed', '/models/Qwen3.8-27B-UD-Q4_K_M.gguf returned 404', 'Run the same command again')) {
+    if (-not $out.Contains($want)) { $failures.Add("[bad-download] output missing [$want]") }
+  }
+  if (@(Get-ChildItem $emptyModels -Filter '*.gguf').Count -ne 0) { $failures.Add('[bad-download] a model file was left behind') }
+
+  # A changed setting replaces our llama-server; there is never a second one.
+  $restartBody = @"
+& '$launcher' start
+if (`$LASTEXITCODE -ne 0) { exit 10 }
+`$env:LLAMA_THREADS = '3'
+& '$launcher' start
+if (`$LASTEXITCODE -ne 0) { exit 11 }
+`$env:LLAMA_THREADS = `$null
+exit 0
+"@
+  $calls = Invoke-Scenario 'restart' $restartBody $gpuEnv
+  if (@($calls | Where-Object { $_ -like 'llama-server build b9000*' }).Count -ne 2) { $failures.Add('[restart] expected exactly two llama-server starts') }
+  Assert-Called 'restart' $calls 'llama-server * --threads 3 *'
+  $running = Get-OwnLlama
+  if ($running.Count -ne 1) { $failures.Add("[restart] $($running.Count) llama-server processes running, expected 1") }
+
+  # Every user command once.
+  $diagDir = Join-Path $work 'diag'
+  New-Item -ItemType Directory -Force -Path $diagDir | Out-Null
+  $commandsBody = @"
+& '$launcher' start
+if (`$LASTEXITCODE -ne 0) { exit 10 }
+& '$launcher' models
+if (`$LASTEXITCODE -ne 0) { exit 11 }
+`$json = (& '$launcher' models --json | Out-String) | ConvertFrom-Json
+if (`$LASTEXITCODE -ne 0) { exit 12 }
+if (`$json.pick -ne 'Qwen3.8-27B-UD-Q4_K_M') { Write-Host "models --json pick was `$(`$json.pick)"; exit 13 }
+if (@(`$json.ladder).Count -ne 6) { Write-Host "models --json has `$(@(`$json.ladder).Count) rungs"; exit 14 }
+if (@(`$json.backends) -join ',' -ne 'cuda,vulkan,cpu') { Write-Host "backends were `$(@(`$json.backends) -join ',')"; exit 15 }
+& '$launcher' status
+if (`$LASTEXITCODE -ne 0) { exit 16 }
+& '$launcher' doctor
+& '$launcher' diag --out '$diagDir\bundle.zip'
+if (`$LASTEXITCODE -ne 0) { exit 17 }
+& '$launcher' help
+if (`$LASTEXITCODE -ne 0) { exit 18 }
+& '$launcher' frobnicate
+if (`$LASTEXITCODE -ne 2) { Write-Host "unknown command exited `$LASTEXITCODE"; exit 19 }
+& '$launcher' stop
+exit `$LASTEXITCODE
+"@
+  $calls = Invoke-Scenario 'commands' $commandsBody $gpuEnv
+  $out = Get-Output 'commands'
+  foreach ($want in @('Windows model ladder', 'This machine (NVIDIA GeForce RTX 4090, 24 GB): Qwen3.8-27B-UD-Q4_K_M', 'Inference: http://127.0.0.1:7474', '[ ok ] llama.cpp', 'llama-server stopped')) {
+    if (-not $out.Contains($want)) { $failures.Add("[commands] output missing [$want]") }
+  }
+  $zip = @(Get-ChildItem $diagDir -Filter '*.zip' -Recurse)
+  if ($zip.Count -eq 0) {
+    $failures.Add('[commands] diag wrote no zip')
+  } else {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($zip[0].FullName)
+    try { $entries = @($archive.Entries | ForEach-Object { $_.Name }) } finally { $archive.Dispose() }
+    foreach ($want in @('llama-cpp.txt', 'llama-server-log.txt', 'doctor.txt', 'inference.json', 'nvidia-smi.txt')) {
+      if ($entries -notcontains $want) { $failures.Add("[commands] diag zip missing $want") }
+    }
+  }
+  if ((Get-OwnLlama).Count -ne 0) { $failures.Add('[commands] stop left llama-server running') }
+
   # No Git, no .NET SDK: winget installs both, then setup carries on in the
   # same session. git.exe is only reachable through the refreshed PATH.
   $wingetGit = Join-Path $work 'git-winget\cmd'
@@ -456,7 +644,7 @@ exit 0
     Get-ChildItem $work -Filter 'calls-*.log' | ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content $_.FullName | ForEach-Object { Write-Host "  $_" } }
     exit 1
   }
-  Write-Host "Windows smoke test passed under $Shell (docker-missing, docker-stopped, agent, cpu-only, foreign-server, prereqs-winget, prereqs-fallback, agent-crlf, line-endings)."
+  Write-Host "Windows smoke test passed under $Shell (docker-missing, docker-stopped, agent, cpu-only, foreign-server, foreign-adopt, cuda-crash, cuda-no-device, no-nvidia-smi, bad-download, restart, commands, prereqs-winget, prereqs-fallback, agent-crlf, line-endings)."
 } finally {
   if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
   Stop-FakeLlama
