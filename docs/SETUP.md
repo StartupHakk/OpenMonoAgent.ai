@@ -71,6 +71,40 @@ openmono setup --full
 `--model=`, `--cpu`, `OPENMONO_INFERENCE_BACKEND`, and `--options` still override
 those defaults.
 
+On that same dual V100S gate, setup also installs a chassis fan service
+(`openmono-v100-gpu-fan.service`). It reads Tesla V100 / V100S temperatures
+only (the hotter card wins) and writes PWM to the header labeled CHA_FAN1.
+The GTX 1650 is ignored. CPU_FAN is never written. If CHA_FAN1 cannot be
+identified, the service logs the error and leaves every fan header alone.
+Other machines do not get this unit.
+
+This service only affects fans whose PWM line is driven by CHA_FAN1. The two
+Misieren V100 blowers (12 V, 3.8 A each, about 7.6 A together) must keep 12 V
+and ground on a PSU adapter, not on a typical SATA-powered hub (those hubs are
+often about 4.5 A total). The PWM wire (fourth pin) is what should follow
+CHA_FAN1. If the blowers are powered only from a 2-pin adapter with no PWM
+wire, they stay full speed and this script will not slow them down. In the
+BIOS, set CHA_FAN1 to PWM mode and leave CPU_FAN for the CPU cooler.
+
+The curve holds about 50 percent at or below 40 C and is at 100 percent from
+55 C up, so the cards are at full chassis airflow well before the 75 C
+practical ceiling. Fans are never stopped. If temperatures cannot be read, or
+a write fails, CHA_FAN1 is set to 100 percent when that channel is known.
+
+Already installed box, without a full reinstall:
+
+```bash
+git fetch origin v100
+git checkout v100
+sudo bash scripts/v100-gpu-fan.sh --install
+```
+
+Full install, including the fan service when the two V100S cards are present:
+
+```bash
+OPENMONO_HOST_BRIDGE=0 bash <(curl -fsSL https://raw.githubusercontent.com/StartupHakk/OpenMonoAgent.ai/refs/heads/v100/get-openmono.sh) v100 --full
+```
+
 The installer will ask you one question before it does anything:
 
 > [!IMPORTANT]

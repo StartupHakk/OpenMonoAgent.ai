@@ -721,6 +721,19 @@ if [ "$OPENMONO_ROLE" != "agent" ]; then
     fi
 fi
 
+# Dual V100S only. Other hardware, including a v100-branch install on a
+# different machine, does not get this unit. Failure here must not abort
+# the rest of setup; the one-shot command is in docs/SETUP.md.
+if [ "${_V100_PROFILE:-0}" = "1" ]; then
+    info "Dual Tesla V100S: installing CHA_FAN1 fan controller"
+    if bash "$SCRIPT_DIR/v100-gpu-fan.sh" --install; then
+        ok "CHA_FAN1 fan controller enabled (openmono-v100-gpu-fan.service)"
+    else
+        warn "CHA_FAN1 fan controller was not enabled. Inference setup continues."
+        warn "On this box, after setup: sudo bash scripts/v100-gpu-fan.sh --install"
+    fi
+fi
+
 # Display tool versions (prerequisites already verified above)
 detail "docker: $(docker --version 2>/dev/null | head -1)"
 detail "git: $(git --version 2>/dev/null)"
