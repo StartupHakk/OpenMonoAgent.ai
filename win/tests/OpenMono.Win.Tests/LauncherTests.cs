@@ -362,6 +362,33 @@ public sealed class LauncherCliTests
     }
 
     [Fact]
+    public async Task AgentArgsCanArriveAsJsonEnv()
+    {
+        using var rig = new FoundryRig();
+        rig.Env[LauncherCli.AgentArgsEnvVar] = """["-p","say \"hi\" to C:\\proj"]""";
+        var stdout = new StringWriter();
+
+        var code = await LauncherCli.RunAsync(
+            ["agent-plan", "--workdir", "C:\\proj", "--compose", "c.yml"], rig.Deps(), stdout, new StringWriter());
+
+        code.Should().Be(0);
+        using var doc = JsonDocument.Parse(stdout.ToString());
+        doc.RootElement.GetProperty("docker_args").EnumerateArray().Select(e => e.GetString()).TakeLast(3)
+            .Should().Equal("agent", "-p", "say \"hi\" to C:\\proj");
+    }
+
+    [Theory]
+    [InlineData(null, 0)]
+    [InlineData("", 0)]
+    [InlineData("not json", 0)]
+    [InlineData("\"--acp-only\"", 1)]
+    [InlineData("[\"--acp-only\",\"--acp-port\",\"7575\"]", 3)]
+    public void AgentArgsEnvParsing(string? json, int count)
+    {
+        LauncherCli.AgentArgsFromEnv(json).Should().HaveCount(count);
+    }
+
+    [Fact]
     public async Task AgentPlanFailureGoesToStderr()
     {
         using var rig = new FoundryRig();

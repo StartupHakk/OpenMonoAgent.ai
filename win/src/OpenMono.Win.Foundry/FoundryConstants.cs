@@ -27,12 +27,14 @@ public static class FoundryConstants
     // Minimum Foundry Local CLI with the Qwen3.8-27B coding stack.
     public static readonly Version MinCliVersion = new(0, 13, 0);
 
-    // INT4 Qwen3.8-27B needs about 18 GB of weights; 24 GB dedicated VRAM
-    // is the supported floor for serving it.
-    public const long RequiredVramBytes27B = 24L * 1024 * 1024 * 1024;
+    // INT4 Qwen3.8-27B needs about 18 GB of weights; a 24 GB card is the
+    // supported floor. Cards report a little under their marketed size
+    // (RTX 4090: 24564 MiB, RTX 5090: 32607 MiB), so each class is matched
+    // from 1 GiB below its nominal size.
+    public const long RequiredVramBytes27B = 23L * 1024 * 1024 * 1024;
 
-    // 32 GB and above unlock the model's full context window.
-    public const long FullContextVramBytes = 32L * 1024 * 1024 * 1024;
+    // 32 GB class cards and above unlock the model's full context window.
+    public const long FullContextVramBytes = 31L * 1024 * 1024 * 1024;
 
     // Context windows from the Foundry announcement: up to 64K on 24 GB
     // cards, up to the full 262K with headroom.

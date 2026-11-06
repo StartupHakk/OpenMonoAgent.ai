@@ -76,7 +76,7 @@ public sealed class InferenceOrchestrator
         var gpus = await _deps.Gpu.ProbeAsync(ct);
         var vram = gpus.Where(g => g.IsNvidia).Select(g => (long?)g.DedicatedVramBytes).Max();
         log.Add(vram is { } v
-            ? $"NVIDIA GPU VRAM: {v / (1024L * 1024 * 1024)} GB."
+            ? $"NVIDIA GPU VRAM: {Math.Round(v / (1024.0 * 1024 * 1024))} GB."
             : "No NVIDIA GPU detected; Foundry picks the best available device for the alias.");
 
         var catalog = new FoundryCatalogClient(_deps.Cli);
@@ -112,6 +112,7 @@ public sealed class InferenceOrchestrator
         {
             probeAccepted = previous.VisionProbeAccepted;
             probeDetail = $"Reusing the earlier image probe for {probeModel}.";
+            log.Add(probeDetail);
         }
         else
         {
@@ -120,7 +121,6 @@ public sealed class InferenceOrchestrator
             probeDetail = probe.Detail;
         }
 
-        log.Add(probeDetail);
         var vision = WindowsVisionConfig.ApplyProbeResult(
             settings.VisionEnabled,
             new VisionProbeResult(probeAccepted == true, null, probeModel, probeDetail));

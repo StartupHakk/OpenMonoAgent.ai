@@ -49,6 +49,37 @@ public static class LauncherCli
         }
     }
 
+    // Windows PowerShell 5.1 drops a bare "--" and re-quotes arguments when it
+    // calls a native program, so openmono.ps1 hands the agent's arguments
+    // over as a JSON array in this variable instead of on the command line.
+    public const string AgentArgsEnvVar = "OPENMONO_WIN_AGENT_ARGS";
+
+    public static IReadOnlyList<string> AgentArgsFromEnv(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return [];
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.ValueKind switch
+            {
+                JsonValueKind.Array => doc.RootElement.EnumerateArray()
+                    .Where(e => e.ValueKind == JsonValueKind.String)
+                    .Select(e => e.GetString()!)
+                    .ToList(),
+                JsonValueKind.String => [doc.RootElement.GetString()!],
+                _ => [],
+            };
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
     public const string Usage =
         "openmono-win inference up [--model ALIAS] [--port N] [--json]\n"
         + "openmono-win inference down [--force]\n"
@@ -120,6 +151,10 @@ public static class LauncherCli
             return 2;
         }
 
+        var agentArgs = parsed.Passthrough.Count > 0
+            ? parsed.Passthrough
+            : AgentArgsFromEnv(deps.GetEnv(AgentArgsEnvVar));
+
         var vision = parsed.Flag("--vision");
         var up = await orchestrator.UpAsync(
             new UpOptions(parsed.Value("--model"), parsed.IntValue("--port") ?? FoundryConstants.DefaultPort, vision), ct);
@@ -140,7 +175,7 @@ public static class LauncherCli
             WorkDir: workDir,
             HomeDir: deps.HomeDir,
             ComposeFile: compose,
-            AgentArgs: parsed.Passthrough,
+            AgentArgs: agentArgs,
             Endpoint: state.Endpoint,
             Model: state.AgentModel,
             ContextTokens: state.ContextTokens,

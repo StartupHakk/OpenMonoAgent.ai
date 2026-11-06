@@ -10,6 +10,8 @@ public sealed record ModelSelection(
 
 public static class ModelSelector
 {
+    private static long GiB(long bytes) => (long)Math.Round(bytes / (1024.0 * 1024 * 1024));
+
     public static ModelSelection Select(
         long? dedicatedVramBytes,
         string? targetCatalogMatch,
@@ -25,7 +27,7 @@ public static class ModelSelector
                     targetCatalogMatch,
                     FoundryConstants.MaxContextTokens,
                     true,
-                    $"Detected {vram / (1024L * 1024 * 1024)} GB VRAM: full {FoundryConstants.MaxContextTokens} token context.");
+                    $"Detected {GiB(vram)} GB VRAM: full {FoundryConstants.MaxContextTokens} token context.");
             }
 
             if (vram >= FoundryConstants.RequiredVramBytes27B)
@@ -34,14 +36,14 @@ public static class ModelSelector
                     targetCatalogMatch,
                     FoundryConstants.StandardContextTokens,
                     true,
-                    $"Detected {vram / (1024L * 1024 * 1024)} GB VRAM: {FoundryConstants.StandardContextTokens} token context.");
+                    $"Detected {GiB(vram)} GB VRAM: {FoundryConstants.StandardContextTokens} token context.");
             }
 
             return new ModelSelection(
                 fallback,
                 FoundryConstants.StandardContextTokens,
                 false,
-                $"Detected {vram / (1024L * 1024 * 1024)} GB VRAM, below the 24 GB floor for "
+                $"Detected {GiB(vram)} GB VRAM, below the 24 GB floor for "
                     + $"{FoundryConstants.TargetModelAlias}. Using {fallback} instead.");
         }
 

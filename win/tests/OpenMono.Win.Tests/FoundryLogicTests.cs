@@ -37,6 +37,20 @@ public sealed class AliasResolverTests
 public sealed class ModelSelectorTests
 {
     private const long GiB = 1024L * 1024 * 1024;
+    private const long MiB = 1024L * 1024;
+
+    [Theory]
+    [InlineData(24564, true, 65536)]   // RTX 4090 as nvidia-smi reports it
+    [InlineData(24576, true, 65536)]   // RTX 3090 / A5000 class
+    [InlineData(32607, true, 262144)]  // RTX 5090 as nvidia-smi reports it
+    [InlineData(16376, false, 65536)]  // 16 GB class
+    public void RealCardSizesLandInTheirClass(long reportedMiB, bool target, int context)
+    {
+        var selection = ModelSelector.Select(reportedMiB * MiB, "qwen3.8-27b", "qwen3-4b");
+
+        selection.IsTargetModel.Should().Be(target);
+        selection.ContextTokens.Should().Be(context);
+    }
 
     [Fact]
     public void TwentyFourGbGetsTargetWithStandardContext()
