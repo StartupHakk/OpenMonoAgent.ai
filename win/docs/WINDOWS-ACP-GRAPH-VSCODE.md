@@ -1,7 +1,7 @@
 # ACP, graph, and VS Code extension on Windows
 
 The Windows port runs the whole OMA stack with Windows hosting the inference
-and the existing Linux container running the agent: Foundry Local inference,
+and the existing Linux container running the agent: llama.cpp inference,
 the agent in Docker, ACP, graph tools, and the VS Code extension against that
 local stack. The Mac/Linux paths are untouched; Windows install and host
 control code lives in `win/`. oma-bot stays Linux, same as the core agent.
@@ -55,13 +55,13 @@ control code lives in `win/`. oma-bot stays Linux, same as the core agent.
   same `agent` service as `cmd_agent_sandbox`, the same `-e` and git mounts,
   the same compose variables, plus:
   - `OPENMONO_ENDPOINT=http://host.docker.internal:7474` (the macOS
-    native-inference rewrite), so the container reaches host Foundry;
+    native-inference rewrite), so the container reaches the host's llama-server;
   - `--user 1000:1000` (Windows has no uid; the image makes `/home/agent`
     1777 and `/etc/passwd` writable for any uid, so the sandbox stays
     non-root);
   - `HOST_WORKSPACE_PATH=<Windows path>` as the extension's DockerManager
     sets it, so `agent.lock` names the folder VS Code has open;
-  - `OPENMONO_MODEL=<served Foundry id>` and `CTX_SIZE=<context for this GPU>`;
+  - `OPENMONO_MODEL=<llama-server --alias>` and `CTX_SIZE=<context for this GPU>`;
   - with `--acp-only`, `-p 127.0.0.1:{port}:{port}` and `HOST_ACP_PORT`
     (the `AgentContainer` shape). The default TUI run publishes nothing, as
     on Linux.
@@ -80,15 +80,15 @@ control code lives in `win/`. oma-bot stays Linux, same as the core agent.
 - **Host guardrails** (`WindowsGuardrails`): Windows-destructive command
   shapes, ready for the host-bridge `host.deny_list` once host mode exists on
   Windows. The agent pipeline is unchanged.
-- **Vision** (`WindowsVisionConfig`, `win/docs/VISION.md`): the probe outcome
-  flows via `OPENMONO_VISION_ENABLED`; `--vision` sessions use the Foundry
-  vision alias. Images are never silently dropped.
+- **Vision** (`WindowsVisionConfig`, `win/docs/VISION.md`): whether llama-server
+  loaded the model's `--mmproj` projector flows via `OPENMONO_VISION_ENABLED`;
+  `--vision` sessions use the same model. Images are never silently dropped.
 
 ## Ports on a Windows machine
 
 | Service | Address | Source |
 |---|---|---|
-| Inference (Foundry, host) | `http://127.0.0.1:7474` | `FoundryConstants.DefaultLoopbackEndpoint` |
+| Inference (llama-server, host) | `http://127.0.0.1:7474` | `LlamaCppConstants.DefaultLoopbackEndpoint` |
 | Inference (from containers) | `http://host.docker.internal:7474` | `WindowsContainerEndpoint` |
 | Agent ACP server | `http://127.0.0.1:7475` | `AcpServerSettings.Port`, `WindowsAcpWiring` |
 
@@ -102,19 +102,19 @@ None for the launcher path. For Spencer, three optional follow-ups:
 2. The VS Code extension's DockerManager starts its own container. Its
    source is not in this repo, so whether it rewrites a loopback
    `llm.endpoint` for the container is unverified. If it does not, a
-   container it starts on Windows dials its own loopback instead of Foundry.
+   container it starts on Windows dials its own loopback instead of llama-server.
    Until verified, run `openmono agent --acp-only` from the project folder
    and let the extension attach on 7475.
 
 ## Manual check (Windows)
 
 ```powershell
-.\win\openmono.ps1 setup                       # prerequisites, agent image, Foundry up, doctor
+.\win\openmono.ps1 setup                       # prerequisites, agent image, llama-server up, doctor
 cd C:\path\to\project
 C:\path\to\OpenMonoAgent.ai\win\openmono.ps1 doctor             # every check ok or info; "container route" must be ok
 C:\path\to\OpenMonoAgent.ai\win\openmono.ps1 agent --acp-only   # ACP published on 127.0.0.1:7475
 curl.exe http://127.0.0.1:7475/api/v1/discovery  # host_workspace is the Windows path
 Get-Content .openmono\agent.lock                 # same port and workspace
 # open the folder in VS Code, open the OpenMono Agent panel, send a turn
-C:\path\to\OpenMonoAgent.ai\win\openmono.ps1 stop --agent       # remove the ACP container; Foundry keeps serving
+C:\path\to\OpenMonoAgent.ai\win\openmono.ps1 stop --agent       # remove the ACP container; llama-server keeps serving
 ```

@@ -1,317 +1,147 @@
-# OpenMonoAgent for Windows: Foundry Local plan
+# OpenMonoAgent for Windows: plan and decisions
 
-Approved plan snapshot for the `win` branch. This replaces the earlier Windows
-plans (bundled llama.cpp, Docker Desktop stack, LM Studio style installer under
-`windows/`). Those ideas are tabled. This is a Windows branch of OpenMonoAgent.ai
-that runs the existing agent against Microsoft Foundry Local, with all
-Windows-specific code in the `/win/` folder at the repo root.
+The `win` branch of OpenMonoAgent.ai runs the existing agent on Windows, with
+all Windows-specific code in the `/win/` folder at the repo root. It does not
+start from the older `Windows` branch or the `windows/` folder.
 
-## Win-branch adaptation notes
+## Goal
 
-These notes record where this snapshot differs from the original plan text, or
-where the scaffold makes an explicit provisional choice. The plan body below is
-otherwise unchanged in intent.
+A Windows developer can clone the `win` branch, run one setup command, and use
+the OMA agent against local inference, with no cloud model. The Mac and Linux
+paths stay unchanged, and `main` is not touched.
 
-0. Container decision (Spencer): the agent stays in Docker. The agent runs in
-   the unchanged Linux agent container (bash inside); oma-bot stays Linux too.
-   `win/` is Windows install and host control in PowerShell: Docker Desktop
-   checks, Foundry Local lifecycle, stack start/stop, and the endpoint mapping
-   containers use to reach host Foundry (`host.docker.internal:7474`). There
-   is no native Windows in-process agent. The BUILD-PLAN body below still
-   describes in-process hosting in places; where it does, this note wins.
+## Decisions
 
-1. Foundry Local C# SDK package: the coordinate is `Microsoft.AI.Foundry.Local`
-   (2.x; Foundry Local CLI 0.13.0 ships SDK and runtime 2.3.0). The
-   `OpenMono.Win.Foundry` project still takes no NuGet dependency: Foundry
-   lifecycle is a host control, the CLI covers it, and the SDK would pull a
-   native runtime into CI for no gain. `SdkBackendProbe` only reports whether
-   the assembly is present. Revisit if a CLI gap appears.
-2. Model ladder (locked; `FoundryModelLadder`): one model per machine by
-   dedicated VRAM. 24 GB and up always serves `qwen3.8-27b`, with no second
-   model and no switch for images, `--vision`, or a missing catalog entry (it
-   fails and downloads nothing instead). Below the 24 GB floor: 12 GB
-   `qwen3.5-9b`, 8 GB `qwen3.5-4b`, 4 GB `qwen3.5-2b`, under 4 GB
-   `qwen3.5-0.8b` as the last resort; all four are Qwen3.5 vision-language
-   models. A sub-24 GB rung missing from the catalog steps down to the next
-   smaller Qwen3.5 model, and the launcher names the skipped alias. No
-   dedicated NVIDIA GPU (CPU only): `qwen3.5-2b`, loaded by its generic CPU
-   variant id from the CPU catalog (for example `qwen3.5-2b-generic-cpu:3`)
-   when one is listed; `qwen3.8-27b` and the 4B and 9B models are never tried
-   there, and the only step down is `qwen3.5-0.8b`. The older Qwen3 and
-   Qwen-VL aliases are not used.
-3. Endpoint host spelling: the plan binds `127.0.0.1:7474`. OMA defaults use
-   `localhost:7474`. These are the same loopback interface; the Windows host
-   uses the `127.0.0.1` spelling and OMA config normalization treats them as
-   equivalent roots.
-4. CI: the `win.yml` workflow builds and tests on both `windows-latest` and
-   `ubuntu-latest`. All unit tests use fakes, so no GPU or Foundry install is
-   needed in CI.
-5. Model auto-detect: OMA already probes `{endpoint}/props` (llama.cpp) and
-   falls back to `{endpoint}/v1/models`. Foundry Local serves `/v1/models`,
-   so the existing detection path covers the Foundry endpoint with no upstream
-   change.
-6. Foundry CLI surface (verified against the Foundry Local CLI reference and
-   the 0.10 to 0.13 release notes; 0.10 replaced the old `service` group with
-   `server`): `foundry server start --port 7474 --idle-timeout 0` pins the
-   port and keeps the daemon up, `foundry server status|stop|logs`, and
-   `foundry model load|list` (`--output json` for scripting). The host starts
-   the daemon on the pinned port before `model load`, because a load against
-   a stopped daemon would auto-start it on another port. A daemon the user
-   already runs is adopted (on 7474, or wherever `server status` says), and
-   `openmono stop` only stops a daemon OpenMono started.
-7. Served model ids: Foundry's `/v1/models` lists variant ids such as
-   `qwen3.8-27b-cuda-gpu:1`, not the alias. `FoundryModelIdResolver`
-   maps the alias to the served id (variant-suffix aware, GPU variant
-   preferred) and the launcher passes it as `OPENMONO_MODEL`, unless
-   `llm.model` is set in `settings.json`, which is respected. An empty
-   `/v1/models` list means "up, nothing loaded", not "down".
-8. VRAM classes: cards report slightly under their marketed size (RTX 4090:
-   24564 MiB, RTX 5090: 32607 MiB), so the 24 GB and 32 GB classes are
-   matched from 1 GiB below nominal.
-9. No Desktop (WinUI) project: the plan's native chat UI and step 4 of the
-   build sequence are superseded by note 0. The Windows UX is the existing
-   one: the agent TUI in the container and the VS Code extension over ACP.
-10. Host launcher: `win/openmono.ps1` (pwsh 7 or Windows PowerShell 5.1) has
-    the bash launcher's subcommands (`setup`, `start`, `stop`, `status`,
-    `agent`, `logs`, `doctor`). Decision logic lives in the tested
-    `OpenMono.Win.Launcher` console app (`openmono-win`), which PowerShell
-    calls; `agent` runs the same `docker compose run --rm ... agent` as
-    `cmd_agent_sandbox`, with `OPENMONO_ENDPOINT=http://host.docker.internal:7474`.
-    Setup needs Git and the .NET SDK 10.0.403+ (`win/global.json`, the same
-    as `install.ps1`) and installs them on the host when missing
-    (`win/scripts/prereqs.ps1`): winget `Git.Git` and
-    `Microsoft.DotNet.SDK.10`, or without winget MinGit from the latest Git
-    for Windows release and `dotnet-install.ps1 -Channel 10.0`, both per user.
-    The session `PATH` is then rebuilt from the machine and user `PATH`, so
-    setup continues in the same window; a failed install stops setup.
-11. Vision, one model per machine: the launcher probes the served model.
-    Below 24 GB the Qwen3.5 rungs take images. On 24 GB+ `qwen3.8-27b` is
-    served regardless; when it refuses images, vision stays off (the agent
-    warns on an attached image, never drops it silently) and
-    `openmono agent --vision` fails with that explanation rather than loading
-    another model. See `docs/VISION.md`.
+1. Containers (Spencer): the agent stays in Docker. It runs in the unchanged
+   Linux agent container (bash inside); oma-bot stays Linux too. `win/` is
+   Windows install and host control in PowerShell: Docker Desktop checks,
+   llama.cpp lifecycle, stack start/stop, and the endpoint mapping containers
+   use to reach the host (`host.docker.internal:7474`). There is no native
+   Windows in-process agent and no WinUI app; the Windows UX is the agent TUI
+   in the container and the VS Code extension over ACP.
+2. Inference is llama.cpp, as on Linux. llama-server runs natively on the
+   Windows host from the official llama.cpp Windows release (Docker Desktop
+   GPU passthrough is not needed), bound to `127.0.0.1:7474`. Backend order:
+   CUDA, then Vulkan, then CPU. The CUDA build matching the driver's CUDA
+   version is used with its `cudart` zip, so no CUDA toolkit install is
+   needed. A CUDA build that crashes at start falls back to the next backend.
+3. Model ladder: one model per machine by dedicated NVIDIA VRAM, in
+   `scripts/models.json` (`platforms.windows.tiers`, next to the Linux and
+   macOS tables). 24 GB and up is the Linux 24 GB tier: the same GGUF
+   (`Qwen3.8-27B-UD-Q4_K_M`), context (`CTX_24G` 196608, `CTX_VISION` 172032
+   with the projector) and q8_0 KV cache as `scripts/install.sh` (lines
+   73-78 for the contexts, 380-470 for tier detection). Below 24 GB the rungs
+   are Qwen3.5 GGUFs of the same family: 12 GB about 9B
+   (`Qwen3.5-9B-UD-Q4_K_XL`), 8 GB about 4B, 4 GB about 2B, under 4 GB about
+   0.8B as the last resort. No NVIDIA GPU: about 2B on the CPU build with a
+   q8_0 KV cache, like the Linux CPU path. Every rung has an `mmproj`
+   projector, so vision works on every rung.
+4. llama-server flags mirror the compose services `install.sh` writes (GPU:
+   lines 890-915, CPU: lines 1062-1088): `--alias`, `--ctx-size`,
+   `--flash-attn on`, `--cache-type-k/v`, `--batch-size 2048`,
+   `--ubatch-size 1024`, `--parallel 1`, `--jinja`, `--reasoning off`,
+   `--metrics`, `--n-gpu-layers 99` on a GPU, `--threads-batch` on the CPU,
+   the `--mmproj` image token flags, and `--api-key` when `LLAMA_API_KEY` is
+   set. The host binds `127.0.0.1` instead of `0.0.0.0`.
+5. Lifecycle: `start` reuses the llama-server it started when the build, model
+   and flags match, and restarts it otherwise. A server on 7474 that OpenMono
+   did not start is reused only when it already serves the selected model;
+   otherwise `start` fails and names what that server serves. `stop` only
+   stops a server OpenMono started (`--force` to override). State lives in
+   `~/.openmono/win/inference.json`, the llama.cpp builds in
+   `~/.openmono/win/llama.cpp/`, the GGUFs in the repository's `models/`
+   folder (as on Linux).
+6. Endpoint host spelling: the host binds `127.0.0.1:7474`. OMA defaults use
+   `localhost:7474`. These are the same loopback interface, and OMA config
+   normalization treats them as equivalent roots.
+7. VRAM classes: cards report slightly under their marketed size (RTX 4090:
+   24564 MiB, RTX 5090: 32607 MiB), so each class is matched from 1 GiB below
+   nominal.
+8. Host launcher: `win/openmono.ps1` (pwsh 7 or Windows PowerShell 5.1) has
+   the bash launcher's subcommands (`setup`, `start`, `stop`, `status`,
+   `agent`, `logs`, `doctor`) plus `models` and `diag`. Decision logic lives in
+   the tested `OpenMono.Win.Launcher` console app (`openmono-win`), which
+   PowerShell calls; `agent` runs the same `docker compose run --rm ... agent`
+   as `cmd_agent_sandbox`, with
+   `OPENMONO_ENDPOINT=http://host.docker.internal:7474`, the model alias as
+   `OPENMONO_MODEL`, and the context as `CTX_SIZE`.
+9. Host prerequisites: setup needs Git and the .NET SDK 10.0.403+
+   (`win/global.json`, the same as `install.ps1`) and installs them when
+   missing (`win/scripts/prereqs.ps1`): winget `Git.Git` and
+   `Microsoft.DotNet.SDK.10`, or without winget MinGit from the latest Git for
+   Windows release and `dotnet-install.ps1 -Channel 10.0`, both per user. The
+   session `PATH` is then rebuilt from the machine and user `PATH`, so setup
+   continues in the same window; a failed install stops setup. Docker Desktop
+   and WSL 2 are installed with winget when missing.
+10. Vision: llama-server takes images exactly when it was started with the
+    model's projector, so the launcher sets `OPENMONO_VISION_ENABLED` from
+    that, unless `inference.vision_enabled` is set. `agent --vision` fails
+    rather than drop images or load a second model. See `docs/VISION.md`.
+11. Line endings: files the Linux containers execute or parse are LF in every
+    checkout (root `.gitattributes`, `eol=lf` for `docker/**`, `*.sh`,
+    Dockerfiles, YAML, `openmono`). Without it, Git for Windows
+    (`core.autocrlf=true`) checked out `docker/entrypoint.sh` with CRLF and
+    the agent image's ENTRYPOINT failed with `/usr/bin/env: 'bash\r'`. For
+    older checkouts, `openmono.ps1 setup` and `agent` rewrite CRLF under
+    `docker/` to LF (`win/scripts/line-endings.ps1`), and `agent` rebuilds an
+    agent image whose entrypoint has CR. A unit test fails if any
+    container-bound file has a CR.
 12. Not yet on Windows: host mode (`openmono agent --host`, the HostBridge
     daemon runs host commands and would need a PowerShell executor), the
     clipboard image bridge, and the optional local web gateway services
     (Caddy, SearXNG, Scrapling). The agent's built-in web fallbacks apply.
-13. Line endings: files the Linux containers execute or parse are LF in every
-    checkout (root `.gitattributes`, `eol=lf` for `docker/**`, `*.sh`,
-    Dockerfiles, YAML, `openmono`). Without it, Git for Windows
-    (`core.autocrlf=true`) checked out `docker/entrypoint.sh` with CRLF and
-    the agent image's ENTRYPOINT failed with `/usr/bin/env: 'bash\r'`.
-    For older checkouts, `openmono.ps1 setup` and `agent` rewrite CRLF under
-    `docker/` to LF (`win/scripts/line-endings.ps1`), and `agent` rebuilds an
-    agent image whose entrypoint has CR. A unit test fails if any
-    container-bound file has a CR.
-14. Foundry model and request shape: `start` adopts a running Foundry daemon
-    but not its model. Anything it serves other than the selected ladder
-    model (or `llm.model`) is replaced: the ladder model is loaded, then the
-    other model is unloaded (`foundry model unload`). If the ladder model
-    cannot be loaded while another model is served, `start` stops instead of
-    letting the agent run on it. The agent keeps `OPENMONO_MODEL` when
-    `/v1/models` lists it; Foundry lists its whole catalog there, so a set
-    model is never replaced by the first id (a loaded id from
-    `/openai/loadedmodels` wins when the set one is unknown). With
-    `OPENMONO_LLM_BACKEND=foundry` it sends standard OpenAI chat fields only
-    (no penalties). `OPENMONO_TOOL_CALLING=0` comes from the catalog entry of
-    the served variant id, not the alias. When Foundry still refuses
-    structured tools (the tool-marker error, as 400, 500 or a stream error),
-    the agent switches the session to text tool calls: no `tools` field, the
-    tool list in the system prompt in Qwen XML, calls parsed from the reply,
-    results sent back as `<tool_response>` text. Foundry 400, 500 and stream
-    errors are not resent with the same body; "not reachable" is shown only
-    for connection failures. The llama.cpp request body on Mac/Linux is
-    unchanged.
+13. The agent (`src/`) is the same code as `main`: the Windows port needs no
+    agent change, because the container talks to the same llama-server API.
 
-## Goal
-
-Ship a branch of [OpenMonoAgent.ai](https://github.com/StartupHakk/OpenMonoAgent.ai)
-that a Windows developer can run locally: the OMA agent, on-device inference, no
-cloud required for the model. Inference uses Foundry Local and targets Qwen3.8-27B,
-following Microsoft's November 5, 2026 Foundry Local coding announcement.
-
-The existing Mac and Linux paths stay unchanged. `main` is not touched. The older
-`Windows` branch and `windows/` folder are left alone and are not the source of
-this work.
-
-## Why Foundry Local
-
-OMA already talks to an OpenAI-compatible server (today that is `llama-server` on
-`127.0.0.1:7474`). Foundry Local exposes the same kind of API
-(`/v1/chat/completions`, `/v1/models`, streaming SSE, tool and function calling)
-either through its CLI server or through the C# SDK's optional web service.
-
-That means Windows inference can swap the backend without rewriting the agent loop.
-
-Microsoft's current coding target is Qwen3.8-27B, optimized with ONNX Runtime:
-
-- INT4 weights are about 18 GB, so it runs on consumer NVIDIA GPUs with 24 GB of VRAM.
-- 24 GB cards support context up to 64K tokens. 32 GB and above can use the model's full 262K context.
-- Foundry Local 0.13.0 and later include DFlash2 speculative decoding, CUDA graph fusions, KV-cache quantization, prefix caching, and continuous batching. Microsoft's published numbers show it faster than llama.cpp on the same 4-bit Qwen3.8-27B, especially past 131K tokens, on an RTX 5090 (32 GB) and a DGX Spark.
-- Install on Windows: `winget install Microsoft.FoundryLocal`, then `foundry model load qwen3.8-27b` and `foundry server status` for the local API URL.
-- NVIDIA GPU execution needs CUDA and a compatible cuDNN runtime installed separately, with those DLL directories on `PATH`. Foundry Local does not download those runtimes.
-- Foundry Local also has native SDKs (including C#, `Microsoft.AI.Foundry.Local`) that can download, cache, load, and serve a model in-process, then optionally start a local OpenAI-compatible web service.
-- Hardware selection (NPU, GPU, CPU) is handled by the runtime. Microsoft says Qwen3.8-27B support will expand to Macs and AMD GPUs later. Until then, NVIDIA 24 GB+ is the first-class path, and smaller catalog models remain a fallback on weaker machines.
-
-Sources: Foundry Local plus Qwen3.8-27B blog (devblogs.microsoft.com/foundry), foundrylocal.ai, microsoft/foundry-local on GitHub.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  win/  (Windows-only)                                   │
-│  - Foundry host: detect or install Foundry Local,       │
-│    download and load qwen3.8-27b (or a Qwen3.5 rung)    │
-│    start OpenAI-compatible server on 127.0.0.1:7474     │
-│  - Agent host: run OpenMono.Cli in process with         │
-│    Windows tool overrides (PowerShell shell, clipboard, │
-│    LSP paths, MCP .cmd, guardrails, prompt overlay)     │
-│  - Launcher / first-run: check CUDA, VRAM, Foundry CLI  │
-│    or SDK, model cache, then open chat                  │
-└───────────────────────────┬─────────────────────────────┘
-                            │  OpenAI HTTP on 127.0.0.1:7474
-                            ▼
-              Foundry Local (ONNX Runtime)
-              Qwen3.8-27B INT4 on NVIDIA GPU
-```
-
-Preferred host mode: the `win/` C# host uses Foundry tooling to download and
-load `qwen3.8-27b`, then serves the OpenAI-compatible endpoint bound to
-`http://127.0.0.1:7474` so the existing agent keeps its default base URL.
-
-Fallback host mode: if the Foundry Local CLI (0.13.0+) is already installed and
-serving, read `foundry server status` and point the agent at that endpoint (do
-not start a second server on a conflicting port).
-
-Do not bundle llama.cpp. Do not require Docker Desktop, Caddy, SearXNG, or
-Scrapling for the first Windows milestone. Search and browse tools can come back
-later as optional extras.
-
-## Branch and folder rules
-
-- Create a new branch from current `main`. Suggested name: `win`.
-- Do not start from, merge, or rewrite the existing `Windows` branch.
-- All Windows-specific code lives under `/win/` at the repo root (solution, host projects, scripts, docs, tests).
-- Reuse existing OMA projects (`src/OpenMono.Cli` and friends) by project reference. Do not move or restructure those projects.
-- Prefer not to edit existing OMA files. If Windows cannot work without an upstream change (for example hardcoded `/bin/bash`), implement a workaround in `win/` first and list the upstream edit separately.
-- Push only to the `win` branch. Do not open a pull request against `main`. Do not merge to `main`.
-
-## Proposed `/win/` layout
+## Layout
 
 ```
 win/
   OpenMono.Win.sln
   Directory.Build.props
-  global.json                  # pin the same .NET SDK family as the rest of OMA
-  docs/BUILD-PLAN.md           # this plan
-  src/
-    OpenMono.Win.Foundry/      # Foundry Local wrapper: catalog, download, load,
-                               # start/stop web service, health, model alias mapping
-    OpenMono.Win.AgentHost/    # DI graph that hosts OpenMono.Cli with Windows tools
-    OpenMono.Win.Desktop/      # native chat UI (WinUI 3; WPF only if WinUI blocks)
-    OpenMono.Win.Launcher/     # first-run checks, CUDA/Foundry detection, model pick
+  global.json
+  openmono.ps1                 # the Windows launcher
+  docs/                        # this plan, VISION.md, WINDOWS-ACP-GRAPH-VSCODE.md
   scripts/
-    bootstrap.ps1              # winget Foundry Local if missing, PATH checks, version
-    check-cuda.ps1
+    bootstrap.ps1              # prerequisites, GPU check, Docker Desktop
+    prereqs.ps1                # Git and .NET SDK install
+    line-endings.ps1
+  src/
+    OpenMono.Win.Inference/    # GPU probe, model ladder, llama.cpp install,
+                               # GGUF downloads, llama-server start and health
+    OpenMono.Win.AgentHost/    # container run plan, endpoint mapping, ACP,
+                               # shell selection, guardrails, vision flag
+    OpenMono.Win.Launcher/     # openmono-win: inference up/down/status,
+                               # models, agent-plan, doctor, diag
   tests/
-    OpenMono.Win.Tests/
+    OpenMono.Win.Tests/        # GPU-free unit tests with fakes
+    OpenMono.Win.FakeTools/    # fake docker, nvidia-smi, winget, llama-server
+    smoke/windows-smoke.ps1    # openmono.ps1 end to end on Windows CI
 ```
-
-## Agent work (so it actually runs on Windows)
-
-These are the known blockers in current OMA. Handle them from `win/` without
-editing upstream files where possible:
-
-| Blocker | Windows approach |
-|---|---|
-| `BashTool` and `HookRunner` hardcode `/bin/bash` | Register a Windows `ToolBase` named `Bash` that runs `pwsh.exe`, then `powershell.exe`, then `cmd.exe`. Hooks use the same shell selector. |
-| `GrepTool` needs `rg` | Stage `rg.exe` next to the host and prepend that directory to `PATH`. |
-| Clipboard is `pbcopy` / `xclip` | WinUI or Windows clipboard service. |
-| LSP `file://` URIs | Path mapper that produces correct Windows file URIs. |
-| MCP cannot launch `.cmd` shims | Launch helper that resolves `.cmd` / `.exe` and probes Node if needed. |
-| Guardrails assume Unix paths | Deny list for `format`, `diskpart`, `bcdedit`, `reg delete`, recursive deletes of `C:\` and `C:\Windows`, credential store writes. |
-| Init / slash commands use `head`/`grep`/`sed` | Windows `/init` that parses files with .NET. |
-| Recovery copy assumes Docker / llama compose | Error text talks about Foundry Local (is the server up, is the model loaded, is CUDA on PATH). |
-| System prompt Unix assumptions | Prompt overlay describing Windows paths, PowerShell, and Foundry Local. |
-
-The agent runs in process behind a native chat window. No embedded terminal.
-
-## Inference work
-
-1. Detect Foundry Local CLI (`foundry --version` >= 0.13.0) or use the NuGet SDK.
-2. Detect NVIDIA GPU and VRAM. Require 24 GB dedicated VRAM for Qwen3.8-27B. If VRAM is lower, pick a smaller catalog alias and tell the user why.
-3. Confirm CUDA and cuDNN DLLs are discoverable. If not, show install steps rather than failing with a blank error.
-4. Download `qwen3.8-27b` on first run (resume, progress, disk-space preflight). Cache stays where Foundry Local caches models.
-5. Load the model and start the OpenAI-compatible service on `127.0.0.1:7474`.
-6. Health-check `/v1/models` (and `/health` if present). Reuse a healthy existing server instead of binding twice.
-7. Point `OpenMono.Cli` at that base URL the same way it points at llama-server today.
-8. On exit, unload or leave the CLI server running if the user started it themselves.
-
-Model alias is `qwen3.8-27b` unless Foundry's catalog spelling differs on the
-installed version. Resolve the alias from the catalog at runtime rather than
-hardcoding a file hash.
-
-## Milestones
-
-### M1: Foundry host and a compiling `/win/` tree
-
-- Solution, projects, and docs under `/win/`.
-- Foundry wrapper that can detect CLI or drive the C# SDK.
-- Bootstrap script for `winget install Microsoft.FoundryLocal`.
-- Bind or adopt a server on `127.0.0.1:7474`.
-- Unit tests that mock catalog and HTTP so Linux or Windows CI can run without a GPU.
-- Acceptance: `dotnet test` on the `win/` test project is green. On a 24 GB NVIDIA machine, `qwen3.8-27b` loads and `/v1/models` lists it.
-
-### M2: Agent on Windows
-
-- Windows shell tool, guardrails, clipboard, LSP mapper, MCP helper, prompt overlay, slash `/init`.
-- Native chat UI: streaming, permissions, stop, tool cards.
-- Agent session against the Foundry endpoint.
-- Acceptance: a Windows session can complete a simple coding turn (read a file, run a PowerShell command, write a file) using Qwen3.8-27B locally.
-
-### M3: First-run, packaging, hardening
-
-- First-run wizard: hardware check, Foundry install, CUDA reminder, model download, server start, open chat.
-- Context window: 64K on 24 GB, longer when VRAM allows (up to 262K).
-- Diagnostics bundle (redacted): GPU, VRAM, Foundry version, CUDA PATH, last server log.
-- Optional installer later (not a blocker for the branch to be usable from source).
-- Acceptance: clone the `win` branch, run the bootstrap, and reach a working chat on a qualifying NVIDIA machine.
 
 ## Testing
 
-- Unit tests for the Foundry wrapper, Windows tools, and URL or port logic. These must run without NVIDIA hardware.
-- A `windows-latest` GitHub Actions workflow that lives only on the `win` branch, under `win/` scripts or `.github/workflows/win.yml` if a workflow file is required. It builds and tests what it can. It will not load Qwen3.8-27B.
-- Manual matrix Spencer runs: NVIDIA 24 GB (64K), NVIDIA 32 GB+ (longer context), a machine without enough VRAM (must refuse Qwen3.8-27B clearly), and a machine with Foundry CLI already installed (must adopt the existing server).
+- Unit tests (`dotnet test win/OpenMono.Win.sln`) cover the ladder, the
+  llama.cpp release pick, downloads with resume, the llama-server command
+  line, start, reuse and fallback, the agent launch, doctor and diag. They run
+  on Windows and Linux CI without a GPU, llama.cpp or network.
+- `.github/workflows/win.yml` (only on `win`) builds and tests on
+  `windows-latest` and `ubuntu-latest`, runs the agent tests, parse-checks the
+  PowerShell scripts under pwsh 7 and Windows PowerShell 5.1, and runs the
+  smoke test under both shells. A non-blocking job runs `models check`
+  against the live llama.cpp releases and Hugging Face.
+- Manual matrix Spencer runs: NVIDIA 24 GB+, a smaller NVIDIA card, a machine
+  without an NVIDIA GPU (CPU build), and a machine already running a
+  llama-server on 7474.
 
 ## What only Spencer can provide
 
-- A Windows machine with an NVIDIA GPU and at least 24 GB of VRAM to prove Qwen3.8-27B.
-- CUDA and cuDNN installed per Foundry Local 0.13.0+ release notes.
-- Later: AMD and Intel or NPU runs, once Microsoft expands Qwen3.8-27B support.
+- Windows machines with NVIDIA GPUs (24 GB and smaller) to prove the ladder.
 - A code signing certificate, only if we add a shipped installer.
 - A yes before any pull request to `main`.
 
-13. Catalog discovery: every alias is resolved against `foundry model list`
-    when Foundry is installed and against the public catalog API,
-    `POST https://foundrylocal.ai/api/models` (the filter body the
-    https://foundrylocal.ai/models page sends, `pageSize` 50, paged by
-    `continuationToken`), before anything downloads.
-    `FoundryWebCatalogClient` caches each device's answer for an hour under
-    `~/.openmono/win/` and falls back to a stale cache offline. `setup` runs
-    `openmono-win catalog check`, and `doctor` reports a model catalog check.
-    `OPENMONO_FOUNDRY_CATALOG_URL` overrides the URL (`off` disables it).
+## Open questions
 
-## Open questions (do not block M1)
-
-- Whether web search (SearXNG) and page fetch return as optional Windows extras after M2.
-- Whether we ever expose Foundry Local through GitHub Copilot BYOK as well, or keep the endpoint private to OMA.
-
-## Build sequence for the cloud agent
-
-1. Create branch `win` from current `main`. Write this plan to `win/docs/BUILD-PLAN.md`. Scaffold `win/OpenMono.Win.sln` and the Foundry and test projects. Push. No PR.
-2. Implement the Foundry wrapper (SDK and CLI detect, download, load, bind `127.0.0.1:7474`, health, fallback alias). Tests with fakes.
-3. Implement Windows agent host overrides and wire `OpenMono.Cli` to the Foundry base URL.
-4. Native chat UI and first-run checks.
-5. CI workflow on the `win` branch and M3 diagnostics.
-
-Commit and push often on `win` only.
+- Whether web search (SearXNG) and page fetch return as optional Windows
+  extras.
+- Whether host mode gets a PowerShell executor.
