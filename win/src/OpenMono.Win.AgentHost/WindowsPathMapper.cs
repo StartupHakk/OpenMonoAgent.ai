@@ -1,6 +1,9 @@
 namespace OpenMono.Win.AgentHost;
 
-// Maps between Windows paths and file:// URIs for LSP and editor links.
+// Maps between Windows host paths and file:// URIs for host-initiated ACP
+// calls (launcher and scripts posting turns that reference Windows files).
+// The agent itself runs in the Linux container and keeps its own
+// /workspace-relative handling; this mapper is only for the host side.
 // Manual segment escaping keeps behavior identical on Windows and on Linux CI.
 public static class WindowsPathMapper
 {

@@ -12,6 +12,18 @@ These notes record where this snapshot differs from the original plan text, or
 where the scaffold makes an explicit provisional choice. The plan body below is
 otherwise unchanged in intent.
 
+0. Container decision (Spencer): the agent stays in Docker. The agent runs in
+   the unchanged Linux agent container (bash inside); oma-bot stays Linux too.
+   `win/` is Windows install and host control in PowerShell: Docker Desktop
+   checks, Foundry Local lifecycle, stack start/stop, and the endpoint mapping
+   containers use to reach host Foundry (`host.docker.internal:7474`). There
+   is no native Windows in-process agent. The BUILD-PLAN body below still
+   describes in-process hosting in places; where it does, this note wins.
+
+These notes record where this snapshot differs from the original plan text, or
+where the scaffold makes an explicit provisional choice. The plan body below is
+otherwise unchanged in intent.
+
 1. Foundry Local C# SDK package: at scaffold time the exact shipping package
    name and version for `Microsoft.AI.Foundry.Local` is not pinned, so the
    `OpenMono.Win.Foundry` project does NOT take a hard NuGet dependency yet.

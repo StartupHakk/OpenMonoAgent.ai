@@ -1,9 +1,10 @@
 # ACP, graph, and VS Code extension on Windows
 
-The Windows port runs the whole OMA stack natively on Windows: Foundry Local
-inference, the agent, the ACP layer, graph tools, and the VS Code extension
-against that local stack. The Mac/Linux paths are untouched; everything
-Windows-specific lives in `win/`.
+The Windows port runs the whole OMA stack with Windows hosting the inference
+and the existing Linux container running the agent: Foundry Local inference,
+the agent in Docker, ACP, graph tools, and the VS Code extension against that
+local stack. The Mac/Linux paths are untouched; Windows install and host
+control code lives in `win/`. oma-bot stays Linux, same as the core agent.
 
 ## How each piece works today (Mac/Linux, from the real code)
 
@@ -14,78 +15,85 @@ Windows-specific lives in `win/`.
   `ConfigLoader` strips one trailing `/v1`. Default root:
   `http://localhost:7474`. Env overrides: `OPENMONO_ENDPOINT`,
   `OPENMONO_MODEL`, `OPENMONO_API_KEY`.
-- **ACP layer.** `OpenMono.Acp.AcpServer.Build` hosts Kestrel on
-  `localhost:7475` (`AcpServerSettings.Port`, default 7475,
-  `BindAllInterfaces = false` by default) with routes under `/api/v1/...`
-  (`discovery`, `sessions`, `sessions/{id}`, `messages`, `turn` with
+- **Agent container.** `OpenMono.HostBridge.AgentContainer` starts the
+  `agent` compose service with `-p 127.0.0.1:{hostPort}:7475` (ACP),
+  `-v workdir:/workspace`, the `~/.openmono` mount, and env including
+  `-e OPENMONO_ENDPOINT={mapped}` (loopback rewritten per OS), `-e HOST_ACP_PORT`,
+  `-e OPENMONO_HOST_OS`, plus a bare `-e OPENMONO_API_KEY` whose value travels
+  in the child process environment, never on the command line. Linux maps
+  loopback to the `llama-server` compose service; macOS maps it to
+  `host.docker.internal`.
+- **ACP layer.** The in-container `AcpServer.Build` hosts Kestrel on
+  `localhost:7475` (`AcpServerSettings.Port`, `BindAllInterfaces = false`) with
+  routes under `/api/v1/...` (`discovery`, `sessions`, `messages`, `turn` with
   `message`/`permission`/`user_input`/`playbookPermission`/`plan_decision`
-  bodies streamed back as SSE, plus `diffs`/`undo`/`redo` and `host`
-  pairing). `AcpLockFileWriter` writes `<workspace>/.openmono/agent.lock`
-  with agent id, host workspace, and port so editors can discover the server.
-  The two Docker-specific assumptions are the default `"/workspace"` mount
-  and the required `HOST_WORKSPACE_PATH` env var (normally set by the
-  extension's DockerManager), plus `HOST_ACP_PORT`/`ACP_AGENT_ID` overrides.
-- **Graph technology.** Two tools, both already shell-agnostic in logic:
-  `code-review-graph` (probed with `--version`; when its database exists in
-  `~/.openmono/graph-db`, `<workdir>/.code-review-graph`, or
-  `~/.code-review-graph`, it is registered as the `code-graph` MCP server
-  with command `code-review-graph args ["serve"]`) and the `graphify` CLI
-  (docs invoke it through Bash against `graphify-out/graph.json`).
-- **VS Code extension.** The extension is not in this repo; it speaks the ACP
-  HTTP API above (same API as `HostBridge`, which notes it drives "the same
-  API as VS Code"). Anything reachable over that API on Mac/Linux works the
-  same on Windows once the server binds locally.
+  bodies streamed back as SSE, plus `diffs`/`undo`/`redo` and `host` pairing).
+  `AcpLockFileWriter` writes `<workspace>/.openmono/agent.lock` so editors can
+  discover the server.
+- **Graph technology.** `code-review-graph` (probed with `--version`; when its
+  database exists in `~/.openmono/graph-db`, `<workdir>/.code-review-graph`, or
+  `~/.code-review-graph`, it is registered as the `code-graph` MCP server) and
+  the `graphify` CLI (invoked through the in-container Bash tool against
+  `graphify-out/graph.json`). Both run inside the agent container.
+- **VS Code extension.** `StartupHakk.openmono-agent` (VS Code 1.85+, also
+  works in Cursor, from the Marketplace). It speaks the ACP HTTP API, the same
+  API the HostBridge notes drive ("the same API as VS Code").
 
 ## What Windows changes (all in `win/`)
 
-- **ACP** (`WindowsAcpHost`): sets `HOST_WORKSPACE_PATH` to the real Windows
-  workspace when the extension has not set it, honors `HOST_ACP_PORT`,
-  enables the server on 127.0.0.1:7475, and constructs the real
-  `AcpLockFileWriter` with the Windows workspace as the mount so `agent.lock`
-  lands next to the open code. The server, routes, SSE, sessions, diffs, and
-  host pairing are 100 percent reused; serving still goes through the same
-  `openmono --acp-port` entry with these env vars set.
-- **MCP shims** (`WindowsMcpLauncher`): upstream `McpClient` spawns
-  `config.Command` with `UseShellExecute = false`, which cannot launch
-  `.cmd`/`.bat` shims. The resolver maps `code-review-graph` (and any MCP
-  command) to its `.exe` when present, or wraps `.cmd`/`.bat` in
-  `cmd.exe /c`, so the `code-graph` MCP server starts on Windows.
-- **Graph** (`WindowsGraphHost`): probes `code-review-graph.exe` / `.cmd` /
-  bare name with `--version`, and routes `graphify` invocations through
-  `WindowsShellSelector` (pwsh, powershell, cmd) instead of `/bin/bash`.
-- **VS Code extension**: point `StartupHakk.openmono-agent` (VS Code 1.85+,
-  also works in Cursor, from the Marketplace) at `http://127.0.0.1:7475`.
-  Discovery reads
-  `<workspace>/.openmono/agent.lock` (agent id, port, host workspace); turns
-  POST to `/api/v1/sessions/{id}/turn` with `{"message": "..."}` and stream
-  the SSE response. Image attachments follow `win/docs/VISION.md`.
+- **Endpoint mapping** (`WindowsContainerEndpoint`): loopback inference roots
+  map to `http://host.docker.internal:{port}` (the Docker Desktop route to the
+  Windows host, same as macOS), `/v1`-prefixed paths preserved, remote hosts
+  untouched. Mirrors `AgentContainer.MapEndpoint` for Windows; no upstream edit.
+- **Stack config** (`WindowsContainerStack` + `win/scripts/start-stack.ps1` /
+  `stop-stack.ps1`): same compose service, same ACP publish on loopback, same
+  volume and env shape as `AgentContainer.EnsureAsync`, except
+  `OPENMONO_ENDPOINT` points at host Foundry, `OPENMONO_HOST_OS=Windows`, no
+  `--user uid:gid`, and no llama-server/caddy profiles (inference is
+  host-native). API keys stay out of the command line.
+- **ACP** (`WindowsAcpWiring`): no server code duplicated. The host needs the
+  published address (`http://127.0.0.1:7475`, discovery at
+  `/api/v1/discovery`) and the lock path `<workspace>/.openmono/agent.lock`.
+- **Graph** (`WindowsGraphArtifacts`): same artifact paths upstream checks
+  (`graph-db` dirs, `graphify-out/graph.json` or `GRAPH_REPORT.md`), evaluated
+  on the host copy of the mounted workspace. The tools themselves run
+  in-container, unchanged.
+- **Host shell** (`WindowsShellSelector`): install, bootstrap, first-run,
+  Foundry lifecycle, and stack management are PowerShell (`pwsh.exe`, then
+  `powershell.exe`). The agent's Bash tool is untouched Linux bash.
+- **Host guardrails** (`WindowsGuardrails`): Windows-destructive shapes
+  (`format`, `diskpart`, `bcdedit`, `reg delete`, recursive deletes of `C:\`
+  and `C:\Windows`) as candidates for the host daemon's `host.deny_list`,
+  which is checked first. The agent pipeline is unchanged.
+- **Vision** (`WindowsImagePolicy`, `WindowsVisionConfig`, `win/docs/VISION.md`):
+  the model name for image turns flows via `OPENMONO_MODEL`; the vision flag
+  flows via `OPENMONO_VISION_ENABLED`. Images are never silently dropped.
 
 ## Ports on a Windows machine
 
-| Service | Default | Source |
+| Service | Address | Source |
 |---|---|---|
-| Inference (Foundry, OpenAI-compatible) | `http://127.0.0.1:7474` | `FoundryConstants.DefaultLoopbackEndpoint` |
-| Agent ACP server | `http://127.0.0.1:7475` | `AcpServerSettings.Port`, `WindowsAcpHost` |
+| Inference (Foundry, host) | `http://127.0.0.1:7474` | `FoundryConstants.DefaultLoopbackEndpoint` |
+| Inference (from containers) | `http://host.docker.internal:7474` | `WindowsContainerEndpoint` |
+| Agent ACP server | `http://127.0.0.1:7475` | `AcpServerSettings.Port`, `WindowsAcpWiring` |
 
-## Upstream changes needed: none so far
+## Upstream changes needed: none
 
-Two candidate tiny upstream edits are worked around in `win/` instead; they
-are listed here for Spencer in case we want them later:
+One candidate tiny upstream edit is worked around in `win/` instead and listed
+here for Spencer:
 
-1. `AcpLockFileWriter` requires `HOST_WORKSPACE_PATH` and defaults the mount
-   to `"/workspace"`. Windows sets the env var and passes the mount
-   explicitly. A future upstream default (fall back to the working directory
-   when the env var is unset) would remove the workaround, not change behavior.
-2. `McpClient` spawns commands with `UseShellExecute = false`. Windows
-   resolves wrappers before spawn. A future upstream `cmd.exe /c` fallback
-   for `.cmd`/`.bat` would make the resolver unnecessary on Windows.
+1. `AgentContainer.MapEndpoint` has macOS and Linux branches. Windows hosts
+   need the `host.docker.internal` branch (same as macOS). `win/` implements
+   the identical mapping in `WindowsContainerEndpoint`; a future upstream
+   `OperatingSystem.IsWindows()` branch would make the wrapper a thin call,
+   changing no behavior on other platforms.
 
 ## Manual check (Windows)
 
 ```
-$env:HOST_WORKSPACE_PATH = "C:\Users\you\proj"   # only if the extension did not set it
-openmono --acp-port 7475                          # ACP on 127.0.0.1:7475
-curl http://127.0.0.1:7475/api/v1/discovery       # version, agent_id, status ready
-curl http://127.0.0.1:7474/v1/models              # Foundry serving (vision probe runs at host start)
-code-review-graph --version                       # graph tool present
+.\win\scripts\bootstrap.ps1     # Foundry CLI, CUDA/cuDNN visibility
+.\win\scripts\start-stack.ps1   # Docker check, Foundry adopt, agent container start
+curl http://127.0.0.1:7475/api/v1/discovery   # version, agent_id, status ready
+curl http://127.0.0.1:7474/v1/models          # Foundry serving (vision probe runs at host start)
+.\win\scripts\stop-stack.ps1    # remove the agent container; Foundry keeps serving
 ```

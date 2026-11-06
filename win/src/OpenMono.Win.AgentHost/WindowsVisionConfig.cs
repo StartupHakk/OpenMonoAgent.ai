@@ -43,8 +43,9 @@ public static class WindowsVisionConfig
     }
 
     // Mirrors what the container launcher does with the resolved flag: export
-    // it so every downstream consumer (ConfigLoader, ConversationLoop warning)
-    // sees the same value. Never called when the user set the key explicitly.
+    // it so the agent container (via -e OPENMONO_VISION_ENABLED in
+    // WindowsContainerStack) and every downstream consumer see the same value.
+    // Never called when the user set the key explicitly.
     public static void ExportResolved(bool visionEnabled) =>
         Environment.SetEnvironmentVariable(VisionEnvVar, visionEnabled ? "1" : "0");
 }

@@ -1,12 +1,13 @@
 namespace OpenMono.Win.AgentHost;
 
-// M2-start deny patterns for the Windows host. Upstream permissions stay the
-// single pipeline (PermissionEngine: session deny-all, then config deny
-// patterns, then allow, then prompt). These patterns are the Windows additions
-// to merge into the Bash tool's config deny rules, not a parallel system:
-// DenyPatterns returns them per tool so the host can append them to
-// permissions.tools deny lists. IsDenied is the same check the host (and
-// tests) can run directly; unknown commands pass through to the normal flow.
+// Windows-dangerous command shapes for the host side of OMA. The agent runs
+// in the Linux container with the unchanged PermissionEngine pipeline; these
+// patterns are for host-mode execution (HostExec through the host daemon,
+// host hooks, launcher commands), where they belong in host.deny_list
+// (host-bridge.json, checked first) rather than in agent config.
+// DenyPatterns returns them per tool for merging; IsDenied lets the host (and
+// tests) screen a command directly. Unknown commands always pass through to
+// the normal permission flow.
 public static class WindowsGuardrails
 {
     // Deny patterns for merging into AppConfig Permissions deny rules.

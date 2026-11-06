@@ -4,9 +4,11 @@ namespace OpenMono.Win.AgentHost;
 
 // Never-drop-images policy for Windows chat. OMA already attaches images as
 // ImagePart data URLs and sends them as image_url parts on
-// /v1/chat/completions; this policy decides which model serves an image turn
-// and raises a clear, actionable error when none can, instead of sending a
-// text-only request that silently ignores the attachments.
+// /v1/chat/completions, in the Linux agent container, unchanged. This policy
+// only decides which model name an image turn carries (via OPENMONO_MODEL
+// into the container or the /model command) and raises a clear, actionable
+// error when none can, instead of sending a text-only request that silently
+// ignores the attachments.
 public static class WindowsImagePolicy
 {
     public static VisionRouteResult RouteImageTurn(
