@@ -29,10 +29,14 @@
     "    script                backend 'strata': path to the manager script to run instead of",
     "                          the llama download path. port_env/port_default name the OpenAI",
     "                          endpoint written to docker/.env.",
-    "    platforms{linux,macos}  per-platform tier tables. The tier KEY differs by platform:",
+    "    platforms{linux,macos,windows}  per-platform tier tables. The tier KEY differs by platform:",
     "                          linux keys on VRAM MB bucket (24/16/12/8/cpu), macOS keys on",
     "                          unified RAM GB (48/32/16/8). Same GGUF can map to a different",
     "                          tier key per platform — that is expected.",
+    "                          windows (win/openmono.ps1, llama-server on the host) keys on",
+    "                          NVIDIA VRAM class (24/12/8/4/0, the largest whose",
+    "                          min_vram_gib fits) or 'cpu' without an NVIDIA GPU;",
+    "                          ctx_vision is the context used when the mmproj is loaded.",
     "      tiers{<key>:{...}}    ctx (tokens), accuracy (full|standard|lower|bonsai-*),",
     "                          optional kv (cache-type-k/v for the GPU override), an optional",
     "                          per-tier label, and, when the file varies per tier,",
@@ -90,6 +94,81 @@
               "mmproj_url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/mmproj-F16.gguf",
               "ctx": 196608, "kv": "q8_0", "accuracy": "standard",
               "label": "Qwen3.6-35B-A3B (~17.6GB) [CPU]"
+            }
+          }
+        },
+        "windows": {
+          "tiers": {
+            "24": {
+              "name": "Qwen3.8-27B-UD-Q4_K_M.gguf",
+              "url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf",
+              "mmproj": "mmproj-qwen3.8-27B-F16.gguf",
+              "mmproj_url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf",
+              "ctx": 196608,
+              "ctx_vision": 172032,
+              "kv": "q8_0",
+              "accuracy": "full",
+              "min_vram_gib": 23,
+              "label": "Qwen3.8-27B-UD-Q4_K_M (~16.5GB) [GPU 24GB+]"
+            },
+            "12": {
+              "name": "Qwen3.5-9B-UD-Q4_K_XL.gguf",
+              "url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q4_K_XL.gguf",
+              "mmproj": "mmproj-qwen3.5-9B-F16.gguf",
+              "mmproj_url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/mmproj-F16.gguf",
+              "ctx": 196608,
+              "ctx_vision": 98304,
+              "kv": "q4_0",
+              "accuracy": "lower",
+              "min_vram_gib": 11,
+              "label": "Qwen3.5-9B-UD-Q4_K_XL (~6GB) [GPU 12GB]"
+            },
+            "8": {
+              "name": "Qwen3.5-4B-UD-Q4_K_XL.gguf",
+              "url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-UD-Q4_K_XL.gguf",
+              "mmproj": "mmproj-qwen3.5-4B-F16.gguf",
+              "mmproj_url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/mmproj-F16.gguf",
+              "ctx": 131072,
+              "ctx_vision": 98304,
+              "kv": "q4_0",
+              "accuracy": "lower",
+              "min_vram_gib": 7,
+              "label": "Qwen3.5-4B-UD-Q4_K_XL (~2.9GB) [GPU 8GB]"
+            },
+            "4": {
+              "name": "Qwen3.5-2B-UD-Q4_K_XL.gguf",
+              "url": "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-UD-Q4_K_XL.gguf",
+              "mmproj": "mmproj-qwen3.5-2B-F16.gguf",
+              "mmproj_url": "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/mmproj-F16.gguf",
+              "ctx": 65536,
+              "ctx_vision": 65536,
+              "kv": "q4_0",
+              "accuracy": "lower",
+              "min_vram_gib": 3,
+              "label": "Qwen3.5-2B-UD-Q4_K_XL (~1.3GB) [GPU 4GB]"
+            },
+            "0": {
+              "name": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+              "url": "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+              "mmproj": "mmproj-qwen3.5-0.8B-F16.gguf",
+              "mmproj_url": "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/mmproj-F16.gguf",
+              "ctx": 32768,
+              "ctx_vision": 32768,
+              "kv": "q4_0",
+              "accuracy": "lower",
+              "min_vram_gib": 0,
+              "label": "Qwen3.5-0.8B-UD-Q4_K_XL (~0.6GB) [GPU under 4GB, last resort]"
+            },
+            "cpu": {
+              "name": "Qwen3.5-2B-UD-Q4_K_XL.gguf",
+              "url": "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-UD-Q4_K_XL.gguf",
+              "mmproj": "mmproj-qwen3.5-2B-F16.gguf",
+              "mmproj_url": "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/mmproj-F16.gguf",
+              "ctx": 65536,
+              "ctx_vision": 65536,
+              "kv": "q8_0",
+              "accuracy": "lower",
+              "label": "Qwen3.5-2B-UD-Q4_K_XL (~1.3GB) [no NVIDIA GPU, CPU]"
             }
           }
         },
