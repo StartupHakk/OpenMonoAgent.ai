@@ -624,7 +624,14 @@ cmd_install() {
     # on any other Ubuntu this is the only working path.)
     local cuda_v_now
     cuda_v_now="$(cuda_toolkit_version)"
-    if [[ ! "$cuda_v_now" =~ ^13\. ]]; then
+    if [[ "${OPENMONO_SKIP_CUDA_TOOLKIT:-0}" == "1" ]]; then
+        # Pascal / Volta (e.g. the dual Tesla V100S profile): CUDA 13 cannot
+        # target sm_60/sm_70. Strata installs its own prebuilt CUDA 12 engine
+        # component for these cards, so no system CUDA toolkit is needed and
+        # adding NVIDIA's CUDA apt repo here only risks a driver branch that
+        # drops these GPUs.
+        info "Skipping the CUDA 13 toolkit install (OPENMONO_SKIP_CUDA_TOOLKIT=1): Strata uses its prebuilt CUDA 12 engine for these GPUs."
+    elif [[ ! "$cuda_v_now" =~ ^13\. ]]; then
         echo ""
         if [[ "${STRATA_YES:-0}" == "1" || "${setup_args[*]:-}" == *--yes* || "${OPENMONO_ASSUME_YES:-0}" == "1" || ! -t 0 ]]; then
             info "CUDA ${cuda_v_now:-none} does not satisfy the ${CUDA_MIN} requirement — installing it now (sudo; ~4 GB) ..."

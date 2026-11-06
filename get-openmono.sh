@@ -47,10 +47,18 @@ BRANCH_LABEL="${BRANCH:-default}"
 
 if [ -d "$INSTALL_DIR/.git" ]; then
     info "Repository already exists at $INSTALL_DIR – fetching latest..."
+    # This script chmods +x the CLI and scripts/*.sh on every run (below). Git
+    # sees those mode bits as local edits, and `git checkout <branch>` then
+    # refuses to switch whenever the target branch changes one of those files.
+    # Ignore mode-only differences in this checkout so a branch switch works.
+    git -C "$INSTALL_DIR" config core.fileMode false
     git -C "$INSTALL_DIR" fetch --quiet 2>/dev/null || info "Fetch failed; continuing with existing checkout"
     if [[ -n "$BRANCH" ]]; then
         info "Switching to branch '$BRANCH'..."
-        git -C "$INSTALL_DIR" checkout "$BRANCH" 2>/dev/null || die "Branch '$BRANCH' not found"
+        if ! _co_out="$(git -C "$INSTALL_DIR" checkout "$BRANCH" 2>&1)"; then
+            err "$_co_out"
+            die "Could not switch to branch '$BRANCH' (see git output above)"
+        fi
     fi
     git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null \
         || info "Could not fast-forward; continuing with existing checkout"

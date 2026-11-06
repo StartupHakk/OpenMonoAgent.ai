@@ -442,6 +442,28 @@ _v100_persist_ctx() {
     fi
 }
 
+# Write inference.vision_enabled for the v100 profile so the agent does not
+# advertise image input when Strata was installed text-only (--vision no).
+_v100_persist_vision() {
+    local v="$1" b settings
+    case "$v" in
+        no|none|off|false|0) b=false ;;
+        yes|gpu|cpu|on|true|1) b=true ;;
+        *) return 0 ;;
+    esac
+    command -v jq >/dev/null 2>&1 || return 0
+    settings="${OPENMONO_SETTINGS_FILE:-$HOME/.openmono/settings.json}"
+    mkdir -p "$(dirname "$settings")"
+    [[ -f "$settings" ]] || echo '{}' > "$settings"
+    if jq --argjson b "$b" '.inference = (.inference // {}) | .inference.vision_enabled = $b' \
+        "$settings" > "${settings}.tmp" 2>/dev/null; then
+        mv "${settings}.tmp" "$settings"
+        chmod 0600 "$settings" 2>/dev/null || true
+    else
+        rm -f "${settings}.tmp"
+    fi
+}
+
 # GPU_MODE is exported by install_prereqs.sh (1 = GPU, 0 = CPU).
 _VRAM_MB=0
 _GPU_TIER=0
@@ -566,7 +588,14 @@ if [ "$OPENMONO_ROLE" != "agent" ]; then
         : "${STRATA_KV:=int8}"
         : "${STRATA_MTP:=on}"
         : "${OPENMONO_PARALLEL_SLOTS:=4}"
-        export STRATA_FAMILY STRATA_MODEL STRATA_CONTEXT STRATA_VISION STRATA_KV STRATA_MTP OPENMONO_PARALLEL_SLOTS
+        # V100S is Volta (sm_70): CUDA 13 cannot build for it, and Strata runs
+        # its prebuilt CUDA 12 engine here. Do not install a CUDA 13 toolkit.
+        : "${OPENMONO_SKIP_CUDA_TOOLKIT:=1}"
+        # Run Strata's setup in Control mode so it uses the installed engine
+        # component (0.1.57+, needed by UD-Q3_K_XL) instead of the clone's
+        # older ready-made engine, which fails "needs engine 0.1.57 or newer".
+        : "${STRATA_CONTROL_INSTALL:=1}"
+        export STRATA_FAMILY STRATA_MODEL STRATA_CONTEXT STRATA_VISION STRATA_KV STRATA_MTP OPENMONO_PARALLEL_SLOTS OPENMONO_SKIP_CUDA_TOOLKIT STRATA_CONTROL_INSTALL
         info "v100 profile: Strata family=${STRATA_FAMILY} model=${STRATA_MODEL} (qwen3.8-flash-next-unsloth-ud-q3_k_xl), slots=${OPENMONO_PARALLEL_SLOTS}, context=${STRATA_CONTEXT} (128k), kv=${STRATA_KV}, vision=${STRATA_VISION}, drafting=MTP, gpus=${_V100_GPUS}"
         info "Pass --options to choose the model, vision and parallel slots yourself"
     fi
@@ -632,6 +661,7 @@ if [ "$OPENMONO_ROLE" != "agent" ]; then
     if [ "$_V100_SERVING" = "1" ]; then
         om_persist_parallel_slots "$PARALLEL_SLOTS"
         _v100_persist_ctx "$STRATA_CONTEXT"
+        _v100_persist_vision "$STRATA_VISION"
     fi
     # Warn about what this many slots costs on the backend actually selected.
     # Warn-only by design: Strata silently reduces an over-large count itself and

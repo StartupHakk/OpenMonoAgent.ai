@@ -43,8 +43,21 @@ int8 KV, vision off, MTP drafting, and `--gpu` set to the V100S indices
 (0,1 when those cards are enumerated first). Bind stays `0.0.0.0` and the
 port stays 7474.
 
+Use `v100 --full` so this one workstation installs both the agent and inference.
+The V100S profile skips the CUDA 13 toolkit (CUDA 13 cannot target Volta, sm_70)
+and asks Strata for its installed Control engine (0.1.57+), which is what
+UD-Q3_K_XL requires.
+
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/StartupHakk/OpenMonoAgent.ai/refs/heads/v100/get-openmono.sh) v100
+bash <(curl -fsSL https://raw.githubusercontent.com/StartupHakk/OpenMonoAgent.ai/refs/heads/v100/get-openmono.sh) v100 --full
+```
+
+If `~/.openmono` already exists from an older agent run and is root-owned (a
+Docker tmpfs mount does this), give it back to your user before setup.
+Otherwise the installer cannot write its log under that directory:
+
+```bash
+sudo chown -R "$USER" ~/.openmono
 ```
 
 If the repo is already cloned:
@@ -52,7 +65,7 @@ If the repo is already cloned:
 ```bash
 git fetch origin v100
 git checkout v100
-openmono setup
+openmono setup --full
 ```
 
 `--model=`, `--cpu`, `OPENMONO_INFERENCE_BACKEND`, and `--options` still override
