@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Xunit;
 using OpenMono.Win.AgentHost;
 using OpenMono.Win.Foundry;
 
@@ -7,15 +8,15 @@ namespace OpenMono.Win.Tests;
 public sealed class WindowsShellTests
 {
     [Fact]
-    public void PrefersPwshThenPowershellThenCmd()
+    public void PrefersPwshThenPowershellOnly()
     {
-        WindowsShellSelector.PreferredShells().Should().Equal("pwsh.exe", "powershell.exe", "cmd.exe");
+        WindowsShellSelector.PreferredShells().Should().Equal("pwsh.exe", "powershell.exe");
     }
 
     [Fact]
     public void ResolvesFirstAvailable()
     {
-        WindowsShellSelector.ResolveAvailable(name => name == "cmd.exe").Should().Be("cmd.exe");
+        WindowsShellSelector.ResolveAvailable(name => name == "powershell.exe").Should().Be("powershell.exe");
     }
 
     [Fact]

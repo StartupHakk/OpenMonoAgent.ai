@@ -29,6 +29,14 @@ public sealed class FakeCliRunner : ICliRunner
     }
 }
 
+// Simulates a dead endpoint: every request throws like a refused connection.
+public sealed class UnreachableHandler : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request, CancellationToken cancellationToken) =>
+        throw new HttpRequestException("No connection could be made because the target machine actively refused it.");
+}
+
 // In-memory HTTP handler: maps request paths to canned responses.
 public sealed class FakeHttpHandler : HttpMessageHandler
 {

@@ -14,7 +14,7 @@ public sealed record FoundryCliStatus(
 
 // Detects the Foundry Local CLI and reads its server status.
 // All parsing is lenient: CLI output spelling changes between releases.
-public sealed class FoundryCliDetector
+public sealed partial class FoundryCliDetector
 {
     private readonly ICliRunner _runner;
 

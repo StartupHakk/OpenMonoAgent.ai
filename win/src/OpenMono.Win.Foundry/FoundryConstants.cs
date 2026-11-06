@@ -15,9 +15,14 @@ public static class FoundryConstants
     // this constant is only the desired alias, never a file hash.
     public const string TargetModelAlias = "qwen3.8-27b";
 
-    // Provisional fallback while the plan's open question is undecided.
-    // Runtime catalog resolution still applies, so a wrong guess fails loudly.
+    // Provisional text fallback while the plan's open question is undecided.
+    // Always resolved against the live catalog first, so a wrong guess fails loudly.
     public const string FallbackModelAlias = "qwen3-4b";
+
+    // Provisional vision fallback, used only when the target model refuses
+    // image input. Always resolved against the live catalog first, and
+    // documented in win/docs/VISION.md.
+    public const string DefaultVisionFallbackAlias = "qwen2.5-vl-7b";
 
     // Minimum Foundry Local CLI with the Qwen3.8-27B coding stack.
     public static readonly Version MinCliVersion = new(0, 13, 0);

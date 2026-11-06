@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Xunit;
 using OpenMono.Win.Foundry;
 
 namespace OpenMono.Win.Tests;
@@ -39,7 +40,7 @@ public sealed class GpuCatalogTests
     }
 
     [Fact]
-    public void SystemProberPrefersNvidiaSmi()
+    public async Task SystemProberPrefersNvidiaSmi()
     {
         var runner = new FakeCliRunner();
         runner.Respond(
@@ -48,7 +49,7 @@ public sealed class GpuCatalogTests
             0,
             "NVIDIA GeForce RTX 4090, 24564\n");
 
-        var gpus = new SystemGpuProber(runner).ProbeAsync().GetAwaiter().GetResult();
+        var gpus = await new SystemGpuProber(runner).ProbeAsync();
 
         gpus.Should().ContainSingle();
         runner.Calls.Should().ContainSingle();

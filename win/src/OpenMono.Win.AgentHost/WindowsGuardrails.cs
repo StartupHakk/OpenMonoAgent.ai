@@ -1,11 +1,28 @@
 namespace OpenMono.Win.AgentHost;
 
-// M2-start deny list for the Windows host. Upstream guardrails assume Unix
-// paths; this screens the Windows-destructive commands before they run.
-// Heuristic and conservative: unknown commands pass through to the normal
-// permission flow, only known-bad shapes are denied here.
+// M2-start deny patterns for the Windows host. Upstream permissions stay the
+// single pipeline (PermissionEngine: session deny-all, then config deny
+// patterns, then allow, then prompt). These patterns are the Windows additions
+// to merge into the Bash tool's config deny rules, not a parallel system:
+// DenyPatterns returns them per tool so the host can append them to
+// permissions.tools deny lists. IsDenied is the same check the host (and
+// tests) can run directly; unknown commands pass through to the normal flow.
 public static class WindowsGuardrails
 {
+    // Deny patterns for merging into AppConfig Permissions deny rules.
+    // Only the Bash tool needs Windows additions today; other tools reuse
+    // the upstream rules unchanged.
+    public static IReadOnlyList<string> DenyPatterns(string toolName) =>
+        string.Equals(toolName, "Bash", StringComparison.OrdinalIgnoreCase)
+            ? [
+                "format *",
+                "diskpart*",
+                "bcdedit*",
+                "reg delete *",
+                "Remove-Item * -Recurse *C:\\*",
+                "rmdir /s *C:\\*",
+            ]
+            : [];
     public static bool IsDenied(string commandLine, out string reason)
     {
         reason = string.Empty;
@@ -79,25 +96,31 @@ public static class WindowsGuardrails
 
     private static bool HasProtectedRoot(string lower)
     {
-        // Match C:\ or C:/ possibly quoted, but not C:\Users\... subpaths.
-        var idx = lower.IndexOf("c:\\", StringComparison.Ordinal);
-        var slash = lower.IndexOf("c:/", StringComparison.Ordinal);
-        var at = idx >= 0 ? idx : slash;
-        if (at < 0)
+        // Match C:\ or C:/ followed by end-of-command, a separator, or the
+        // Windows directory. The path may sit anywhere in the command line,
+        // with more flags after it, so inspect only the next path segment.
+        foreach (var marker in new[] { "c:\\", "c:/" })
         {
-            return false;
-        }
+            var at = 0;
+            while ((at = lower.IndexOf(marker, at, StringComparison.Ordinal)) >= 0)
+            {
+                var raw = lower[(at + marker.Length)..];
+                if (raw.Length == 0 || raw[0] is ' ' or '\t' or '"' or '\'' or ';' or '&' or '|' or '\n')
+                {
+                    // The drive root itself: C:\ followed by a delimiter or end.
+                    return true;
+                }
 
-        var after = lower[(at + 3)..].TrimStart('"', '\'', ' ', ';');
-        if (after.Length == 0)
-        {
-            return true;
-        }
+                var after = raw.TrimStart('"', '\'', ' ');
+                var end = after.IndexOfAny(['\\', '/', ' ', '"', '\'', ';', '&', '|']);
+                var segment = end < 0 ? after : after[..end];
+                if (segment.Equals("windows", StringComparison.Ordinal))
+                {
+                    return true;
+                }
 
-        if (after.StartsWith("windows", StringComparison.Ordinal))
-        {
-            var tail = after["windows".Length..];
-            return tail.Length == 0 || tail[0] is '\\' or '/' or '"' or '\'' or ' ';
+                at += marker.Length;
+            }
         }
 
         return false;
