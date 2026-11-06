@@ -7,8 +7,36 @@ namespace OpenMono.Llm;
 /// server is Foundry Local on the host, so the hints point there instead of llama-server.</summary>
 public static class LlmErrorHints
 {
-    public static string For(HttpStatusCode status, LlmConfig llm) =>
-        llm.IsFoundry ? Foundry(status) : LlamaServer(status);
+    public static string For(HttpStatusCode status, LlmConfig llm, string? message = null) =>
+        LlmProviderErrorException.IsToolMarkerError(message) ? ToolMarkers(llm)
+        : llm.IsFoundry ? Foundry(status) : LlamaServer(status);
+
+    /// <summary>True only for a failure to reach the server at all (refused connection, DNS,
+    /// timeout, retries exhausted without a reply). An error the server put in a response body
+    /// has no status code either, but the server answered.</summary>
+    public static bool IsTransportFailure(HttpRequestException ex) =>
+        ex.StatusCode is null
+        && ex is not LlmProviderErrorException
+        && !ex.Message.StartsWith(LlmProviderErrorException.MessagePrefix, StringComparison.Ordinal)
+        && !LlmProviderErrorException.IsToolMarkerError(ex.Message);
+
+    /// <summary>The hint for an error reported in a response body (no HTTP status).</summary>
+    public static string ForProviderError(string message, LlmConfig llm) =>
+        LlmProviderErrorException.IsToolMarkerError(message) ? ToolMarkers(llm)
+        : llm.IsFoundry
+            ? "Foundry Local answered with an error for this request (shown above); it is reachable. It may be the served model "
+              + "or a request it does not support.\n" + HostCommands
+            : "llama-server answered with an error for this request (shown above).\n"
+              + "Check logs: docker logs llama-server --tail 40";
+
+    private static string ToolMarkers(LlmConfig llm) =>
+        llm.IsFoundry
+            ? "Foundry Local is reachable, but the served model variant does not support structured tool calling "
+              + "(it publishes no tool markers). OpenMono then describes the tools in the prompt and reads tool calls "
+              + "from the reply text for the rest of the session.\n"
+              + HostCommands
+            : "The server's model does not support structured tool calling (no tool markers). "
+              + "Check logs: docker logs llama-server --tail 40";
 
     private static string LlamaServer(HttpStatusCode status) => status switch
     {

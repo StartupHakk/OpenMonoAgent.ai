@@ -162,6 +162,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     if (llm is OpenAiCompatClient openAiClient)
     {
         openAiClient.OnDebug = debugCallback;
+        openAiClient.OnWarning = msg => renderer.WriteWarning(msg);
         openAiClient.OnModelReported = m => config.Llm.Model = m;
     }
     if (llm is AnthropicClient anthropicClient) anthropicClient.OnDebug = debugCallback;
@@ -665,7 +666,12 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
         }
         catch (HttpRequestException ex)
         {
-            if (ex.StatusCode is null)
+            if (ex.StatusCode is null && !OpenMono.Llm.LlmErrorHints.IsTransportFailure(ex))
+            {
+                renderer.WriteError($"LLM error: {ex.Message}");
+                renderer.WriteInfo(OpenMono.Llm.LlmErrorHints.ForProviderError(ex.Message, config.Llm));
+            }
+            else if (ex.StatusCode is null)
             {
                 renderer.WriteError($"LLM error: {ex.Message}");
                 if (config.Llm.IsFoundry)
@@ -677,7 +683,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
             else
             {
                 renderer.WriteError($"LLM error: {ex.Message}");
-                renderer.WriteInfo(OpenMono.Llm.LlmErrorHints.For(ex.StatusCode.Value, config.Llm));
+                renderer.WriteInfo(OpenMono.Llm.LlmErrorHints.For(ex.StatusCode.Value, config.Llm, ex.Message));
             }
             Log.Error("LLM connection failed", ex);
         }
@@ -923,6 +929,33 @@ static async Task<int?> TryDetectCtxFromSlotsAsync(System.Net.Http.HttpClient ht
     return null;
 }
 
+// Foundry Local answers GET /openai/loadedmodels with the ids it has loaded (a JSON array of
+// strings). Other servers answer 404; any failure means "unknown".
+static async Task<IReadOnlyList<string>> TryListLoadedModelsAsync(System.Net.Http.HttpClient http, string baseUrl)
+{
+    try
+    {
+        var json = await http.GetStringAsync($"{baseUrl}/openai/loadedmodels");
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        if (root.ValueKind == System.Text.Json.JsonValueKind.Object && root.TryGetProperty("data", out var data))
+            root = data;
+        if (root.ValueKind != System.Text.Json.JsonValueKind.Array)
+            return [];
+        return root.EnumerateArray()
+            .Select(e => e.ValueKind == System.Text.Json.JsonValueKind.String ? e.GetString()
+                : e.ValueKind == System.Text.Json.JsonValueKind.Object && e.TryGetProperty("id", out var id) ? id.GetString() : null)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id!)
+            .ToList();
+    }
+    catch (Exception ex)
+    {
+        Log.Debug($"/openai/loadedmodels unavailable ({ex.GetType().Name})");
+        return [];
+    }
+}
+
 static async Task TryDetectActualModelAsync(AppConfig config)
 {
     using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(5) };
@@ -1064,7 +1097,8 @@ static async Task TryDetectActualModelAsync(AppConfig config)
                 .Where(item => item.TryGetProperty("id", out var idEl) && idEl.ValueKind == System.Text.Json.JsonValueKind.String)
                 .Select(item => item.GetProperty("id").GetString()!)
                 .ToList();
-            if (OpenMono.Llm.ServedModelPicker.Pick(config.Llm.Model, ids) is { } name)
+            var loaded = ids.Count > 1 ? await TryListLoadedModelsAsync(http, baseUrl) : [];
+            if (OpenMono.Llm.ServedModelPicker.Pick(config.Llm.Model, ids, loaded) is { } name)
             {
                 config.Llm.Model = name;
                 Log.Debug($"Detected model from /v1/models: {name}");
