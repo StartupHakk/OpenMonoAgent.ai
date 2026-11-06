@@ -6,7 +6,7 @@
   Builds FakeTool and stages it as foundry.exe, docker.exe, nvidia-smi.exe,
   winget.exe, and wsl.exe ahead of everything else on PATH (any real
   docker.exe directory is removed from PATH), starts a fake Foundry HTTP
-  server on 127.0.0.1:7474, then runs three scenarios under the requested
+  server on 127.0.0.1:7474, then runs four scenarios under the requested
   shell:
 
     docker-missing  `setup` with no Docker and no WSL: the model ladder is
@@ -22,6 +22,9 @@
                     launch: argument quoting (embedded quotes, a trailing
                     backslash, a workspace path with a space), the ACP
                     publish, and the compose variables.
+    cpu-only        `start` with no NVIDIA GPU: qwen3.5-2b is served as its
+                    generic CPU variant from the (fake) CPU catalog, and no
+                    larger model is ever loaded.
 
   No GPU, Docker engine, WSL, or Foundry install is needed.
 #>
@@ -60,6 +63,7 @@ $env:FAKE_DOCKER_OUT = Join-Path $work 'docker.json'
 $env:OPENMONO_DOCKER_WAIT_SECONDS = '60'
 $env:OPENMONO_FOUNDRY_CATALOG_URL = 'http://127.0.0.1:7474/api/models'
 $env:FAKE_API_LOG = Join-Path $work 'catalog-api.log'
+$env:FAKE_SERVED = Join-Path $work 'served-model.txt'
 Remove-Item (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.openmono\win\foundry-catalog-*.json') -ErrorAction SilentlyContinue
 $exe = if ($Shell -eq 'pwsh') { 'pwsh' } else { 'powershell.exe' }
 $launcher = Join-Path $root 'win\openmono.ps1'
@@ -185,13 +189,35 @@ exit 0
     if ($run.env.OPENMONO_VISION_ENABLED -ne '0') { $failures.Add("[agent] OPENMONO_VISION_ENABLED was [$($run.env.OPENMONO_VISION_ENABLED)]") }
   }
 
+  # No NVIDIA GPU: the CPU rung only, loaded by its catalog variant id.
+  $cpuBody = @"
+& '$launcher' start
+exit `$LASTEXITCODE
+"@
+  $calls = Invoke-Scenario 'cpu-only' $cpuBody @{
+    PATH = "$dockerBin;$toolsBin;$cleanPath"
+    OPENMONO_DOCKER_DESKTOP_DIR = $desktopDir
+    FAKE_DOCKER_ENGINE = $null
+    FAKE_WSL_STATE = $null
+    FAKE_NO_GPU = '1'
+  }
+  Assert-Called 'cpu-only' $calls 'foundry model load qwen3.5-2b-generic-cpu:3*'
+  foreach ($big in @('qwen3.8-27b', 'qwen3.5-9b', 'qwen3.5-4b')) { Assert-NotCalled 'cpu-only' $calls "foundry model load $big*" }
+  if (-not (Test-Path $state)) {
+    $failures.Add('[cpu-only] start wrote no inference state')
+  } else {
+    $inference = Get-Content $state -Raw | ConvertFrom-Json
+    if ($inference.model_alias -ne 'qwen3.5-2b') { $failures.Add("[cpu-only] model_alias was [$($inference.model_alias)]") }
+    if ($inference.served_model_id -ne 'qwen3.5-2b-generic-cpu:3') { $failures.Add("[cpu-only] served_model_id was [$($inference.served_model_id)]") }
+  }
+
   if ($failures.Count -gt 0) {
     $failures | ForEach-Object { Write-Host "FAIL: $_" }
     if ($argv.Count -gt 0) { Write-Host 'docker argv:'; $argv | ForEach-Object { Write-Host "  [$_]" } }
     Get-ChildItem $work -Filter 'calls-*.log' | ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content $_.FullName | ForEach-Object { Write-Host "  $_" } }
     exit 1
   }
-  Write-Host "Windows smoke test passed under $Shell (docker-missing, docker-stopped, agent)."
+  Write-Host "Windows smoke test passed under $Shell (docker-missing, docker-stopped, agent, cpu-only)."
 } finally {
   if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
 }

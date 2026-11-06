@@ -33,8 +33,12 @@ otherwise unchanged in intent.
    `qwen3.5-9b`, 8 GB `qwen3.5-4b`, 4 GB `qwen3.5-2b`, under 4 GB
    `qwen3.5-0.8b` as the last resort; all four are Qwen3.5 vision-language
    models. A sub-24 GB rung missing from the catalog steps down to the next
-   smaller Qwen3.5 model, and the launcher names the skipped alias. The older
-   Qwen3 and Qwen-VL aliases are not used.
+   smaller Qwen3.5 model, and the launcher names the skipped alias. No
+   dedicated NVIDIA GPU (CPU only): `qwen3.5-2b`, loaded by its generic CPU
+   variant id from the CPU catalog (for example `qwen3.5-2b-generic-cpu:3`)
+   when one is listed; `qwen3.8-27b` and the 4B and 9B models are never tried
+   there, and the only step down is `qwen3.5-0.8b`. The older Qwen3 and
+   Qwen-VL aliases are not used.
 3. Endpoint host spelling: the plan binds `127.0.0.1:7474`. OMA defaults use
    `localhost:7474`. These are the same loopback interface; the Windows host
    uses the `127.0.0.1` spelling and OMA config normalization treats them as

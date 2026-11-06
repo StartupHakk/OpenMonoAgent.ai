@@ -56,5 +56,5 @@ Confirm-DockerReady -Install
 Write-Host ''
 Write-Host '[openmono] Prerequisites checked. Next:'
 Write-Host '  .\win\openmono.ps1 catalog check   (the model this machine serves, checked against the Foundry catalog)'
-Write-Host '  .\win\openmono.ps1 start   (serves it on http://127.0.0.1:7474; qwen3.8-27b on 24 GB+ is about 18 GB on first run)'
+Write-Host '  .\win\openmono.ps1 start   (serves it on http://127.0.0.1:7474; qwen3.8-27b on 24 GB+ is about 18 GB on first run, qwen3.5-2b on CPU about 2 GB)'
 Write-Host '  .\win\openmono.ps1 agent   (the OpenMono agent in its Linux container)'

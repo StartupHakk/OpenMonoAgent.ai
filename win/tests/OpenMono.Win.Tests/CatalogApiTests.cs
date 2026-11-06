@@ -14,6 +14,9 @@ public static class CatalogFixtures
 
     public static string Page2Only => Read("foundrylocal-cuda-page2.json");
 
+    // CPU filter, one page: the generic CPU variants (qwen3.5-2b-generic-cpu:3).
+    public static string Cpu => Read("foundrylocal-cpu.json");
+
     private static string Read(string name) =>
         File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", name));
 }
@@ -55,6 +58,11 @@ public sealed class CatalogApiHandler : HttpMessageHandler
             var redirect = new HttpResponseMessage(HttpStatusCode.TemporaryRedirect);
             redirect.Headers.Location = new Uri(_redirectTo);
             return redirect;
+        }
+
+        if (body.Contains(FoundryConstants.CpuExecutionProvider, StringComparison.Ordinal))
+        {
+            return FakeHttpHandler.Json(CatalogFixtures.Cpu);
         }
 
         if (_singlePage)
@@ -261,6 +269,23 @@ public sealed class CatalogCommandTests
     }
 
     [Fact]
+    public async Task CpuOnlyCheckNamesTheCpuVariant()
+    {
+        using var rig = new FoundryRig(noGpu: true, catalog: []);
+        rig.Runner.Respond(FoundryRig.Exe, "model list", 1, "", "not installed");
+        var handler = new CatalogApiHandler();
+        var deps = rig.Deps() with { Http = new HttpClient(handler) };
+        var stdout = new StringWriter();
+
+        var code = await LauncherCli.RunAsync(["catalog", "check", "--strict"], deps, stdout, new StringWriter());
+
+        code.Should().Be(0, stdout.ToString());
+        stdout.ToString().Should().Contain("This machine (no dedicated NVIDIA GPU, CPU-only): qwen3.5-2b.")
+            .And.Contain("CPU variant: qwen3.5-2b-generic-cpu:3");
+        handler.Requests.Should().Contain(r => r.Body.Contains("CPUExecutionProvider"));
+    }
+
+    [Fact]
     public async Task StrictCheckFailsWhenTheCatalogLacksALadderAlias()
     {
         using var rig = new FoundryRig(vramGiB: 8, catalog: []);
@@ -302,7 +327,7 @@ public sealed class CatalogCommandTests
 
         code.Should().Be(0);
         handler.Requests[0].Body.Should().Contain("CPUExecutionProvider");
-        stdout.ToString().Should().Contain("qwen3.5-9b").And.Contain("[ladder: 12 GB]");
+        stdout.ToString().Should().Contain("qwen3.5-2b-text").And.Contain("[ladder: no GPU (CPU)]");
     }
 }
 

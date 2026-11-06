@@ -21,6 +21,10 @@ public sealed record LadderRung(
 // preferred one is missing from the catalog, the next smaller Qwen3.5 rung is
 // used. VRAM classes start 1 GiB below their nominal size because cards report
 // a little less than marketed (see FoundryConstants).
+//
+// No dedicated NVIDIA GPU means Foundry runs on the CPU: qwen3.5-2b (its
+// generic CPU variant when the catalog lists one), never qwen3.8-27b or the
+// larger Qwen3.5 rungs. qwen3.5-0.8b is the only step down from there.
 public static class FoundryModelLadder
 {
     private const long GiB = 1024L * 1024 * 1024;
@@ -36,7 +40,15 @@ public static class FoundryModelLadder
         new("qwen3.5-0.8b", 0, 262144, "under 4 GB", true),
     ];
 
+    public static readonly IReadOnlyList<LadderRung> CpuOnly =
+    [
+        new(FoundryConstants.CpuModelAlias, 0, 262144, "no GPU (CPU)", true),
+        new("qwen3.5-0.8b", 0, 262144, "no GPU (CPU)", true),
+    ];
+
     public static LadderRung Target => Text[0];
+
+    public static LadderRung Cpu => CpuOnly[0];
 
     public static IEnumerable<string> AllAliases => Text.Select(r => r.Alias);
 

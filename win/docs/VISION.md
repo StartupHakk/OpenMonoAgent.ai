@@ -39,7 +39,8 @@ accepted images, otherwise it is refused out loud. Probe traffic stays on
 The model ladder is in the README. Below the 24 GB floor every rung is a
 Qwen3.5 vision-language model (`qwen3.5-9b`, `qwen3.5-4b`, `qwen3.5-2b`,
 `qwen3.5-0.8b`; catalog task `vision-language-chat`, input `text,image`), so
-the served model already handles images on 12, 8, and 4 GB cards.
+the served model already handles images on 12, 8, and 4 GB cards, and on a
+CPU-only machine (`qwen3.5-2b`, generic CPU variant).
 
 A 24 GB+ card always serves `qwen3.8-27b`. The Foundry catalog lists that
 build as task `coding` with text input (checked 2026-11-05 at

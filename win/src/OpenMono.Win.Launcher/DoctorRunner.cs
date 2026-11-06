@@ -157,9 +157,10 @@ public sealed class DoctorRunner
         var nvidia = gpus.Where(g => g.IsNvidia).OrderByDescending(g => g.DedicatedVramBytes).FirstOrDefault();
         if (nvidia is null)
         {
-            checks.Add(new DoctorCheck("gpu", CheckLevel.Warn,
-                $"No NVIDIA GPU detected. {FoundryConstants.TargetModelAlias} needs 24 GB VRAM; "
-                    + "smaller NVIDIA cards get the Qwen3.5 ladder (see `openmono catalog check`)."));
+            checks.Add(new DoctorCheck("gpu", CheckLevel.Info,
+                $"No dedicated NVIDIA GPU detected: CPU-only, serves {FoundryConstants.CpuModelAlias} (its generic CPU variant "
+                    + $"when Foundry offers one). {FoundryConstants.TargetModelAlias} needs a 24 GB NVIDIA card; smaller NVIDIA "
+                    + "cards get the Qwen3.5 ladder (see `openmono catalog check`)."));
         }
         else
         {
@@ -195,20 +196,20 @@ public sealed class DoctorRunner
                 $"Update Foundry Local (winget upgrade Microsoft.FoundryLocal); see {FoundryWebCatalogClient.ModelsPageUrl}");
         }
 
-        if (!check.View.Known)
+        if (!check.PickView.Known)
         {
             return new DoctorCheck("model catalog", CheckLevel.Warn,
                 CatalogCheck.PublicSummary(web) + " `foundry model load` will validate the alias.",
                 "Check the network, then: .\\win\\openmono.ps1 catalog check --refresh");
         }
 
-        var pick = check.Pick!.ModelAlias;
+        var pick = check.Pick!.ModelAlias + (check.CpuVariant is { } variant ? $" (CPU variant {variant})" : "");
         var missing = check.MissingFromPublic;
         return missing.Count == 0
             ? new DoctorCheck("model catalog", CheckLevel.Ok,
-                $"{pick} is in the Foundry catalog ({check.View.Source}). {CatalogCheck.PublicSummary(web)}")
+                $"{pick} is in the Foundry catalog ({check.PickView.Source}). {CatalogCheck.PublicSummary(web)}")
             : new DoctorCheck("model catalog", CheckLevel.Warn,
-                $"{pick} is in the Foundry catalog ({check.View.Source}), but the public catalog lacks: {string.Join(", ", missing)}.",
+                $"{pick} is in the Foundry catalog ({check.PickView.Source}), but the public catalog lacks: {string.Join(", ", missing)}.",
                 "Run: .\\win\\openmono.ps1 catalog check --refresh");
     }
 

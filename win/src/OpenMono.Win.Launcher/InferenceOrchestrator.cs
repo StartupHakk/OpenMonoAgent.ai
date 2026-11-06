@@ -77,9 +77,10 @@ public sealed class InferenceOrchestrator
         var vram = gpus.Where(g => g.IsNvidia).Select(g => (long?)g.DedicatedVramBytes).Max();
         log.Add(vram is { } v
             ? $"NVIDIA GPU VRAM: {Math.Round(v / (1024.0 * 1024 * 1024))} GB."
-            : "No NVIDIA GPU detected; Foundry picks the best available device for the alias.");
+            : "No dedicated NVIDIA GPU detected: CPU-only.");
 
-        var view = await LoadCatalogAsync(ct);
+        var device = vram is null ? FoundryCatalogDevice.Cpu : FoundryCatalogDevice.Cuda;
+        var view = await LoadCatalogAsync(device, ct);
         if (!view.Known)
         {
             log.Add("Foundry catalog unavailable (`foundry model list` and " + FoundryWebCatalogClient.DefaultApiUrl
@@ -102,7 +103,16 @@ public sealed class InferenceOrchestrator
         var endpoint = $"http://127.0.0.1:{options.Port}";
         var service = new CliFoundryService(
             _deps.Cli, new FoundryHealthChecker(_deps.Http), _deps.Delay, _deps.HealthAttempts);
-        var served = await service.StartOrAdoptAsync(selection.ModelAlias, endpoint, ct);
+        var loadTarget = selection.CpuOnly ? CpuVariant(view, selection.ModelAlias) : null;
+        if (selection.CpuOnly)
+        {
+            log.Add(loadTarget is not null
+                ? $"Loading the generic CPU variant {loadTarget} from the Foundry catalog."
+                : $"The Foundry catalog lists no CPU variant id for {selection.ModelAlias} here; loading the alias, "
+                    + "and Foundry picks the variant this machine can run.");
+        }
+
+        var served = await service.StartOrAdoptAsync(selection.ModelAlias, endpoint, ct, loadTarget);
         log.AddRange(served.Log);
 
         if (!served.Healthy)
@@ -222,16 +232,24 @@ public sealed class InferenceOrchestrator
             : new DownResult(false, "foundry server stop failed: " + (result.StandardOutput + result.StandardError).Trim());
     }
 
-    // `foundry model list` first; the public catalog API only when the local
-    // list is empty, and otherwise from its cache for size and modality notes,
-    // so a normal start makes no extra network call.
-    private async Task<FoundryCatalogView> LoadCatalogAsync(CancellationToken ct)
+    // `foundry model list` first. On a GPU machine the public catalog API is
+    // read only when the local list is empty, and otherwise from its cache for
+    // size and modality notes, so a normal start makes no extra network call.
+    // A CPU-only machine reads the CPU catalog (cached for an hour) for the
+    // generic CPU variant id, which `foundry model list` does not report.
+    private async Task<FoundryCatalogView> LoadCatalogAsync(FoundryCatalogDevice device, CancellationToken ct)
     {
         var local = await new FoundryCatalogClient(_deps.Cli).ListModelsAsync(ct);
         var web = await FoundryWebCatalogClient.FromEnvironment(_deps.Http, _deps.GetEnv, _deps.HomeDir)
-            .ListAsync(FoundryCatalogDevice.Cuda, cacheOnly: local.Count > 0, ct: ct);
+            .ListAsync(device, cacheOnly: local.Count > 0 && device != FoundryCatalogDevice.Cpu, ct: ct);
         return new FoundryCatalogView(local, web);
     }
+
+    public static string? CpuVariant(FoundryCatalogView view, string alias) =>
+        view.Describe(alias) is { VariantId: { Length: > 0 } id } model
+            && string.Equals(model.ExecutionProvider, FoundryConstants.CpuExecutionProvider, StringComparison.OrdinalIgnoreCase)
+            ? id
+            : null;
 
     private static ModelSelection? Select(UpOptions options, long? vram, FoundryCatalogView view, out string? error)
     {
@@ -249,7 +267,10 @@ public sealed class InferenceOrchestrator
             var ctx = vram >= FoundryConstants.FullContextVramBytes
                 ? FoundryConstants.MaxContextTokens
                 : FoundryConstants.StandardContextTokens;
-            return new ModelSelection(alias, ctx, false, $"Model override: {alias}.");
+            var cpuNote = vram is null && FoundryModelLadder.CpuOnly.All(r => !string.Equals(r.Alias, alias, StringComparison.OrdinalIgnoreCase))
+                ? $" No dedicated NVIDIA GPU: it runs on the CPU, where OpenMono would pick {FoundryConstants.CpuModelAlias}."
+                : "";
+            return new ModelSelection(alias, ctx, false, $"Model override: {alias}.{cpuNote}");
         }
 
         // An unreadable catalog must not demote a 24 GB box: ask Foundry for
@@ -271,6 +292,13 @@ public sealed class InferenceOrchestrator
             return $"{FoundryConstants.TargetModelAlias} is not in the Foundry catalog ({view.Source}). A 24 GB+ card serves only "
                 + $"{FoundryConstants.TargetModelAlias}, so nothing was downloaded. Update Foundry Local "
                 + $"(winget upgrade Microsoft.FoundryLocal) and check {FoundryWebCatalogClient.ModelsPageUrl}.";
+        }
+
+        if (vram is null)
+        {
+            return $"No dedicated NVIDIA GPU, so this machine serves only {string.Join(" or ", FoundryModelLadder.CpuOnly.Select(r => r.Alias))} "
+                + $"on the CPU, and neither is in the Foundry catalog ({view.Source}); nothing was downloaded. "
+                + $"Check {FoundryWebCatalogClient.ModelsPageUrl}.";
         }
 
         var candidates = FoundryModelLadder.Text.SkipWhile(r => !ReferenceEquals(r, rung)).Select(r => r.Alias);

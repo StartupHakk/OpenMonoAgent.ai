@@ -2,12 +2,14 @@ namespace OpenMono.Win.Foundry;
 
 // Which model the host serves, and with what context window.
 // SkippedAliases are ladder aliases passed over because the catalog lacks them.
+// CpuOnly: no dedicated NVIDIA GPU, so the caller loads the CPU variant.
 public sealed record ModelSelection(
     string ModelAlias,
     int ContextTokens,
     bool IsTargetModel,
     string Reason,
-    IReadOnlyList<string>? SkippedAliases = null);
+    IReadOnlyList<string>? SkippedAliases = null,
+    bool CpuOnly = false);
 
 // Walks FoundryModelLadder for the detected VRAM. Pure: `resolve` maps a
 // ladder alias to its catalog spelling, or null when the catalog lacks it,
@@ -18,15 +20,20 @@ public static class ModelSelector
 {
     private static long GiB(long bytes) => (long)Math.Round(bytes / (1024.0 * 1024 * 1024));
 
-    // The rung the VRAM class alone points at. Unknown VRAM (no NVIDIA GPU
-    // detected) keeps the target model, as before the ladder existed.
+    // The rung the VRAM class alone points at. Null VRAM means no dedicated
+    // NVIDIA GPU was detected: the CPU rung.
     public static LadderRung RungFor(long? dedicatedVramBytes) =>
         dedicatedVramBytes is { } vram
             ? FoundryModelLadder.Text.First(r => vram >= r.MinVramBytes)
-            : FoundryModelLadder.Target;
+            : FoundryModelLadder.Cpu;
 
     public static ModelSelection? Select(long? dedicatedVramBytes, Func<string, string?> resolve)
     {
+        if (dedicatedVramBytes is null)
+        {
+            return SelectCpu(resolve);
+        }
+
         var preferred = RungFor(dedicatedVramBytes);
 
         // A 24 GB+ card serves qwen3.8-27b or nothing: never a smaller model.
@@ -70,6 +77,38 @@ public static class ModelSelector
         return null;
     }
 
+    // Only the CPU rungs are ever asked for, so a CPU-only machine never
+    // reaches for qwen3.8-27b or the 4B and 9B models.
+    private static ModelSelection? SelectCpu(Func<string, string?> resolve)
+    {
+        var skipped = new List<string>();
+        foreach (var rung in FoundryModelLadder.CpuOnly)
+        {
+            var match = resolve(rung.Alias);
+            if (match is null)
+            {
+                skipped.Add(rung.Alias);
+                continue;
+            }
+
+            var context = ContextFor(rung, null, isTarget: false);
+            var missing = skipped.Count == 0
+                ? ""
+                : $" Not in the Foundry catalog: {string.Join(", ", skipped)}; using the next smaller model.";
+            return new ModelSelection(
+                match,
+                context,
+                false,
+                $"No dedicated NVIDIA GPU detected, so Foundry runs on the CPU. Using {match} (text and images) with "
+                    + $"{context} token context; {FoundryConstants.TargetModelAlias} and the larger Qwen3.5 models are not tried "
+                    + $"without a GPU.{missing}",
+                skipped,
+                CpuOnly: true);
+        }
+
+        return null;
+    }
+
     private static int IndexOf(LadderRung rung)
     {
         var ladder = FoundryModelLadder.Text;
@@ -95,11 +134,7 @@ public static class ModelSelector
     }
 
     private static string TargetReason(long? vram, string alias, int context) =>
-        vram switch
-        {
-            null => $"VRAM size unknown; serving {alias} with the standard {context} token context.",
-            _ when vram >= FoundryConstants.FullContextVramBytes =>
-                $"Detected {GiB(vram.Value)} GB VRAM: {alias} with the full {context} token context.",
-            _ => $"Detected {GiB(vram.Value)} GB VRAM: {alias} with {context} token context.",
-        };
+        vram >= FoundryConstants.FullContextVramBytes
+            ? $"Detected {GiB(vram!.Value)} GB VRAM: {alias} with the full {context} token context."
+            : $"Detected {GiB(vram!.Value)} GB VRAM: {alias} with {context} token context.";
 }

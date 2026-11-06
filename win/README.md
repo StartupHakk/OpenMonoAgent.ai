@@ -11,9 +11,10 @@ host control, in PowerShell.
 
 Prerequisites: Windows 11, .NET SDK 10.0.403+ (same as `install.ps1`), winget
 (`setup` uses it to install Foundry Local and, when missing, Docker Desktop
-with WSL 2), an NVIDIA GPU (24 GB VRAM for `qwen3.8-27b`; smaller cards get
-the Qwen3.5 ladder below), and CUDA plus cuDNN on `PATH` (Foundry Local does
-not install them).
+with WSL 2), and for GPU inference an NVIDIA GPU (24 GB VRAM for
+`qwen3.8-27b`; smaller cards get the Qwen3.5 ladder below) with CUDA plus
+cuDNN on `PATH` (Foundry Local does not install them). Without an NVIDIA GPU,
+OpenMono runs `qwen3.5-2b` on the CPU.
 
 ```powershell
 .\win\openmono.ps1 setup     # Foundry CLI and Docker Desktop (winget), CUDA check, agent image, start inference, doctor
@@ -38,7 +39,7 @@ Runs on PowerShell 7 (`pwsh.exe`) or Windows PowerShell 5.1 (`powershell.exe`).
 
 ## Models
 
-One model per machine, picked by dedicated VRAM. Every alias is a real entry in
+One model per machine, picked by dedicated NVIDIA VRAM. Every alias is a real entry in
 the Foundry Local catalog (https://foundrylocal.ai/models), checked through
 https://foundrylocal.ai/api/models and `foundry model list` before anything
 downloads. If an alias is missing, nothing is downloaded and the launcher says
@@ -51,11 +52,15 @@ so.
 | 8 GB | `qwen3.5-4b` | text and images | 64K |
 | 4 GB | `qwen3.5-2b` | text and images | 64K |
 | under 4 GB | `qwen3.5-0.8b` (last resort) | text and images | 64K |
+| no NVIDIA GPU (CPU only) | `qwen3.5-2b`, its generic CPU variant (for example `qwen3.5-2b-generic-cpu:3`) when Foundry offers one | text and images | 64K |
 
 A 24 GB+ card always serves `qwen3.8-27b`: never a different alias for images,
 `--vision`, or a missing catalog entry. Below 24 GB, if a rung is missing from
 the catalog the next smaller Qwen3.5 model is used and the launcher says which
-alias was skipped. `--model ALIAS` on `inference up` overrides the pick, and is
+alias was skipped. A CPU-only machine never tries `qwen3.8-27b`, `qwen3.5-9b`,
+or `qwen3.5-4b`; its only step down is `qwen3.5-0.8b`. The CPU variant id
+comes from the CPU catalog (cached for an hour); when it is not listed, the
+alias is loaded and Foundry picks the variant. `--model ALIAS` on `inference up` overrides the pick, and is
 refused unless the alias is in the catalog. `OPENMONO_FOUNDRY_CATALOG_URL`
 points the catalog lookup elsewhere (`off` disables it; `foundry model list`
 still applies).

@@ -31,7 +31,9 @@ public sealed class FoundryRig : IDisposable
     public static readonly string[] LadderCatalog =
         ["qwen3.8-27b", "qwen3.5-9b", "qwen3.5-4b", "qwen3.5-2b", "qwen3.5-0.8b", "qwen3-8b"];
 
-    public FoundryRig(long vramGiB = 24, bool imagesAccepted = false, bool alreadyServing = false, string[]? catalog = null)
+    public static readonly string[] CpuVariants = ["qwen3.5-2b-generic-cpu:3", "qwen3.5-0.8b-generic-cpu:3"];
+
+    public FoundryRig(long vramGiB = 24, bool imagesAccepted = false, bool alreadyServing = false, string[]? catalog = null, bool noGpu = false)
     {
         Home = Path.Combine(Path.GetTempPath(), "omw-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Path.Combine(Home, ".openmono"));
@@ -45,7 +47,7 @@ public sealed class FoundryRig : IDisposable
         Runner.Respond(Exe, "server start --port 7474 --idle-timeout 0", 0, "started\n");
         Runner.OnCall(Exe, "server start --port 7474 --idle-timeout 0", () => _serving = true);
         Runner.Respond(Exe, "server stop", 0, "stopped\n");
-        foreach (var alias in LadderCatalog)
+        foreach (var alias in LadderCatalog.Concat(CpuVariants))
         {
             Runner.Respond(Exe, $"model load {alias}", 0, "loaded\n");
             Runner.OnCall(Exe, $"model load {alias}", () => _loaded.Add(alias));
@@ -53,13 +55,15 @@ public sealed class FoundryRig : IDisposable
 
         Http.RespondJson("/v1/models", () => JsonSerializer.Serialize(new
         {
-            data = _loaded.Select(a => new { id = a + "-cuda-gpu:1" }),
+            data = _loaded.Select(a => new { id = a.Contains(':') ? a : a + "-cuda-gpu:1" }),
         }));
         Http.Respond("/v1/chat/completions", imagesAccepted
             ? FakeHttpHandler.Json("""{"choices":[{"message":{"content":"ok"}}]}""")
             : FakeHttpHandler.Json("""{"error":"image input not supported"}""", HttpStatusCode.BadRequest));
 
-        Gpu = new FakeGpuProber(new GpuInfo("NVIDIA GeForce RTX 4090", vramGiB * GiB, true));
+        Gpu = noGpu
+            ? new FakeGpuProber(new GpuInfo("Microsoft Basic Display Adapter", 0, false))
+            : new FakeGpuProber(new GpuInfo("NVIDIA GeForce RTX 4090", vramGiB * GiB, true));
         Client = new HttpClient(new GatedHandler(Http, () => _serving)) { Timeout = TimeSpan.FromSeconds(5) };
     }
 
@@ -150,6 +154,63 @@ public sealed class InferenceOrchestratorTests
         rig.Runner.Calls.Where(c => c.Arguments.StartsWith("model load", StringComparison.Ordinal))
             .Select(c => c.Arguments).Should().Equal($"model load {alias}");
     }
+
+    [Fact]
+    public async Task NoGpuServesTheCpuVariantOfQwen35TwoB()
+    {
+        using var rig = new FoundryRig(noGpu: true, imagesAccepted: true, alreadyServing: true);
+        rig.Http.RespondJson("/api/models", () => CatalogFixtures.Cpu);
+
+        var result = await new InferenceOrchestrator(rig.Deps()).UpAsync(new UpOptions());
+
+        result.Ok.Should().BeTrue(result.Error);
+        result.State!.ModelAlias.Should().Be("qwen3.5-2b");
+        result.State.ServedModelId.Should().Be("qwen3.5-2b-generic-cpu:3");
+        result.State.ContextTokens.Should().Be(FoundryConstants.StandardContextTokens);
+        result.Log.Should().Contain(l => l.Contains("CPU-only"));
+        result.Log.Should().Contain(l => l.Contains("Loading the generic CPU variant qwen3.5-2b-generic-cpu:3"));
+        LoadCalls(rig).Should().Equal("model load qwen3.5-2b-generic-cpu:3");
+    }
+
+    [Fact]
+    public async Task NoGpuWithoutACpuVariantIdLoadsTheAlias()
+    {
+        using var rig = new FoundryRig(noGpu: true, alreadyServing: true);
+
+        var result = await new InferenceOrchestrator(rig.Deps()).UpAsync(new UpOptions());
+
+        result.State!.ModelAlias.Should().Be("qwen3.5-2b");
+        result.Log.Should().Contain(l => l.Contains("lists no CPU variant id"));
+        LoadCalls(rig).Should().Equal("model load qwen3.5-2b");
+    }
+
+    [Fact]
+    public async Task NoGpuStepsDownOnlyToQwen35PointEightB()
+    {
+        using var rig = new FoundryRig(noGpu: true, alreadyServing: true, catalog: ["qwen3.8-27b", "qwen3.5-9b", "qwen3.5-4b", "qwen3.5-0.8b"]);
+        rig.Http.RespondJson("/api/models", () => CatalogFixtures.Cpu);
+
+        var result = await new InferenceOrchestrator(rig.Deps()).UpAsync(new UpOptions());
+
+        result.State!.ModelAlias.Should().Be("qwen3.5-0.8b");
+        result.Log.Should().Contain(l => l.Contains("Not in the Foundry catalog: qwen3.5-2b"));
+        LoadCalls(rig).Should().Equal("model load qwen3.5-0.8b-generic-cpu:3");
+    }
+
+    [Fact]
+    public async Task NoGpuNeverTriesTheLargerModels()
+    {
+        using var rig = new FoundryRig(noGpu: true, alreadyServing: true, catalog: ["qwen3.8-27b", "qwen3.5-9b", "qwen3.5-4b"]);
+
+        var result = await new InferenceOrchestrator(rig.Deps()).UpAsync(new UpOptions());
+
+        result.Ok.Should().BeFalse();
+        result.Error.Should().Contain("serves only qwen3.5-2b or qwen3.5-0.8b").And.Contain("nothing was downloaded");
+        LoadCalls(rig).Should().BeEmpty();
+    }
+
+    private static IEnumerable<string> LoadCalls(FoundryRig rig) =>
+        rig.Runner.Calls.Where(c => c.Arguments.StartsWith("model load", StringComparison.Ordinal)).Select(c => c.Arguments);
 
     [Fact]
     public async Task MissingRungStepsDownToTheNextQwen35Model()
@@ -529,6 +590,19 @@ public sealed class DoctorRunnerTests
         checks.Should().Contain(c => c.Name == "acp" && c.Level == CheckLevel.Info);
         checks.Should().Contain(c => c.Name == "model catalog" && c.Level == CheckLevel.Ok && c.Detail.StartsWith("qwen3.8-27b is in"));
         DoctorRunner.ExitCode(checks).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task CpuOnlyMachineReportsTheCpuModel()
+    {
+        using var rig = new FoundryRig(noGpu: true);
+        var deps = rig.Deps() with { Http = new HttpClient(new CatalogApiHandler()) };
+
+        var checks = await new DoctorRunner(deps).RunAsync(Input());
+
+        checks.Should().Contain(c => c.Name == "gpu" && c.Level == CheckLevel.Info && c.Detail.Contains("CPU-only, serves qwen3.5-2b"));
+        checks.Should().Contain(c => c.Name == "model catalog" && c.Level == CheckLevel.Ok
+            && c.Detail.StartsWith("qwen3.5-2b (CPU variant qwen3.5-2b-generic-cpu:3) is in"));
     }
 
     [Fact]

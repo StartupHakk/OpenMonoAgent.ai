@@ -15,7 +15,8 @@ Write-Host '[openmono] --- GPU ---'
 if (Get-Command 'nvidia-smi' -ErrorAction SilentlyContinue) {
   & nvidia-smi --query-gpu=name,memory.total --format=csv
 } else {
-  Write-Warning '[openmono] nvidia-smi not found. Install an NVIDIA driver for your GPU.'
+  Write-Host '[openmono] nvidia-smi not found: no NVIDIA GPU (or no driver). OpenMono runs qwen3.5-2b on the CPU.'
+  Write-Host '[openmono] If this machine has an NVIDIA GPU, install its driver so the GPU ladder applies.'
 }
 
 Write-Host '[openmono] --- CUDA compiler (optional, driver check is nvidia-smi) ---'
@@ -51,4 +52,5 @@ Write-Host '[openmono]   12 GB         qwen3.5-9b    (text and images)'
 Write-Host '[openmono]   8 GB          qwen3.5-4b    (text and images)'
 Write-Host '[openmono]   4 GB          qwen3.5-2b    (text and images)'
 Write-Host '[openmono]   under 4 GB    qwen3.5-0.8b  (last resort)'
+Write-Host '[openmono]   no GPU (CPU)  qwen3.5-2b    (generic CPU variant when Foundry offers one; never the larger models)'
 Write-Host '[openmono] Aliases are checked against https://foundrylocal.ai/api/models before anything downloads.'

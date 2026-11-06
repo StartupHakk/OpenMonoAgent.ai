@@ -10,19 +10,24 @@ public sealed record CatalogCheckResult(
     GpuInfo? Gpu,
     LadderRung PreferredRung,
     ModelSelection? Pick,
-    string? Error)
+    string? Error,
+    FoundryCatalogView PickView,
+    string? CpuVariant)
 {
     public IReadOnlyList<string> MissingFromPublic =>
         Rungs.Where(r => r.InPublicCatalog == false).Select(r => r.Rung.Alias).ToList();
 
     // Nothing this machine may serve is in a catalog that did answer.
-    public bool Unusable => View.Known && Pick is null;
+    public bool Unusable => PickView.Known && Pick is null;
 }
 
 // Validates the Windows model ladder against the public Foundry catalog
 // (https://foundrylocal.ai/api/models) and, when Foundry Local is installed,
 // against `foundry model list`, then names the model this machine will
-// serve. Shared by `openmono catalog check`, `doctor`, and setup.
+// serve. The ladder table is always checked against the CUDA catalog; a
+// machine without a dedicated NVIDIA GPU picks from the CPU catalog, which
+// also carries the generic CPU variant id it loads. Shared by
+// `openmono catalog check`, `doctor`, and setup.
 public static class CatalogCheck
 {
     public static async Task<CatalogCheckResult> RunAsync(LauncherDeps deps, bool refresh = false, CancellationToken ct = default)
@@ -42,10 +47,20 @@ public static class CatalogCheck
         var gpus = await deps.Gpu.ProbeAsync(ct);
         var gpu = gpus.Where(g => g.IsNvidia).OrderByDescending(g => g.DedicatedVramBytes).FirstOrDefault();
         var vram = gpu?.DedicatedVramBytes;
-        var pick = view.Known ? ModelSelector.Select(vram, view.Resolve) : null;
-        var error = view.Known && pick is null ? InferenceOrchestrator.NothingInCatalog(vram, view) : null;
 
-        return new CatalogCheckResult(view, rungs, gpu, ModelSelector.RungFor(vram), pick, error);
+        var pickView = view;
+        if (gpu is null)
+        {
+            var cpuWeb = await FoundryWebCatalogClient.FromEnvironment(deps.Http, deps.GetEnv, deps.HomeDir)
+                .ListAsync(FoundryCatalogDevice.Cpu, refresh, ct: ct);
+            pickView = new FoundryCatalogView(local, cpuWeb);
+        }
+
+        var pick = pickView.Known ? ModelSelector.Select(vram, pickView.Resolve) : null;
+        var error = pickView.Known && pick is null ? InferenceOrchestrator.NothingInCatalog(vram, pickView) : null;
+        var cpuVariant = pick is { CpuOnly: true } ? InferenceOrchestrator.CpuVariant(pickView, pick.ModelAlias) : null;
+
+        return new CatalogCheckResult(view, rungs, gpu, ModelSelector.RungFor(vram), pick, error, pickView, cpuVariant);
     }
 
     public static string Size(long? bytes) =>

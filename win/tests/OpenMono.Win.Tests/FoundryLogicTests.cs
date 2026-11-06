@@ -82,12 +82,38 @@ public sealed class ModelSelectorTests
     }
 
     [Fact]
-    public void UnknownVramStillServesTarget()
+    public void NoGpuServesQwen35TwoBOnTheCpu()
     {
         var selection = ModelSelector.Select(null, InCatalog)!;
 
-        selection.ModelAlias.Should().Be("qwen3.8-27b");
+        selection.ModelAlias.Should().Be("qwen3.5-2b");
+        selection.CpuOnly.Should().BeTrue();
+        selection.IsTargetModel.Should().BeFalse();
         selection.ContextTokens.Should().Be(FoundryConstants.StandardContextTokens);
+        selection.Reason.Should().Contain("No dedicated NVIDIA GPU").And.Contain("not tried without a GPU");
+        ModelSelector.RungFor(null).Should().BeSameAs(FoundryModelLadder.Cpu);
+    }
+
+    [Fact]
+    public void NoGpuNeverAsksForTheLargerModels()
+    {
+        var asked = new List<string>();
+        Func<string, string?> recording(Func<string, string?> inner) => alias =>
+        {
+            asked.Add(alias);
+            return inner(alias);
+        };
+
+        ModelSelector.Select(null, recording(InCatalog))!.ModelAlias.Should().Be("qwen3.5-2b");
+        asked.Should().Equal("qwen3.5-2b");
+
+        asked.Clear();
+        ModelSelector.Select(null, recording(Without("qwen3.5-2b")))!.ModelAlias.Should().Be("qwen3.5-0.8b");
+        asked.Should().Equal("qwen3.5-2b", "qwen3.5-0.8b");
+
+        asked.Clear();
+        ModelSelector.Select(null, recording(Without("qwen3.5-2b", "qwen3.5-0.8b"))).Should().BeNull();
+        asked.Should().Equal("qwen3.5-2b", "qwen3.5-0.8b");
     }
 
     [Fact]

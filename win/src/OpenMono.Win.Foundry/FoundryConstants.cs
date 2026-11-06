@@ -15,6 +15,13 @@ public static class FoundryConstants
     // Resolved against the live catalog at runtime; this is only the alias.
     public const string TargetModelAlias = "qwen3.8-27b";
 
+    // What a machine without a dedicated NVIDIA GPU serves, on the CPU.
+    public const string CpuModelAlias = "qwen3.5-2b";
+
+    // Execution provider of the generic CPU variants in the Foundry catalog
+    // (variant ids such as qwen3.5-2b-generic-cpu:3).
+    public const string CpuExecutionProvider = "CPUExecutionProvider";
+
     // Minimum Foundry Local CLI with the Qwen3.8-27B coding stack.
     public static readonly Version MinCliVersion = new(0, 13, 0);
 

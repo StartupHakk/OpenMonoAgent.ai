@@ -133,7 +133,11 @@ public static class LauncherCli
         stdout.WriteLine($"Foundry Local catalog ({FoundryWebCatalogClient.ModelsPageUrl}), {device.Value} variants, {web.Models.Count} models:");
         foreach (var m in web.Models.OrderBy(m => m.Alias, StringComparer.OrdinalIgnoreCase))
         {
-            var ladder = FoundryModelLadder.Find(m.Alias) is { } rung ? $"  [ladder: {rung.VramClass}]" : "";
+            var classes = (device == FoundryCatalogDevice.Cpu ? FoundryModelLadder.CpuOnly : FoundryModelLadder.Text)
+                .Where(r => string.Equals(r.Alias, m.Alias, StringComparison.OrdinalIgnoreCase))
+                .Select(r => r.VramClass)
+                .ToList();
+            var ladder = classes.Count > 0 ? $"  [ladder: {string.Join(", ", classes)}]" : "";
             stdout.WriteLine($"  {m.Alias,-32} {CatalogCheck.Size(m.VramBytes),-16} {m.Task ?? "-",-28} "
                 + $"input {string.Join("+", m.InputModalities),-12} tools {(m.SupportsToolCalling == true ? "yes" : "no"),-3}  "
                 + $"ctx {m.ContextLength?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-"}{ladder}");
@@ -172,6 +176,8 @@ public static class LauncherCli
                 gpu = check.Gpu?.Name,
                 vram_bytes = check.Gpu?.DedicatedVramBytes,
                 pick = check.Pick?.ModelAlias,
+                cpu_only = check.Gpu is null,
+                load = check.CpuVariant ?? check.Pick?.ModelAlias,
                 reason = check.Pick?.Reason,
                 error = check.Error,
             }, InferenceStateStore.JsonOptions));
@@ -195,10 +201,16 @@ public static class LauncherCli
             stdout.WriteLine($"  {tag,-9} {r.Rung.Alias,-14} {r.Rung.VramClass + " class",-17} {detail}{publicNote}");
         }
 
-        var gpu = check.Gpu is { } g ? $"{g.Name}, {g.DedicatedVramGiB:F0} GB" : "no NVIDIA GPU detected";
+        var gpu = check.Gpu is { } g ? $"{g.Name}, {g.DedicatedVramGiB:F0} GB" : "no dedicated NVIDIA GPU, CPU-only";
         if (check.Pick is { } pick)
         {
             stdout.WriteLine($"This machine ({gpu}): {pick.ModelAlias}. {pick.Reason}");
+            if (pick.CpuOnly)
+            {
+                stdout.WriteLine(check.CpuVariant is { } variant
+                    ? $"CPU variant: {variant} ({CatalogCheck.Size(check.PickView.Describe(pick.ModelAlias)?.FileSizeBytes)}, from {check.PickView.Web?.Source})."
+                    : $"CPU variant: not listed by the CPU catalog here; `foundry model load {pick.ModelAlias}` picks the variant.");
+            }
         }
         else if (check.Error is not null)
         {

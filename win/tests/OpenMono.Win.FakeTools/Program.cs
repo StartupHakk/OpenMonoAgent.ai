@@ -21,6 +21,13 @@ switch (name)
     case "foundry":
         return Foundry(string.Join(' ', args));
     case "nvidia-smi":
+        // FAKE_NO_GPU=1: a machine without an NVIDIA GPU (driver present but no device).
+        if (Environment.GetEnvironmentVariable("FAKE_NO_GPU") == "1")
+        {
+            Console.Error.WriteLine("NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver.");
+            return 9;
+        }
+
         Console.WriteLine("NVIDIA GeForce RTX 4090, 24564");
         return 0;
     case "docker":
@@ -49,6 +56,17 @@ static int Foundry(string command)
         case "server status":
             Console.WriteLine("Status: Running");
             Console.WriteLine("Local Endpoint: http://127.0.0.1:7474");
+            return 0;
+        case var load when load.StartsWith("model load ", StringComparison.Ordinal):
+            // FAKE_SERVED names a file the fake server lists as the served model.
+            var served = Environment.GetEnvironmentVariable("FAKE_SERVED");
+            if (!string.IsNullOrEmpty(served))
+            {
+                var id = load["model load ".Length..].Trim();
+                File.WriteAllText(served, id.Contains(':') ? id : id + "-cuda-gpu:1");
+            }
+
+            Console.WriteLine("loaded");
             return 0;
         case "model list --output json":
             Console.WriteLine("""[{"alias":"qwen3.8-27b"},{"alias":"qwen3.5-9b"},{"alias":"qwen3.5-4b"},{"alias":"qwen3.5-2b"},{"alias":"qwen3.5-0.8b"}]""");
@@ -198,7 +216,7 @@ static async Task Respond(NetworkStream stream)
 {
     var request = await ReadRequestAsync(stream);
     var (status, body) = request.StartsWith("GET /v1/models", StringComparison.Ordinal)
-        ? (200, """{"data":[{"id":"qwen3.8-27b-cuda-gpu:1"}]}""")
+        ? (200, JsonSerializer.Serialize(new { data = new[] { new { id = ServedModel() } } }))
         : request.StartsWith("POST /api/models", StringComparison.Ordinal)
             ? (200, CatalogPage(request))
         : request.StartsWith("POST /v1/chat/completions", StringComparison.Ordinal)
@@ -213,6 +231,12 @@ static async Task Respond(NetworkStream stream)
     await stream.WriteAsync(payload);
 }
 
+static string ServedModel()
+{
+    var served = Environment.GetEnvironmentVariable("FAKE_SERVED");
+    return !string.IsNullOrEmpty(served) && File.Exists(served) ? File.ReadAllText(served).Trim() : "qwen3.8-27b-cuda-gpu:1";
+}
+
 static string CatalogPage(string request)
 {
     var apiLog = Environment.GetEnvironmentVariable("FAKE_API_LOG");
@@ -222,15 +246,40 @@ static string CatalogPage(string request)
         File.AppendAllText(apiLog, requestBody + Environment.NewLine);
     }
 
-    static object Model(string alias, string variant, string task, string inputs, long bytes) => new
+    var cpu = requestBody.Contains("CPUExecutionProvider", StringComparison.Ordinal);
+    object Model(string alias, string variant, string task, string inputs, long bytes) => new
     {
         annotations = new { tags = new { alias, task, inputModalities = inputs, supportsToolCalling = "true", contextLength = "262144" } },
         properties = new
         {
             id = variant,
-            variantInfo = new { variantMetadata = new { device = "gpu", executionProvider = "CUDAExecutionProvider", fileSizeBytes = bytes, vRamFootprintBytes = bytes } },
+            variantInfo = new
+            {
+                variantMetadata = new
+                {
+                    device = cpu ? "cpu" : "gpu",
+                    executionProvider = cpu ? "CPUExecutionProvider" : "CUDAExecutionProvider",
+                    fileSizeBytes = bytes,
+                    vRamFootprintBytes = bytes,
+                },
+            },
         },
     };
+
+    if (cpu)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            value = new[]
+            {
+                Model("qwen3.5-9b", "qwen3.5-9b-generic-cpu:3", "vision-language-chat", "text,image", 5840016799),
+                Model("qwen3.5-4b", "qwen3.5-4b-generic-cpu:3", "vision-language-chat", "text,image", 3235313264),
+                Model("qwen3.5-2b", "qwen3.5-2b-generic-cpu:3", "vision-language-chat", "text,image", 1877016577),
+                Model("qwen3.5-0.8b", "qwen3.5-0.8b-generic-cpu:3", "vision-language-chat", "text,image", 1088056779),
+            },
+            continuationToken = (string?)null,
+        });
+    }
 
     var page = requestBody.Contains("\"continuationToken\":\"fake-page-2\"", StringComparison.Ordinal)
         ? new
@@ -252,7 +301,7 @@ static string CatalogPage(string request)
             },
             continuationToken = (string?)"fake-page-2",
         };
-    return System.Text.Json.JsonSerializer.Serialize(page);
+    return JsonSerializer.Serialize(page);
 }
 
 static async Task<string> ReadRequestAsync(NetworkStream stream)

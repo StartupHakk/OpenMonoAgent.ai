@@ -62,10 +62,13 @@ public sealed class CliFoundryService
         _healthAttempts = Math.Max(1, healthAttempts);
     }
 
+    // loadTarget: what `model load` gets when it differs from the alias (a
+    // catalog variant id such as qwen3.5-2b-generic-cpu:3).
     public async Task<FoundryServiceResult> StartOrAdoptAsync(
         string modelAlias,
         string endpoint,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? loadTarget = null)
     {
         var log = new List<string>();
         var adopted = false;
@@ -116,13 +119,14 @@ public sealed class CliFoundryService
         var servedId = FoundryModelIdResolver.ResolveServedId(modelAlias, current.Models);
         if (servedId is null && current.Reachable)
         {
-            var (loadFile, loadArgs) = FoundryCliCommands.ModelLoad(modelAlias);
+            var (loadFile, loadArgs) = FoundryCliCommands.ModelLoad(loadTarget ?? modelAlias);
             log.Add($"Running: {loadFile} {loadArgs} (first run downloads the model; this can take a while)");
             var load = await _runner.RunAsync(loadFile, loadArgs, ct);
             log.Add(load.Succeeded ? "Model load accepted." : $"Model load output: {Combined(load)}");
 
             current = await _health.CheckAsync(endpoint, ct);
-            servedId = FoundryModelIdResolver.ResolveServedId(modelAlias, current.Models);
+            servedId = FoundryModelIdResolver.ResolveServedId(modelAlias, current.Models)
+                ?? (loadTarget is null ? null : FoundryModelIdResolver.ResolveServedId(loadTarget, current.Models));
         }
 
         log.Add(servedId is not null
