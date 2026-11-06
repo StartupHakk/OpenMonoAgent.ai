@@ -78,7 +78,13 @@ public sealed partial class FoundryCliDetector
             return new FoundryServerStatus(false, null, combined.Trim());
         }
 
-        return new FoundryServerStatus(true, match.Value.TrimEnd('/'), combined.Trim());
+        // Status lines may point at a sub-path (older builds printed
+        // ".../openai/status"); the OpenAI-compatible root is the authority.
+        var url = Uri.TryCreate(match.Value.TrimEnd('/', '.', ','), UriKind.Absolute, out var uri)
+            ? uri.GetLeftPart(UriPartial.Authority)
+            : match.Value.TrimEnd('/');
+
+        return new FoundryServerStatus(true, url, combined.Trim());
     }
 
     [GeneratedRegex(@"https?://[^\s""']+")]

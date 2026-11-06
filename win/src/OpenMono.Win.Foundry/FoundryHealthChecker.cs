@@ -11,7 +11,7 @@ public sealed record FoundryHealth(
     string? Error)
 {
     public bool ListsModel(string alias) =>
-        Models.Any(m => string.Equals(m, alias, StringComparison.OrdinalIgnoreCase));
+        FoundryModelIdResolver.ResolveServedId(alias, Models) is not null;
 }
 
 public sealed class FoundryHealthChecker
@@ -27,6 +27,7 @@ public sealed class FoundryHealthChecker
     {
         var root = endpointRoot.TrimEnd('/');
         var models = new List<string>();
+        var modelsOk = false;
         string? error = null;
 
         try
@@ -36,6 +37,7 @@ public sealed class FoundryHealthChecker
             {
                 var json = await response.Content.ReadAsStringAsync(ct);
                 models.AddRange(ParseModelIds(json));
+                modelsOk = true;
             }
             else
             {
@@ -63,10 +65,12 @@ public sealed class FoundryHealthChecker
             // not). Its absence never fails the check on its own.
         }
 
-        var reachable = models.Count > 0 || healthOk;
+        // A daemon that answers /v1/models with an empty list is up but has
+        // nothing loaded yet; that is reachable, and the caller loads a model.
+        var reachable = modelsOk || healthOk;
         if (!reachable && error is null)
         {
-            error = "no models listed and no /health response.";
+            error = "no /v1/models or /health response.";
         }
 
         return new FoundryHealth(reachable, models, healthOk, reachable ? null : error);

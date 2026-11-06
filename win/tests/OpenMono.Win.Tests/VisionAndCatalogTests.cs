@@ -35,6 +35,45 @@ public sealed class CatalogClientTests
     }
 
     [Fact]
+    public async Task PrefersJsonOutputAliases()
+    {
+        var runner = new FakeCliRunner();
+        runner.Respond(
+            Exe, "model list --output json", 0,
+            """[{"alias":"qwen3.8-27b","variants":[{"id":"qwen3.8-27b-instruct-cuda-gpu:1"}]},{"alias":"qwen2.5-vl-7b"}]""");
+
+        var models = await new FoundryCatalogClient(runner).ListModelsAsync();
+
+        models.Should().BeEquivalentTo("qwen3.8-27b", "qwen2.5-vl-7b");
+        runner.Calls.Should().NotContain(c => c.Arguments == "model list");
+    }
+
+    [Fact]
+    public void JsonWithoutAliasFallsBackToIds()
+    {
+        FoundryCatalogClient.ParseCatalogJson("""{"models":[{"id":"phi-4-mini"},{"name":"qwen3-4b"}]}""")
+            .Should().BeEquivalentTo("phi-4-mini", "qwen3-4b");
+    }
+
+    [Fact]
+    public void ParsesAliasTable()
+    {
+        const string table =
+            "Alias                Device  Task             File Size  License     Model ID\n"
+            + "-------------------------------------------------------------------------------\n"
+            + "qwen3.8-27b          GPU     chat-completion  18.2 GB    apache-2.0  qwen3.8-27b-instruct-cuda-gpu:1\n"
+            + "qwen2.5-vl-7b        GPU     chat-completion  5.1 GB     apache-2.0  qwen2.5-vl-7b-instruct-cuda-gpu:2\n";
+
+        FoundryCatalogClient.ParseCatalog(table).Should().Equal("qwen3.8-27b", "qwen2.5-vl-7b");
+    }
+
+    [Fact]
+    public void MalformedJsonIsEmpty()
+    {
+        FoundryCatalogClient.ParseCatalogJson("Usage: foundry model list [options]").Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task FailedCliMeansEmptyCatalog()
     {
         var runner = new FakeCliRunner();
