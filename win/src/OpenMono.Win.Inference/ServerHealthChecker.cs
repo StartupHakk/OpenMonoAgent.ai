@@ -1,79 +1,81 @@
+using System.Net;
 using System.Text.Json;
 
-namespace OpenMono.Win.Foundry;
+namespace OpenMono.Win.Inference;
 
 // What a local OpenAI-compatible endpoint currently offers. Never throws:
 // an unreachable server is a normal state (nothing serving yet), not an error.
-public sealed record FoundryHealth(
+// llama-server answers /health with 503 while the model loads and 200 once it
+// serves, so Ready is the readiness bit the launcher waits on.
+public sealed record ServerHealth(
     bool Reachable,
+    bool Ready,
+    bool Loading,
     IReadOnlyList<string> Models,
-    bool HealthEndpointOk,
     string? Error)
 {
     public bool ListsModel(string alias) =>
-        FoundryModelIdResolver.ResolveServedId(alias, Models) is not null;
+        Models.Any(m => string.Equals(StripGguf(m), StripGguf(alias), StringComparison.OrdinalIgnoreCase));
+
+    private static string StripGguf(string name) =>
+        name.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) ? name[..^5] : name;
 }
 
-public sealed class FoundryHealthChecker
+public sealed class ServerHealthChecker
 {
     private readonly HttpClient _http;
 
-    public FoundryHealthChecker(HttpClient http)
+    public ServerHealthChecker(HttpClient http)
     {
         _http = http;
     }
 
-    public async Task<FoundryHealth> CheckAsync(string endpointRoot, CancellationToken ct = default)
+    public async Task<ServerHealth> CheckAsync(string endpointRoot, CancellationToken ct = default)
     {
-        var root = endpointRoot.TrimEnd('/');
-        var models = new List<string>();
-        var modelsOk = false;
+        var root = OmaEndpointContract.TrimRoot(endpointRoot);
+        bool? healthOk = null;
+        var loading = false;
         string? error = null;
 
         try
         {
-            using var response = await _http.GetAsync(root + "/v1/models", ct);
-            if (response.IsSuccessStatusCode)
+            using var response = await _http.GetAsync(root + OmaEndpointContract.HealthPath, ct);
+            healthOk = response.IsSuccessStatusCode;
+            loading = response.StatusCode == HttpStatusCode.ServiceUnavailable;
+            if (!response.IsSuccessStatusCode && !loading)
             {
-                var json = await response.Content.ReadAsStringAsync(ct);
-                models.AddRange(ParseModelIds(json));
-                modelsOk = true;
-            }
-            else
-            {
-                error = $"/v1/models returned {(int)response.StatusCode}.";
+                error = $"/health returned {(int)response.StatusCode}.";
             }
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
         {
             error = $"unreachable: {ex.GetType().Name}";
         }
-        catch (Exception ex)
+
+        var models = new List<string>();
+        var modelsOk = false;
+        if (healthOk is not null)
         {
-            error = $"unexpected: {ex.Message}";
+            try
+            {
+                using var response = await _http.GetAsync(root + OmaEndpointContract.ModelsPath, ct);
+                if (response.IsSuccessStatusCode)
+                {
+                    models.AddRange(ParseModelIds(await response.Content.ReadAsStringAsync(ct)));
+                    modelsOk = true;
+                }
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+            {
+                // /health answered; a failed model list leaves Models empty.
+            }
         }
 
-        var healthOk = false;
-        try
-        {
-            using var response = await _http.GetAsync(root + "/health", ct);
-            healthOk = response.IsSuccessStatusCode;
-        }
-        catch (Exception)
-        {
-            // /health is optional (llama.cpp has it, Foundry web service may
-            // not). Its absence never fails the check on its own.
-        }
-
-        // A daemon that answers /v1/models with an empty list is up but has
-        // nothing loaded yet; that is reachable, and the caller loads a model.
-        var reachable = modelsOk || healthOk;
-        if (!reachable && error is null)
-        {
-            error = "no /v1/models or /health response.";
-        }
-
-        return new FoundryHealth(reachable, models, healthOk, reachable ? null : error);
+        var reachable = healthOk is not null;
+        // A remote OpenAI-compatible server may have no /health at all; a
+        // model list it serves counts as ready unless it reported loading.
+        var ready = healthOk == true || (modelsOk && !loading);
+        return new ServerHealth(reachable, ready, loading && !ready, models, ready ? null : error ?? (loading ? "loading the model" : null));
     }
 
     public static IReadOnlyList<string> ParseModelIds(string json)

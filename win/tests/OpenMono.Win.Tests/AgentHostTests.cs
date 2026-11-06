@@ -1,7 +1,7 @@
 using FluentAssertions;
 using Xunit;
 using OpenMono.Win.AgentHost;
-using OpenMono.Win.Foundry;
+using OpenMono.Win.Inference;
 
 namespace OpenMono.Win.Tests;
 
@@ -50,7 +50,7 @@ public sealed class WindowsGuardrailTests
     [InlineData("docker compose run -d agent")]
     [InlineData("Remove-Item C:\\Users\\spencer\\temp\\scratch -Recurse")]
     [InlineData("reg query HKLM\\Software\\Foo")]
-    [InlineData("foundry server status")]
+    [InlineData("llama-server --port 7474 --model C:\\models\\m.gguf")]
     public void BenignHostCommandsPass(string command)
     {
         WindowsGuardrails.IsDenied(command, out _).Should().BeFalse();
@@ -128,14 +128,14 @@ public sealed class WindowsContainerStackTests
         ComposeFile: Compose,
         AgentArgs: agentArgs,
         Endpoint: "http://127.0.0.1:7474",
-        Model: "qwen3.8-27b-cuda-gpu:1",
+        Model: "Qwen3.8-27B-UD-Q4_K_M",
         ContextTokens: 65536,
         VisionEnabled: false,
         FileExists: _ => false,
         DirectoryExists: _ => false);
 
     [Fact]
-    public void ComposeEnvironmentPointsAgentAtHostFoundry()
+    public void ComposeEnvironmentPointsAgentAtHostLlamaServer()
     {
         var plan = WindowsContainerStack.Build(Request());
 
@@ -155,7 +155,7 @@ public sealed class WindowsContainerStackTests
         plan.DockerArgs.Should().ContainInOrder("-e", "HOME=/home/agent");
         plan.DockerArgs.Should().Contain($"WORKSPACE={Work}");
         plan.DockerArgs.Should().Contain($"HOST_WORKSPACE_PATH={Work}");
-        plan.DockerArgs.Should().Contain("OPENMONO_MODEL=qwen3.8-27b-cuda-gpu:1");
+        plan.DockerArgs.Should().Contain("OPENMONO_MODEL=Qwen3.8-27B-UD-Q4_K_M");
         plan.DockerArgs.Should().Contain("GIT_TERMINAL_PROMPT=0");
         plan.DockerArgs.Should().Contain("GIT_CONFIG_VALUE_0=/workspace");
         plan.DockerArgs[^1].Should().Be("agent");

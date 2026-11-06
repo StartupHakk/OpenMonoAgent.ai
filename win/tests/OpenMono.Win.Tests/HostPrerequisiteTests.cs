@@ -15,7 +15,7 @@ public static class RepoPaths
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
         {
-            if (File.Exists(Path.Combine(dir.FullName, "win", "scripts", "check-cuda.ps1")))
+            if (File.Exists(Path.Combine(dir.FullName, "win", "openmono.ps1")))
             {
                 return Path.Combine(dir.FullName, "win");
             }

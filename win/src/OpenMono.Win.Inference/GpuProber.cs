@@ -1,7 +1,7 @@
-namespace OpenMono.Win.Foundry;
+namespace OpenMono.Win.Inference;
 
 // One physical GPU as seen by the host. Dedicated VRAM is what matters for
-// the 24 GB floor; shared/system memory does not count.
+// the model ladder; shared/system memory does not count.
 public sealed record GpuInfo(string Name, long DedicatedVramBytes, bool IsNvidia)
 {
     public double DedicatedVramGiB => DedicatedVramBytes / (1024.0 * 1024 * 1024);

@@ -1,15 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <RootNamespace>OpenMono.Win.Foundry</RootNamespace>
-    <Description>Windows-only Foundry Local wrapper: CLI/SDK detection, GPU and CUDA checks, catalog alias resolution, OpenAI-compatible server adopt-or-start on 127.0.0.1:7474.</Description>
+    <RootNamespace>OpenMono.Win.Inference</RootNamespace>
+    <Description>Windows host inference: llama.cpp release selection and install, the GGUF model ladder and downloads, GPU detection, and llama-server start-or-adopt on 127.0.0.1:7474.</Description>
   </PropertyGroup>
-
-  <ItemGroup>
-    <!-- Foundry lifecycle is driven through the CLI. The SDK package is
-         Microsoft.AI.Foundry.Local 2.x (CLI 0.13.0 ships 2.3.0); it is not
-         referenced because the CLI covers every host control and the SDK
-         would add a native runtime to CI. See win/docs/BUILD-PLAN.md note 1. -->
-  </ItemGroup>
 
 </Project>

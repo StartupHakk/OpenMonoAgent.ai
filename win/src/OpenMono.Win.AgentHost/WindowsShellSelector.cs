@@ -1,7 +1,7 @@
 namespace OpenMono.Win.AgentHost;
 
 // Host-only shell for everything that runs on the Windows host: install,
-// bootstrap, first-run, Foundry start/stop, Docker stack management, and host
+// bootstrap, first-run, llama-server start/stop, Docker stack management, and host
 // hooks. PowerShell only: pwsh.exe first, then powershell.exe. No Git Bash
 // wrapping and no cmd.exe fallback: falling back to a different shell
 // language would silently mistranslate commands, so a machine with neither

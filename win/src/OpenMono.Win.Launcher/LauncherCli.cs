@@ -1,6 +1,6 @@
 using System.Text.Json;
 using OpenMono.Win.AgentHost;
-using OpenMono.Win.Foundry;
+using OpenMono.Win.Inference;
 
 namespace OpenMono.Win.Launcher;
 
@@ -18,13 +18,16 @@ public static class LauncherCli
             case "inference up":
             {
                 var result = await orchestrator.UpAsync(
-                    new UpOptions(parsed.Value("--model"), parsed.IntValue("--port") ?? FoundryConstants.DefaultPort), ct);
+                    new UpOptions(
+                        parsed.Value("--model"),
+                        parsed.IntValue("--port") ?? LlamaCppConstants.DefaultPort,
+                        Update: parsed.Flag("--update")), ct);
                 return Report(result, parsed.Flag("--json"), stdout, stderr);
             }
 
             case "inference down":
             {
-                var down = await orchestrator.DownAsync(parsed.Flag("--force"), ct);
+                var down = await orchestrator.DownAsync(parsed.Flag("--force"));
                 stdout.WriteLine(down.Message);
                 return 0;
             }
@@ -41,11 +44,11 @@ public static class LauncherCli
             case "diag":
                 return await DiagAsync(deps, parsed, stdout, ct);
 
-            case "catalog":
-                return await CatalogListAsync(deps, parsed, stdout, stderr, ct);
+            case "models":
+                return await ModelsAsync(deps, orchestrator, parsed.Flag("--json"), stdout, stderr, ct);
 
-            case "catalog check":
-                return await CatalogCheckAsync(deps, parsed, stdout, ct);
+            case "models check":
+                return await ModelsCheckAsync(deps, stdout, stderr, ct);
 
             case "help":
                 stdout.WriteLine(Usage);
@@ -90,135 +93,136 @@ public static class LauncherCli
     }
 
     public const string Usage =
-        "openmono-win inference up [--model ALIAS] [--port N] [--json]\n"
+        "openmono-win inference up [--model ALIAS] [--port N] [--update] [--json]\n"
         + "openmono-win inference down [--force]\n"
         + "openmono-win inference status [--json]\n"
         + "openmono-win agent-plan --workdir DIR --compose FILE [--vision] [--model ALIAS] [--no-git-auth] -- <agent args>\n"
         + "openmono-win doctor [--workdir DIR] [--json]\n"
         + "openmono-win diag [--out FILE.zip] [--workdir DIR]\n"
-        + "openmono-win catalog [--device cuda|cpu|webgpu] [--refresh] [--json]\n"
-        + "openmono-win catalog check [--refresh] [--strict] [--json]";
+        + "openmono-win models [--json]\n"
+        + "openmono-win models check";
 
-    private static async Task<int> CatalogListAsync(LauncherDeps deps, LauncherArgs parsed, TextWriter stdout, TextWriter stderr, CancellationToken ct)
+    // The Windows ladder from scripts/models.json and what this machine gets.
+    // Reads the GPU and the catalog only; nothing is downloaded or started.
+    private static async Task<int> ModelsAsync(
+        LauncherDeps deps, InferenceOrchestrator orchestrator, bool json, TextWriter stdout, TextWriter stderr, CancellationToken ct)
     {
-        FoundryCatalogDevice? device = parsed.Value("--device")?.ToLowerInvariant() switch
+        var catalog = ModelLadder.Locate(deps.GetEnv);
+        if (catalog is null)
         {
-            null or "cuda" or "gpu" => FoundryCatalogDevice.Cuda,
-            "cpu" => FoundryCatalogDevice.Cpu,
-            "webgpu" => FoundryCatalogDevice.WebGpu,
-            _ => null,
-        };
-        if (device is null)
-        {
-            stderr.WriteLine($"Unknown --device {parsed.Value("--device")} (use cuda, cpu, or webgpu).");
-            return 2;
-        }
-
-        var web = await FoundryWebCatalogClient.FromEnvironment(deps.Http, deps.GetEnv, deps.HomeDir)
-            .ListAsync(device.Value, parsed.Flag("--refresh"), ct: ct);
-        if (parsed.Flag("--json"))
-        {
-            stdout.WriteLine(JsonSerializer.Serialize(
-                new { source = web.Source, ok = web.Ok, error = web.Error, from_cache = web.FromCache, models = web.Models },
-                InferenceStateStore.JsonOptions));
-            return web.Ok ? 0 : 1;
-        }
-
-        if (!web.Ok)
-        {
-            stderr.WriteLine($"Foundry catalog: {web.Source} unreachable ({web.Error}).");
+            stderr.WriteLine("scripts\\models.json was not found; run from the OpenMono git checkout.");
             return 1;
         }
 
-        stdout.WriteLine($"Foundry Local catalog ({FoundryWebCatalogClient.ModelsPageUrl}), {device.Value} variants, {web.Models.Count} models:");
-        foreach (var m in web.Models.OrderBy(m => m.Alias, StringComparer.OrdinalIgnoreCase))
-        {
-            var classes = (device == FoundryCatalogDevice.Cpu ? FoundryModelLadder.CpuOnly : FoundryModelLadder.Text)
-                .Where(r => string.Equals(r.Alias, m.Alias, StringComparison.OrdinalIgnoreCase))
-                .Select(r => r.VramClass)
-                .ToList();
-            var ladder = classes.Count > 0 ? $"  [ladder: {string.Join(", ", classes)}]" : "";
-            stdout.WriteLine($"  {m.Alias,-32} {CatalogCheck.Size(m.VramBytes),-16} {m.Task ?? "-",-28} "
-                + $"input {string.Join("+", m.InputModalities),-12} tools {(m.SupportsToolCalling == true ? "yes" : "no"),-3}  "
-                + $"ctx {m.ContextLength?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-"}{ladder}");
-        }
+        var ladder = ModelLadder.Load(catalog);
+        var plan = await orchestrator.PlanAsync(ladder, ct);
+        var modelsDir = ModelStore.ModelsDirFor(catalog, deps.GetEnv);
+        var installed = LlamaCppInstaller.ListInstalled(orchestrator.InstallRoot);
+        var pick = plan.RungFor(plan.Accels[0]);
 
-        return 0;
-    }
-
-    // Exit 1 when a catalog answered but nothing this machine may serve is in
-    // it; with --strict also when the public catalog is unreachable or lacks
-    // any ladder alias.
-    private static async Task<int> CatalogCheckAsync(LauncherDeps deps, LauncherArgs parsed, TextWriter stdout, CancellationToken ct)
-    {
-        var check = await CatalogCheck.RunAsync(deps, parsed.Flag("--refresh"), ct);
-        var strict = parsed.Flag("--strict");
-        var failed = check.Unusable
-            || (strict && (check.View.Web?.Ok != true || check.MissingFromPublic.Count > 0));
-
-        if (parsed.Flag("--json"))
+        if (json)
         {
             stdout.WriteLine(JsonSerializer.Serialize(new
             {
-                ok = !failed,
-                source = check.View.Source,
-                public_catalog = new { url = check.View.Web?.Source, ok = check.View.Web?.Ok, error = check.View.Web?.Error, count = check.View.WebModels.Count },
-                local_catalog_count = check.View.LocalAliases.Count,
-                ladder = check.Rungs.Select(r => new
+                source = catalog,
+                models_dir = modelsDir,
+                ladder = ladder.All.Select(r => new
                 {
-                    alias = r.Rung.Alias,
-                    vram_class = r.Rung.VramClass,
-                    in_public_catalog = r.InPublicCatalog,
-                    in_local_catalog = r.InLocalCatalog,
-                    size_bytes = r.Metadata?.VramBytes,
-                    input = r.Metadata?.InputModalities,
+                    tier = r.Key,
+                    min_vram_gib = r.MinVramGiB,
+                    alias = r.Alias,
+                    file = r.File,
+                    url = r.Url,
+                    mmproj = r.Mmproj,
+                    ctx = r.Context,
+                    ctx_vision = r.VisionContext,
+                    kv = r.Kv,
+                    present = File.Exists(Path.Combine(modelsDir, r.File)),
                 }),
-                gpu = check.Gpu?.Name,
-                vram_bytes = check.Gpu?.DedicatedVramBytes,
-                pick = check.Pick?.ModelAlias,
-                cpu_only = check.Gpu is null,
-                load = check.CpuVariant ?? check.Pick?.ModelAlias,
-                reason = check.Pick?.Reason,
-                error = check.Error,
+                gpu = plan.Gpu?.Name,
+                vram_bytes = plan.Gpu?.DedicatedVramBytes,
+                driver_cuda = plan.DriverCuda?.ToString(),
+                backends = plan.Accels.Select(a => a.ToString().ToLowerInvariant()),
+                pick = pick.Alias,
+                installed = installed.Select(b => b.Id),
             }, InferenceStateStore.JsonOptions));
-            return failed ? 1 : 0;
+            return 0;
         }
 
-        var web = check.View.Web!;
-        stdout.WriteLine("Foundry catalog: " + CatalogCheck.PublicSummary(web));
-        stdout.WriteLine(check.View.HasLocal
-            ? $"Local Foundry catalog (foundry model list): {check.View.LocalAliases.Count} aliases; it decides what this install can load."
-            : "Local Foundry catalog: not available (Foundry Local not installed yet); using the public catalog.");
-        stdout.WriteLine($"Windows model ladder (checked {FoundryModelLadder.CatalogCheckedOn}; one model per machine):");
-        foreach (var r in check.Rungs)
+        stdout.WriteLine($"Windows model ladder ({catalog}), GGUF files in {modelsDir}:");
+        foreach (var r in ladder.All)
         {
-            var present = check.View.HasLocal ? r.InLocalCatalog : r.InPublicCatalog;
-            var tag = present switch { true => "[ ok ]", false => "[MISSING]", null => "[ ?? ]" };
-            var detail = r.Metadata is { } m
-                ? $"{m.Task}, input {string.Join("+", m.InputModalities)}, {CatalogCheck.Size(m.VramBytes)}"
-                : r.Rung.VisionLanguage ? "vision-language" : "text";
-            var publicNote = r.InPublicCatalog == false && check.View.HasLocal ? " (not in the public catalog)" : "";
-            stdout.WriteLine($"  {tag,-9} {r.Rung.Alias,-14} {r.Rung.VramClass + " class",-17} {detail}{publicNote}");
+            var tier = r.IsCpu ? "no NVIDIA GPU" : $"NVIDIA {r.MinVramGiB:0}+ GiB";
+            var present = File.Exists(Path.Combine(modelsDir, r.File)) ? "downloaded" : "not downloaded";
+            stdout.WriteLine($"  {r.Key,-4} {tier,-18} {r.Label,-58} ctx {r.Context,-7} kv {r.Kv,-5} {present}");
         }
 
-        var gpu = check.Gpu is { } g ? $"{g.Name}, {g.DedicatedVramGiB:F0} GB" : "no dedicated NVIDIA GPU, CPU-only";
-        if (check.Pick is { } pick)
+        var gpu = plan.Gpu is { } g ? $"{g.Name}, {g.DedicatedVramGiB:F0} GB" : "no NVIDIA GPU, CPU-only";
+        stdout.WriteLine($"This machine ({gpu}): {pick.Alias}, llama.cpp backends in order: "
+            + string.Join(", then ", plan.Accels.Select(LlamaCppRelease.Describe)) + ".");
+        stdout.WriteLine(installed.Count > 0
+            ? $"Installed llama.cpp builds: {string.Join(", ", installed.Select(b => b.Id))}."
+            : "No llama.cpp build installed yet; .\\win\\openmono.ps1 setup installs one.");
+        return 0;
+    }
+
+    // Live check for CI: the newest llama.cpp release still ships every
+    // Windows flavor OpenMono installs, and every ladder download answers.
+    private static async Task<int> ModelsCheckAsync(LauncherDeps deps, TextWriter stdout, TextWriter stderr, CancellationToken ct)
+    {
+        var catalog = ModelLadder.Locate(deps.GetEnv);
+        if (catalog is null)
         {
-            stdout.WriteLine($"This machine ({gpu}): {pick.ModelAlias}. {pick.Reason}");
-            if (pick.CpuOnly)
+            stderr.WriteLine("scripts\\models.json was not found.");
+            return 1;
+        }
+
+        var failed = false;
+        var url = deps.GetEnv(LlamaCppConstants.ReleasesUrlEnvVar) is { Length: > 0 } custom ? custom : LlamaCppConstants.ReleasesApiUrl;
+        IReadOnlyList<LlamaRelease> releases = [];
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.UserAgent.ParseAdd("openmono-win");
+            using var response = await deps.Http.SendAsync(request, ct);
+            if (response.IsSuccessStatusCode)
             {
-                stdout.WriteLine(check.CpuVariant is { } variant
-                    ? $"CPU variant: {variant} ({CatalogCheck.Size(check.PickView.Describe(pick.ModelAlias)?.FileSizeBytes)}, from {check.PickView.Web?.Source})."
-                    : $"CPU variant: not listed by the CPU catalog here; `foundry model load {pick.ModelAlias}` picks the variant.");
+                releases = LlamaCppRelease.ParseReleases(await response.Content.ReadAsStringAsync(ct));
+            }
+            else
+            {
+                stdout.WriteLine($"[FAIL] {(int)response.StatusCode} {url}");
             }
         }
-        else if (check.Error is not null)
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {
-            stdout.WriteLine($"This machine ({gpu}): {check.Error}");
+            stdout.WriteLine($"[FAIL] {url}: {ex.Message}");
         }
-        else
+
+        foreach (var (accel, cuda) in new[] { (Accel.Cuda, new Version(12, 4)), (Accel.Vulkan, (Version?)null), (Accel.Cpu, null) })
         {
-            stdout.WriteLine($"This machine ({gpu}): {check.PreferredRung.Alias} (not validated: no catalog answered; `foundry model load` checks it).");
+            var choice = LlamaCppRelease.Pick(releases, accel, cuda);
+            failed |= choice is null;
+            stdout.WriteLine(choice is null
+                ? $"[FAIL] llama.cpp {LlamaCppRelease.Describe(accel)}: no Windows x64 build in {url}"
+                : $"[ ok ] llama.cpp {LlamaCppRelease.Describe(accel)}: {choice.Server.Name}{(choice.Cudart is null ? "" : " + " + choice.Cudart.Name)}");
+        }
+
+        foreach (var download in ModelLadder.Load(catalog).All
+            .SelectMany(r => new[] { r.Url, r.MmprojUrl }.OfType<string>()).Distinct())
+        {
+            try
+            {
+                using var head = new HttpRequestMessage(HttpMethod.Head, download);
+                using var answer = await deps.Http.SendAsync(head, ct);
+                failed |= !answer.IsSuccessStatusCode;
+                stdout.WriteLine($"[{(answer.IsSuccessStatusCode ? " ok " : "FAIL")}] {(int)answer.StatusCode} {download}");
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                failed = true;
+                stdout.WriteLine($"[FAIL] {download}: {ex.Message}");
+            }
         }
 
         return failed ? 1 : 0;
@@ -246,16 +250,17 @@ public static class LauncherCli
         }
 
         var s = result.State!;
-        stdout.WriteLine($"Inference ready: {s.Endpoint} (model {s.ServedModelId ?? s.ModelAlias ?? s.AgentModel ?? "auto-detect"}, "
-            + $"vision {(s.VisionEnabled == true ? "on" : "off")}).");
+        stdout.WriteLine($"Inference ready: {s.Endpoint} (model {s.ModelAlias ?? s.AgentModel ?? "auto-detect"}"
+            + (s.Accel is null ? "" : $", llama.cpp {s.LlamaBuild}")
+            + $", vision {(s.VisionEnabled == true ? "on" : "off")}).");
         return 0;
     }
 
     private static async Task<int> StatusAsync(LauncherDeps deps, InferenceOrchestrator orchestrator, bool json, TextWriter stdout, CancellationToken ct)
     {
         var state = orchestrator.Store.Load();
-        var endpoint = state?.Endpoint ?? FoundryConstants.DefaultLoopbackEndpoint;
-        var health = await new FoundryHealthChecker(deps.Http).CheckAsync(OmaEndpointContract.TrimRoot(endpoint), ct);
+        var endpoint = state?.Endpoint ?? LlamaCppConstants.DefaultLoopbackEndpoint;
+        var health = await new ServerHealthChecker(deps.Http).CheckAsync(OmaEndpointContract.TrimRoot(endpoint), ct);
 
         if (json)
         {
@@ -265,13 +270,20 @@ public static class LauncherCli
             return 0;
         }
 
-        stdout.WriteLine(health.Reachable
-            ? $"Inference: {endpoint} up; models: {(health.Models.Count > 0 ? string.Join(", ", health.Models) : "none loaded")}."
-            : $"Inference: {endpoint} down ({health.Error}).");
+        stdout.WriteLine(health.Ready
+            ? $"Inference: {endpoint} up; models: {(health.Models.Count > 0 ? string.Join(", ", health.Models) : "none listed")}."
+            : health.Loading
+                ? $"Inference: {endpoint} is loading the model."
+                : $"Inference: {endpoint} down ({health.Error}).");
         if (state is not null)
         {
-            stdout.WriteLine($"  backend {state.Backend}, alias {state.ModelAlias ?? "-"}, context {state.ContextTokens?.ToString() ?? "-"}, "
+            stdout.WriteLine($"  backend {state.Backend}{(state.LlamaBuild is null ? "" : $" (llama.cpp {state.LlamaBuild}, pid {state.ServerPid?.ToString() ?? "-"})")}, "
+                + $"model {state.ModelAlias ?? "-"}, context {state.ContextTokens?.ToString() ?? "-"}, "
                 + $"vision {(state.VisionEnabled == true ? "on" : "off")}, started by OpenMono: {(state.StartedByUs ? "yes" : "no")}.");
+            if (state.LogFile is not null)
+            {
+                stdout.WriteLine($"  log: {state.LogFile}");
+            }
         }
 
         return 0;
@@ -294,7 +306,7 @@ public static class LauncherCli
 
         var vision = parsed.Flag("--vision");
         var up = await orchestrator.UpAsync(
-            new UpOptions(parsed.Value("--model"), parsed.IntValue("--port") ?? FoundryConstants.DefaultPort, vision), ct);
+            new UpOptions(parsed.Value("--model"), parsed.IntValue("--port") ?? LlamaCppConstants.DefaultPort, vision), ct);
         if (!up.Ok)
         {
             foreach (var line in up.Log)
@@ -320,9 +332,7 @@ public static class LauncherCli
             WebGateway: settings.WebGateway,
             WebSearch: settings.WebSearch,
             WebScrape: settings.WebScrape,
-            NoGitAuth: parsed.Flag("--no-git-auth") || deps.GetEnv("OPENMONO_NO_GIT_AUTH") == "1",
-            LlmBackend: state.Backend == InferenceState.FoundryBackend ? InferenceState.FoundryBackend : null,
-            ToolCalling: state.ToolCalling));
+            NoGitAuth: parsed.Flag("--no-git-auth") || deps.GetEnv("OPENMONO_NO_GIT_AUTH") == "1"));
 
         stdout.WriteLine(JsonSerializer.Serialize(
             new
@@ -340,11 +350,11 @@ public static class LauncherCli
     // Only the lines a user acts on reach the agent launch banner; the full
     // log stays available through `openmono start`.
     private static bool IsUserNote(string line) =>
-        line.StartsWith("Images:", StringComparison.Ordinal)
+        line.StartsWith("Vision off:", StringComparison.Ordinal)
         || line.StartsWith("Vision session:", StringComparison.Ordinal)
+        || line.StartsWith("WARNING:", StringComparison.Ordinal)
         || line.Contains("adopting it", StringComparison.Ordinal)
-        || line.StartsWith("Replaced the previously served model", StringComparison.Ordinal)
-        || line.Contains("below the 24 GB floor", StringComparison.Ordinal);
+        || line.StartsWith("Restarting llama-server", StringComparison.Ordinal);
 
     private static async Task<int> DoctorAsync(LauncherDeps deps, LauncherArgs parsed, TextWriter stdout, CancellationToken ct)
     {
@@ -381,7 +391,7 @@ public static class LauncherCli
     {
         var input = BuildDoctorInput(deps, parsed.Value("--workdir") ?? Directory.GetCurrentDirectory());
         var checks = await new DoctorRunner(deps).RunAsync(input, ct);
-        var files = await new DiagnosticsBundle(deps).CollectAsync(checks, input.PathDirectories, ct);
+        var files = await new DiagnosticsBundle(deps).CollectAsync(checks, ct);
 
         var outPath = parsed.Value("--out")
             ?? Path.Combine(deps.HomeDir, ".openmono", "win",
@@ -423,7 +433,7 @@ public sealed class LauncherArgs
 {
     private static readonly HashSet<string> ValueKeys = new(StringComparer.Ordinal)
     {
-        "--model", "--port", "--workdir", "--compose", "--out", "--device",
+        "--model", "--port", "--workdir", "--compose", "--out",
     };
 
     private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
@@ -460,7 +470,7 @@ public sealed class LauncherArgs
 
         if (words.Count > 0)
         {
-            parsed.Command = words[0] is "inference" or "catalog" && words.Count > 1
+            parsed.Command = words[0] is "inference" or "models" && words.Count > 1
                 ? $"{words[0]} {words[1]}"
                 : words[0];
         }

@@ -15,11 +15,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="Fixtures\**" CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <ProjectReference Include="..\..\src\OpenMono.Win.Foundry\OpenMono.Win.Foundry.csproj" />
+    <ProjectReference Include="..\..\src\OpenMono.Win.Inference\OpenMono.Win.Inference.csproj" />
     <ProjectReference Include="..\..\src\OpenMono.Win.AgentHost\OpenMono.Win.AgentHost.csproj" />
     <ProjectReference Include="..\..\src\OpenMono.Win.Launcher\OpenMono.Win.Launcher.csproj" />
   </ItemGroup>

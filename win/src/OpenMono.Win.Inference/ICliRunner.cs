@@ -1,4 +1,4 @@
-namespace OpenMono.Win.Foundry;
+namespace OpenMono.Win.Inference;
 
 // Small process record so CLI consumers stay testable behind ICliRunner.
 public sealed record CliResult(int ExitCode, string StandardOutput, string StandardError)

@@ -1,5 +1,5 @@
 using OpenMono.Win.AgentHost;
-using OpenMono.Win.Foundry;
+using OpenMono.Win.Inference;
 
 namespace OpenMono.Win.Launcher;
 
@@ -24,9 +24,9 @@ public sealed record DoctorInput(
 
 // `openmono doctor` on Windows: the host prerequisites the bash doctor checks
 // on Linux (docker, inference, agent image), plus the Windows-only pieces
-// (PowerShell host shell, Git and the .NET SDK that setup installs, Foundry
-// CLI version, CUDA/cuDNN on PATH, and the
-// container-to-host route to Foundry). Read-only: it never starts anything.
+// (PowerShell host shell, Git and the .NET SDK that setup installs, the GPU
+// tier and llama.cpp build, the ladder model files, and the container-to-host
+// route to llama-server). Read-only: it never starts or downloads anything.
 public sealed class DoctorRunner
 {
     public const string AgentImage = "openmono-agent:latest";
@@ -64,18 +64,18 @@ public sealed class DoctorRunner
         if (remote)
         {
             checks.Add(new DoctorCheck("inference", CheckLevel.Info,
-                $"llm.endpoint {configured} is remote; Foundry Local checks skipped."));
+                $"llm.endpoint {configured} is remote; llama.cpp checks skipped."));
         }
         else
         {
-            await AddFoundryChecksAsync(checks, input, ct);
+            await AddLlamaChecksAsync(checks, ct);
         }
 
         var state = new InferenceStateStore(_deps.HomeDir).Load();
         var endpoint = remote
             ? OmaEndpointContract.TrimRoot(configured!)
-            : state?.Endpoint ?? FoundryConstants.DefaultLoopbackEndpoint;
-        var health = await new FoundryHealthChecker(_deps.Http).CheckAsync(endpoint, ct);
+            : state?.Endpoint ?? LlamaCppConstants.DefaultLoopbackEndpoint;
+        var health = await new ServerHealthChecker(_deps.Http).CheckAsync(endpoint, ct);
         checks.Add(health.Reachable
             ? new DoctorCheck("inference server", CheckLevel.Ok,
                 $"{endpoint} answers; models: {(health.Models.Count > 0 ? string.Join(", ", health.Models) : "none loaded yet")}.")
@@ -169,83 +169,67 @@ public sealed class DoctorRunner
         return inspect is { Succeeded: true };
     }
 
-    private async Task AddFoundryChecksAsync(List<DoctorCheck> checks, DoctorInput input, CancellationToken ct)
+    private async Task AddLlamaChecksAsync(List<DoctorCheck> checks, CancellationToken ct)
     {
-        var cli = await new FoundryCliDetector(_deps.Cli).DetectAsync(ct);
-        checks.Add(!cli.Found
-            ? new DoctorCheck("foundry cli", CheckLevel.Fail, "Foundry Local CLI not found.",
-                "winget install Microsoft.FoundryLocal (or run .\\win\\openmono.ps1 setup)")
-            : cli.IsSupported
-                ? new DoctorCheck("foundry cli", CheckLevel.Ok, $"Foundry Local CLI {cli.Version}.")
-                : new DoctorCheck("foundry cli", CheckLevel.Fail,
-                    $"Foundry Local CLI {cli.Version?.ToString() ?? "(unknown)"} is older than {FoundryConstants.MinCliVersion}.",
-                    "winget upgrade Microsoft.FoundryLocal"));
-
-        var gpus = await _deps.Gpu.ProbeAsync(ct);
-        var nvidia = gpus.Where(g => g.IsNvidia).OrderByDescending(g => g.DedicatedVramBytes).FirstOrDefault();
-        if (nvidia is null)
+        var catalog = ModelLadder.Locate(_deps.GetEnv);
+        if (catalog is null)
         {
-            checks.Add(new DoctorCheck("gpu", CheckLevel.Info,
-                $"No dedicated NVIDIA GPU detected: CPU-only, serves {FoundryConstants.CpuModelAlias} (its generic CPU variant "
-                    + $"when Foundry offers one). {FoundryConstants.TargetModelAlias} needs a 24 GB NVIDIA card; smaller NVIDIA "
-                    + "cards get the Qwen3.5 ladder (see `openmono catalog check`)."));
-        }
-        else
-        {
-            var rung = ModelSelector.RungFor(nvidia.DedicatedVramBytes);
-            var isTarget = ReferenceEquals(rung, FoundryModelLadder.Target);
-            checks.Add(new DoctorCheck("gpu",
-                isTarget ? CheckLevel.Ok : CheckLevel.Info,
-                $"{nvidia.Name}, {nvidia.DedicatedVramGiB:F0} GB: {rung.VramClass} class, serves {rung.Alias}"
-                    + (isTarget ? "." : $" (below the 24 GB floor for {FoundryConstants.TargetModelAlias}; text and images).")));
+            checks.Add(new DoctorCheck("model ladder", CheckLevel.Fail, "scripts\\models.json was not found.",
+                "Run OpenMono from its git checkout (git pull restores scripts\\models.json)."));
+            return;
         }
 
-        checks.Add(await ModelCatalogCheckAsync(ct));
-
-        if (input.IsWindows)
+        ModelLadder ladder;
+        try
         {
-            var cuda = CudaPrerequisiteChecker.Check(
-                new CudaCheckInput(input.PathDirectories, input.ListFiles),
-                smiFound: nvidia is not null);
-            checks.Add(cuda.Ok
-                ? new DoctorCheck("cuda", CheckLevel.Ok, "CUDA and cuDNN runtimes are on PATH.")
-                : new DoctorCheck("cuda", nvidia is null ? CheckLevel.Info : CheckLevel.Fail,
-                    string.Join(" ", cuda.Issues), cuda.Remediation));
+            ladder = ModelLadder.Load(catalog);
         }
-    }
-
-    private async Task<DoctorCheck> ModelCatalogCheckAsync(CancellationToken ct)
-    {
-        var check = await CatalogCheck.RunAsync(_deps, ct: ct);
-        var web = check.View.Web!;
-        if (check.Unusable)
+        catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException or InvalidDataException or KeyNotFoundException or InvalidOperationException)
         {
-            return new DoctorCheck("model catalog", CheckLevel.Fail, check.Error!,
-                $"Update Foundry Local (winget upgrade Microsoft.FoundryLocal); see {FoundryWebCatalogClient.ModelsPageUrl}");
+            checks.Add(new DoctorCheck("model ladder", CheckLevel.Fail, $"{catalog}: {ex.Message}", "git checkout -- scripts/models.json"));
+            return;
         }
 
-        if (!check.PickView.Known)
-        {
-            return new DoctorCheck("model catalog", CheckLevel.Warn,
-                CatalogCheck.PublicSummary(web) + " `foundry model load` will validate the alias.",
-                "Check the network, then: .\\win\\openmono.ps1 catalog check --refresh");
-        }
+        var orchestrator = new InferenceOrchestrator(_deps);
+        var plan = await orchestrator.PlanAsync(ladder, ct);
+        var backends = string.Join(", then ", plan.Accels.Select(LlamaCppRelease.Describe));
+        checks.Add(plan.Gpu is { } gpu
+            ? new DoctorCheck("gpu", CheckLevel.Ok,
+                $"{gpu.Name}, {gpu.DedicatedVramGiB:F0} GB: serves {plan.GpuRung.Alias}; llama.cpp {backends}"
+                    + (plan.DriverCuda is null ? " (the driver reports no CUDA version)." : $" (driver CUDA {plan.DriverCuda})."))
+            : new DoctorCheck("gpu", CheckLevel.Info,
+                $"No NVIDIA GPU detected: CPU-only, serves {plan.CpuRung.Alias} on the llama.cpp CPU build."));
 
-        var pick = check.Pick!.ModelAlias + (check.CpuVariant is { } variant ? $" (CPU variant {variant})" : "");
-        var missing = check.MissingFromPublic;
-        return missing.Count == 0
-            ? new DoctorCheck("model catalog", CheckLevel.Ok,
-                $"{pick} is in the Foundry catalog ({check.PickView.Source}). {CatalogCheck.PublicSummary(web)}")
-            : new DoctorCheck("model catalog", CheckLevel.Warn,
-                $"{pick} is in the Foundry catalog ({check.PickView.Source}), but the public catalog lacks: {string.Join(", ", missing)}.",
-                "Run: .\\win\\openmono.ps1 catalog check --refresh");
+        var installed = LlamaCppInstaller.ListInstalled(orchestrator.InstallRoot);
+        var usable = plan.Accels
+            .Select(a => LlamaCppInstaller.FindInstalled(orchestrator.InstallRoot, a, plan.DriverCuda))
+            .FirstOrDefault(b => b is not null);
+        checks.Add(usable is not null
+            ? new DoctorCheck("llama.cpp", CheckLevel.Ok, $"llama.cpp {usable.Id} installed in {usable.Directory}.")
+            : new DoctorCheck("llama.cpp", CheckLevel.Warn,
+                installed.Count > 0
+                    ? $"Installed llama.cpp builds ({string.Join(", ", installed.Select(b => b.Id))}) do not match this machine ({backends})."
+                    : "No llama.cpp build installed yet.",
+                "Run: .\\win\\openmono.ps1 setup (downloads the official llama.cpp Windows build)"));
+
+        var settings = HostSettings.Load(HostSettings.PathFor(_deps.HomeDir));
+        var rung = (settings.LlmModel is { } kept ? ladder.Find(kept) : null) ?? plan.RungFor(plan.Accels[0]);
+        var modelsDir = ModelStore.ModelsDirFor(catalog, _deps.GetEnv);
+        var hasModel = File.Exists(Path.Combine(modelsDir, rung.File));
+        var hasMmproj = rung.Mmproj is not null && File.Exists(Path.Combine(modelsDir, rung.Mmproj));
+        checks.Add(hasModel
+            ? new DoctorCheck("model", CheckLevel.Ok,
+                $"{rung.File} is in {modelsDir}"
+                    + (hasMmproj ? " with its vision projector." : settings.VisionEnabled == false ? " (vision off in settings)." : "; the vision projector is missing, so images are off."))
+            : new DoctorCheck("model", CheckLevel.Warn, $"{rung.File} ({rung.Label}) is not downloaded to {modelsDir} yet.",
+                "Run: .\\win\\openmono.ps1 setup"));
     }
 
     // The one network hop that is new on Windows: from inside the Linux
-    // container to Foundry on the Windows host loopback.
+    // container to llama-server on the Windows host loopback.
     private async Task<DoctorCheck> ContainerRouteCheckAsync(string hostEndpoint, CancellationToken ct)
     {
-        var containerUrl = WindowsContainerEndpoint.MapForContainer(hostEndpoint) + OmaEndpointContract.ModelsPath;
+        var containerUrl = WindowsContainerEndpoint.MapForContainer(hostEndpoint) + OmaEndpointContract.HealthPath;
         var run = await TryRunAsync("docker",
             $"run --rm --add-host host.docker.internal:host-gateway --entrypoint curl {AgentImage} -fsS -m 5 {containerUrl}", ct);
 

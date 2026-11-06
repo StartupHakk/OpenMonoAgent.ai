@@ -1,6 +1,6 @@
 using FluentAssertions;
 using Xunit;
-using OpenMono.Win.Foundry;
+using OpenMono.Win.Inference;
 
 namespace OpenMono.Win.Tests;
 
@@ -64,47 +64,5 @@ public sealed class GpuCatalogTests
         var gpus = await new SystemGpuProber(runner).ProbeAsync();
 
         gpus.Should().BeEmpty();
-    }
-}
-
-public sealed class CudaCheckerTests
-{
-    private static CudaCheckInput FakeTree(bool cuda, bool cudnn) => new(
-        ["/cuda/bin", "/cudnn/bin"],
-        dir => dir switch
-        {
-            "/cuda/bin" when cuda => ["cublas64_12.dll", "cudart64_12.dll"],
-            "/cudnn/bin" when cudnn => ["cudnn64_9.dll"],
-            _ => [],
-        });
-
-    [Fact]
-    public void AllPresentIsOk()
-    {
-        var result = CudaPrerequisiteChecker.Check(FakeTree(true, true), smiFound: true);
-
-        result.Ok.Should().BeTrue();
-        result.Issues.Should().BeEmpty();
-    }
-
-    [Fact]
-    public void MissingCudnnExplainsRemediation()
-    {
-        var result = CudaPrerequisiteChecker.Check(FakeTree(true, false), smiFound: true);
-
-        result.Ok.Should().BeFalse();
-        result.CudaDllFound.Should().BeTrue();
-        result.CudnnDllFound.Should().BeFalse();
-        result.Issues.Should().Contain(i => i.Contains("cudnn64"));
-        result.Remediation.Should().Contain("cuDNN").And.Contain("PATH");
-    }
-
-    [Fact]
-    public void MissingDriverIsReported()
-    {
-        var result = CudaPrerequisiteChecker.Check(FakeTree(true, true), smiFound: false);
-
-        result.Ok.Should().BeFalse();
-        result.Issues.Should().Contain(i => i.Contains("nvidia-smi"));
     }
 }

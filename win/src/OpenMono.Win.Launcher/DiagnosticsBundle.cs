@@ -3,13 +3,13 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
-using OpenMono.Win.Foundry;
+using OpenMono.Win.Inference;
 
 namespace OpenMono.Win.Launcher;
 
-// `openmono diag`: one zip a user can attach to an issue. GPU and VRAM,
-// Foundry version and status, CUDA-related PATH entries, the last Foundry
-// server log lines, the resolved inference state, doctor output, and
+// `openmono diag`: one zip a user can attach to an issue. GPU, VRAM and the
+// driver banner, the installed llama.cpp builds, the last llama-server log
+// lines, the resolved inference state, doctor output, and
 // settings.json with every secret-like value removed. The user's home path
 // is replaced with "~" everywhere, so the bundle names no account.
 public static partial class DiagnosticsRedactor
@@ -118,16 +118,12 @@ public sealed class DiagnosticsBundle
 
     public async Task<IReadOnlyDictionary<string, string>> CollectAsync(
         IReadOnlyList<DoctorCheck> doctor,
-        IReadOnlyList<string> pathDirectories,
         CancellationToken ct = default)
     {
         var files = new Dictionary<string, string>(StringComparer.Ordinal);
-        var exe = FoundryCliDetector.CliExecutableName;
-
         var env = new StringBuilder();
         env.AppendLine($"os: {Environment.OSVersion}");
         env.AppendLine($"dotnet: {Environment.Version}");
-        env.AppendLine($"foundry --version: {await RunTextAsync(exe, "--version", ct)}");
         env.AppendLine($"docker server: {await RunTextAsync("docker", "version --format {{.Server.Version}}", ct)}");
         foreach (var gpu in await _deps.Gpu.ProbeAsync(ct))
         {
@@ -135,22 +131,20 @@ public sealed class DiagnosticsBundle
         }
 
         files["environment.txt"] = env.ToString();
+        files["nvidia-smi.txt"] = await RunTextAsync("nvidia-smi", "", ct);
 
-        var cuda = pathDirectories
-            .Where(d => d.Contains("cuda", StringComparison.OrdinalIgnoreCase)
-                || d.Contains("cudnn", StringComparison.OrdinalIgnoreCase)
-                || d.Contains("nvidia", StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        files["cuda-path.txt"] = cuda.Count > 0
-            ? string.Join(Environment.NewLine, cuda)
-            : "(no CUDA, cuDNN, or NVIDIA directories on PATH)";
+        var root = LlamaCppInstaller.RootFor(_deps.HomeDir, _deps.GetEnv);
+        var builds = LlamaCppInstaller.ListInstalled(root);
+        files["llama-cpp.txt"] = builds.Count > 0
+            ? string.Join(Environment.NewLine, builds.Select(b => $"{b.Id}: {b.ServerPath}"))
+            : $"(no llama.cpp build installed in {root})";
 
-        files["foundry-status.txt"] = await RunTextAsync(exe, "server status", ct);
-        files["foundry-server-log.txt"] = await RunTextAsync(exe, "server logs --lines 200", ct);
+        var store = new InferenceStateStore(_deps.HomeDir);
+        var logFile = store.Load()?.LogFile ?? Path.Combine(_deps.HomeDir, ".openmono", "win", "llama-server.log");
+        files["llama-server-log.txt"] = LlamaServerService.Tail(logFile, 200);
         files["doctor.txt"] = string.Join(Environment.NewLine,
             doctor.Select(c => $"[{c.Level.ToString().ToLowerInvariant()}] {c.Name}: {c.Detail}"));
 
-        var store = new InferenceStateStore(_deps.HomeDir);
         files["inference.json"] = File.Exists(store.FilePath) ? File.ReadAllText(store.FilePath) : "(no inference state yet)";
 
         var settingsPath = HostSettings.PathFor(_deps.HomeDir);
@@ -158,9 +152,15 @@ public sealed class DiagnosticsBundle
             ? DiagnosticsRedactor.RedactSettingsJson(File.ReadAllText(settingsPath), _deps.HomeDir)
             : "(no settings.json)";
 
+        // llama-server can echo its own command line, including --api-key.
+        var apiKey = _deps.GetEnv(LlamaCppConstants.ApiKeyEnvVar);
         return files.ToDictionary(
             kv => kv.Key,
-            kv => DiagnosticsRedactor.RedactText(kv.Value, _deps.HomeDir),
+            kv =>
+            {
+                var text = DiagnosticsRedactor.RedactText(kv.Value, _deps.HomeDir);
+                return string.IsNullOrEmpty(apiKey) ? text : text.Replace(apiKey, DiagnosticsRedactor.Redacted, StringComparison.Ordinal);
+            },
             StringComparer.Ordinal);
     }
 

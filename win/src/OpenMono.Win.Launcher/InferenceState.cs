@@ -4,25 +4,25 @@ using System.Text.Json.Serialization;
 namespace OpenMono.Win.Launcher;
 
 // What the last `inference up` resolved, persisted so `stop` knows whether
-// OpenMono started the Foundry daemon (and may stop it) and so repeat agent
-// launches can reuse the vision probe for an unchanged served model.
+// OpenMono started llama-server (and may stop it), and so the next start can
+// tell whether the running server already has the right model and flags.
 public sealed record InferenceState(
     string Backend,
     string Endpoint,
     string? ModelAlias,
-    string? ServedModelId,
+    string? ModelFile,
+    string? Accel,
+    string? LlamaBuild,
+    int? ServerPid,
+    string? ServerFingerprint,
+    string? LogFile,
     string? AgentModel,
     int? ContextTokens,
     bool? VisionEnabled,
-    bool? VisionProbeAccepted,
     bool StartedByUs,
     string UpdatedUtc)
 {
-    // From the Foundry catalog (supportsToolCalling); null when unknown. false
-    // makes the agent leave tools out of its requests, which such a model rejects.
-    public bool? ToolCalling { get; init; }
-
-    public const string FoundryBackend = "foundry";
+    public const string LlamaBackend = "llama";
     public const string RemoteBackend = "remote";
 }
 

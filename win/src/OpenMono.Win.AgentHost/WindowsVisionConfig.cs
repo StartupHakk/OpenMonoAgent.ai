@@ -1,23 +1,19 @@
-using OpenMono.Win.Foundry;
-
 namespace OpenMono.Win.AgentHost;
 
-// Maps the Foundry vision probe onto the single product-wide vision flag.
-// Upstream resolution (AppConfig.ResolveVision + Program.cs props handling):
-// explicit inference.vision_enabled wins, otherwise the server's reported
-// capability decides. The only Windows difference is how the capability is
-// learned: llama.cpp reports modalities.vision in /props, while Foundry is
-// asked directly with a 1x1 image probe (FoundryVisionProbe). An explicit
-// user setting is never overridden by either probe.
+// Maps the host llama-server's image support onto the single product-wide
+// vision flag. Upstream resolution (AppConfig.ResolveVision + Program.cs props
+// handling): explicit inference.vision_enabled wins, otherwise the server's
+// reported capability decides. On Windows, as on Linux, llama-server takes
+// images exactly when it was started with the model's --mmproj projector, so
+// the launcher knows the answer without a probe. An explicit user setting is
+// never overridden.
 public static class WindowsVisionConfig
 {
     public const string VisionEnvVar = "OPENMONO_VISION_ENABLED";
 
     public sealed record VisionResolution(bool VisionEnabled, string Reason);
 
-    public static VisionResolution ApplyProbeResult(
-        bool? explicitSetting,
-        VisionProbeResult? probe)
+    public static VisionResolution Resolve(bool? explicitSetting, bool mmprojLoaded, string model)
     {
         if (explicitSetting.HasValue)
         {
@@ -25,27 +21,13 @@ public static class WindowsVisionConfig
                 explicitSetting.Value,
                 "Explicit inference.vision_enabled="
                     + (explicitSetting.Value ? "true" : "false")
-                    + " respected; probe result ignored.");
+                    + " respected.");
         }
 
-        if (probe?.Accepted == true)
-        {
-            return new VisionResolution(
-                true,
-                "Foundry endpoint accepted image input for " + probe.Model + "; vision enabled.");
-        }
-
-        return new VisionResolution(
-            false,
-            "Vision off: "
-                + (probe?.Detail ?? "no vision probe ran")
-                + " Set inference.vision_enabled=true to override once a vision model is serving.");
+        return mmprojLoaded
+            ? new VisionResolution(true, $"llama-server loaded the vision projector for {model}; vision enabled.")
+            : new VisionResolution(false,
+                $"Vision off: llama-server runs {model} without its vision projector (mmproj). "
+                    + "Run .\\win\\openmono.ps1 setup to download it, then start again.");
     }
-
-    // Mirrors what the container launcher does with the resolved flag: export
-    // it so the agent container (via -e OPENMONO_VISION_ENABLED in
-    // WindowsContainerStack) and every downstream consumer see the same value.
-    // Never called when the user set the key explicitly.
-    public static void ExportResolved(bool visionEnabled) =>
-        Environment.SetEnvironmentVariable(VisionEnvVar, visionEnabled ? "1" : "0");
 }

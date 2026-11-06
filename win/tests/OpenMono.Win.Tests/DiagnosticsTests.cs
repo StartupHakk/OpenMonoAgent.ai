@@ -12,8 +12,8 @@ public sealed class DiagnosticsRedactorTests
     [Fact]
     public void HomePathBecomesTilde()
     {
-        DiagnosticsRedactor.RedactText("log at C:\\Users\\spencer\\.foundry\\logs and C:/Users/spencer/x", Home)
-            .Should().Be("log at ~\\.foundry\\logs and ~/x");
+        DiagnosticsRedactor.RedactText("log at C:\\Users\\spencer\\.openmono\\win\\llama-server.log and C:/Users/spencer/x", Home)
+            .Should().Be("log at ~\\.openmono\\win\\llama-server.log and ~/x");
     }
 
     [Theory]
@@ -30,7 +30,7 @@ public sealed class DiagnosticsRedactorTests
     [Fact]
     public void OrdinaryTextIsKept()
     {
-        const string line = "Server healthy on http://127.0.0.1:7474. Serving qwen3.8-27b-cuda-gpu:1.";
+        const string line = "Server healthy on http://127.0.0.1:7474. Serving Qwen3.8-27B-UD-Q4_K_M.";
 
         DiagnosticsRedactor.RedactText(line, Home).Should().Be(line);
     }
@@ -58,22 +58,25 @@ public sealed class DiagnosticsBundleTests
     [Fact]
     public async Task BundleHasEveryPieceAndNoSecrets()
     {
-        using var rig = new FoundryRig();
+        using var rig = new LlamaRig();
+        rig.Env["LLAMA_API_KEY"] = "llamakeyvalue";
+        await rig.Orchestrator().UpAsync(new UpOptions());
         rig.WriteSettings("""{"llm":{"endpoint":"http://127.0.0.1:7474","api_key":"supersecretvalue"}}""");
-        rig.Runner.Respond(FoundryRig.Exe, "server logs --lines 200", 0,
-            $"loaded model from {rig.Home}/.foundry/cache with token=abc123\n");
+        File.WriteAllText(Path.Combine(rig.Home, ".openmono", "win", "llama-server.log"),
+            $"main: loading model {rig.Home}/repo/models/x.gguf\nargs: --api-key llamakeyvalue token=abc123\n");
         var doctor = new[] { new DoctorCheck("docker", CheckLevel.Ok, "Docker engine 28.1.1.") };
 
-        var files = await new DiagnosticsBundle(rig.Deps()).CollectAsync(
-            doctor, ["C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.8\\bin", "C:\\Windows"]);
+        var files = await new DiagnosticsBundle(rig.Deps()).CollectAsync(doctor);
 
         files.Keys.Should().BeEquivalentTo(
-            "environment.txt", "cuda-path.txt", "foundry-status.txt", "foundry-server-log.txt",
+            "environment.txt", "nvidia-smi.txt", "llama-cpp.txt", "llama-server-log.txt",
             "doctor.txt", "inference.json", "settings.redacted.json");
-        files["environment.txt"].Should().Contain("RTX 4090").And.Contain("foundry 0.13.0");
-        files["cuda-path.txt"].Should().Contain("CUDA\\v12.8\\bin").And.NotContain("C:\\Windows");
-        files["foundry-server-log.txt"].Should().Contain("~/.foundry/cache").And.NotContain("abc123");
-        files.Values.Should().NotContain(v => v.Contains("supersecretvalue") || v.Contains(rig.Home));
+        files["environment.txt"].Should().Contain("RTX 4090");
+        files["nvidia-smi.txt"].Should().Contain("CUDA Version: 12.8");
+        files["llama-cpp.txt"].Should().Contain("b9000-cuda-12.4");
+        files["llama-server-log.txt"].Should().Contain("~/repo/models/x.gguf").And.NotContain("abc123");
+        files["inference.json"].Should().Contain("Qwen3.8-27B-UD-Q4_K_M");
+        files.Values.Should().NotContain(v => v.Contains("supersecretvalue") || v.Contains("llamakeyvalue") || v.Contains(rig.Home));
 
         var zip = Path.Combine(rig.Home, "out", "diag.zip");
         DiagnosticsBundle.WriteZip(zip, files);

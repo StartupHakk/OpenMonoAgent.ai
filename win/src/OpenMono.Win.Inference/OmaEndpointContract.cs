@@ -1,4 +1,4 @@
-namespace OpenMono.Win.Foundry;
+namespace OpenMono.Win.Inference;
 
 // How OpenMono.Cli talks to inference, mirrored for the Windows host so both
 // backends honor the same contract. Source of truth in the repo:
@@ -6,8 +6,8 @@ namespace OpenMono.Win.Foundry;
 //   - OpenMono.Llm.ModelCatalog reads {Endpoint}/v1/models (data[].id).
 //   - Program.cs polls {Endpoint}/health and {Endpoint}/props for readiness
 //     and model auto-detect, and ConfigLoader strips one trailing "/v1".
-// The Windows host therefore points the same root at Foundry instead of
-// llama-server, changing only the base URL and the model name.
+// The Windows host runs the same llama-server natively instead of in a
+// compose service, so only the base URL changes.
 public static class OmaEndpointContract
 {
     // OMA default root (AppConfig.Llm.Endpoint, ProviderRegistry fallbacks).
@@ -54,8 +54,4 @@ public static class OmaEndpointContract
 
     public static string HealthUrl(string endpointRoot) =>
         TrimRoot(endpointRoot) + HealthPath;
-
-    // The (endpoint, model) pair the Windows host feeds OMA config and env.
-    public static (string Endpoint, string Model) ForFoundry(string modelAlias) =>
-        (FoundryConstants.DefaultLoopbackEndpoint, modelAlias);
 }

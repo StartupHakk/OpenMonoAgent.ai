@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace OpenMono.Win.Foundry;
+namespace OpenMono.Win.Inference;
 
 // Production ICliRunner that spawns real child processes with captured output.
 // stdout and stderr are drained concurrently: reading one to the end before

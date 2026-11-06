@@ -4,17 +4,14 @@ namespace OpenMono.Win.AgentHost;
 // cmd_agent_sandbox in the bash launcher: same compose file, same `agent`
 // service, `run --rm` as a non-root user, the same -e and git mounts, and
 // the same compose interpolation variables. The deliberate differences:
-//   - OPENMONO_ENDPOINT targets host Foundry via host.docker.internal (the
-//     macOS native-inference rewrite), not the llama-server service name.
+//   - OPENMONO_ENDPOINT targets the host llama-server via host.docker.internal
+//     (the macOS native-inference rewrite), not the llama-server service name.
 //   - --user is a fixed 1000:1000: Windows has no uid, and the image makes
 //     /home/agent 1777 and /etc/passwd writable for an arbitrary uid.
 //   - HOST_WORKSPACE_PATH carries the Windows path, as the VS Code
 //     extension's DockerManager does, so agent.lock names the host folder.
 //   - With --acp-only, ACP is published on 127.0.0.1 only (the host-bridge
 //     AgentContainer shape) so the extension can attach.
-//   - OPENMONO_LLM_BACKEND=foundry makes the agent send Foundry-safe chat
-//     requests (no llama.cpp extensions), and OPENMONO_TOOL_CALLING=0 leaves
-//     tools out when the served model cannot call them.
 // Secrets never appear in the plan: OPENMONO_API_KEY flows from the caller's
 // environment through compose interpolation, as on Linux.
 public sealed record AgentRunRequest(
@@ -31,9 +28,7 @@ public sealed record AgentRunRequest(
     string? WebScrape = null,
     bool NoGitAuth = false,
     Func<string, bool>? FileExists = null,
-    Func<string, bool>? DirectoryExists = null,
-    string? LlmBackend = null,
-    bool? ToolCalling = null);
+    Func<string, bool>? DirectoryExists = null);
 
 public sealed record AgentRunPlan(
     IReadOnlyDictionary<string, string> Environment,
@@ -107,18 +102,6 @@ public static class WindowsContainerStack
         {
             args.Add("-e");
             args.Add($"OPENMONO_MODEL={request.Model}");
-        }
-
-        if (!string.IsNullOrWhiteSpace(request.LlmBackend))
-        {
-            args.Add("-e");
-            args.Add($"OPENMONO_LLM_BACKEND={request.LlmBackend}");
-        }
-
-        if (request.ToolCalling == false)
-        {
-            args.Add("-e");
-            args.Add("OPENMONO_TOOL_CALLING=0");
         }
 
         if (!request.NoGitAuth)

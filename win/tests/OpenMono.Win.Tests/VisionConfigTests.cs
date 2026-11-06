@@ -1,72 +1,33 @@
 using FluentAssertions;
-using Xunit;
 using OpenMono.Win.AgentHost;
-using OpenMono.Win.Foundry;
+using Xunit;
 
 namespace OpenMono.Win.Tests;
-
-public sealed class WindowsImagePolicyTests
-{
-    [Fact]
-    public void TextTurnUsesTheServedModel()
-    {
-        var route = WindowsImagePolicy.RouteImageTurn(hasImages: false, "qwen3.8-27b", null);
-
-        route.ModelAlias.Should().Be("qwen3.8-27b");
-    }
-
-    [Fact]
-    public void RequireVisionModelReturnsTheServedModel()
-    {
-        var route = WindowsImagePolicy.RouteImageTurn(
-            true, "qwen3.5-9b", new VisionProbeResult(true, 200, "qwen3.5-9b", "ok"));
-
-        WindowsImagePolicy.RequireVisionModel(route).Should().Be("qwen3.5-9b");
-    }
-
-    [Fact]
-    public void RequireVisionModelThrowsWithRecoverySteps()
-    {
-        var route = WindowsImagePolicy.RouteImageTurn(
-            true, "qwen3.8-27b", new VisionProbeResult(false, 400, "qwen3.8-27b", "no images"));
-
-        var act = () => WindowsImagePolicy.RequireVisionModel(route);
-
-        act.Should().Throw<InvalidOperationException>()
-            .WithMessage("*NOT sent*only qwen3.8-27b*vision_enabled*");
-    }
-}
 
 public sealed class WindowsVisionConfigTests
 {
     [Fact]
-    public void ExplicitSettingBeatsProbe()
+    public void ExplicitSettingBeatsTheProjector()
     {
-        var accepted = new VisionProbeResult(true, 200, "qwen3.8-27b", "ok");
-
-        WindowsVisionConfig.ApplyProbeResult(false, accepted).VisionEnabled.Should().BeFalse();
-        WindowsVisionConfig.ApplyProbeResult(true, null).VisionEnabled.Should().BeTrue();
+        WindowsVisionConfig.Resolve(false, mmprojLoaded: true, "m").VisionEnabled.Should().BeFalse();
+        WindowsVisionConfig.Resolve(true, mmprojLoaded: false, "m").VisionEnabled.Should().BeTrue();
     }
 
     [Fact]
-    public void AcceptedProbeEnablesVision()
+    public void LoadedProjectorEnablesVision()
     {
-        var accepted = new VisionProbeResult(true, 200, "qwen3.8-27b", "ok");
-
-        var resolution = WindowsVisionConfig.ApplyProbeResult(null, accepted);
+        var resolution = WindowsVisionConfig.Resolve(null, mmprojLoaded: true, "Qwen3.5-9B-UD-Q4_K_XL");
 
         resolution.VisionEnabled.Should().BeTrue();
-        resolution.Reason.Should().Contain("qwen3.8-27b");
+        resolution.Reason.Should().Contain("Qwen3.5-9B-UD-Q4_K_XL");
     }
 
     [Fact]
-    public void RefusedProbeDisablesVision()
+    public void NoProjectorDisablesVisionAndSaysHowToGetIt()
     {
-        var refused = new VisionProbeResult(false, 400, "qwen3.8-27b", "image input not supported");
-
-        var resolution = WindowsVisionConfig.ApplyProbeResult(null, refused);
+        var resolution = WindowsVisionConfig.Resolve(null, mmprojLoaded: false, "Qwen3.5-9B-UD-Q4_K_XL");
 
         resolution.VisionEnabled.Should().BeFalse();
-        resolution.Reason.Should().Contain("inference.vision_enabled=true");
+        resolution.Reason.Should().StartWith("Vision off:").And.Contain("openmono.ps1 setup");
     }
 }

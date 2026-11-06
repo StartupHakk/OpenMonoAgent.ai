@@ -1,5 +1,5 @@
 using OpenMono.Win.AgentHost;
-using OpenMono.Win.Foundry;
+using OpenMono.Win.Inference;
 
 namespace OpenMono.Win.Launcher;
 
@@ -9,23 +9,35 @@ public sealed record LauncherDeps(
     IGpuProber Gpu,
     string HomeDir,
     Func<string, string?> GetEnv,
+    IServerProcessHost Server,
     Func<TimeSpan, CancellationToken, Task>? Delay = null,
-    int HealthAttempts = 30);
+    int HealthAttempts = 180,
+    TextWriter? Progress = null,
+    HttpClient? DownloadHttp = null);
 
 public sealed record UpOptions(
     string? ModelOverride = null,
-    int Port = FoundryConstants.DefaultPort,
+    int Port = LlamaCppConstants.DefaultPort,
     bool Vision = false,
-    bool Persist = true);
+    bool Persist = true,
+    bool Update = false);
 
 public sealed record UpResult(bool Ok, InferenceState? State, IReadOnlyList<string> Log, string? Error);
 
 public sealed record DownResult(bool Stopped, string Message);
 
+// What this machine gets: the GPU class, the llama.cpp builds to try in
+// order, and the model for each.
+public sealed record MachinePlan(GpuInfo? Gpu, Version? DriverCuda, IReadOnlyList<Accel> Accels, ModelRung GpuRung, ModelRung CpuRung)
+{
+    public ModelRung RungFor(Accel accel) => accel == Accel.Cpu ? CpuRung : GpuRung;
+}
+
 // The Windows counterpart of the bash launcher's "make sure inference is up"
 // step: on Linux that is `docker compose up -d llama-server`, on Windows it is
-// the Foundry Local daemon on the host. A remote llm.endpoint (or an explicit
-// OPENMONO_ENDPOINT) is used as-is, exactly as the bash launcher does.
+// the same llama-server from the official llama.cpp Windows build, running on
+// the host (CUDA on NVIDIA, then Vulkan, then CPU). A remote llm.endpoint (or
+// an explicit OPENMONO_ENDPOINT) is used as-is, exactly as the bash launcher does.
 public sealed class InferenceOrchestrator
 {
     private readonly LauncherDeps _deps;
@@ -39,6 +51,8 @@ public sealed class InferenceOrchestrator
 
     public InferenceStateStore Store => _store;
 
+    public string InstallRoot => LlamaCppInstaller.RootFor(_deps.HomeDir, _deps.GetEnv);
+
     public async Task<UpResult> UpAsync(UpOptions options, CancellationToken ct = default)
     {
         var log = new List<string>();
@@ -51,172 +65,186 @@ public sealed class InferenceOrchestrator
         var configured = _deps.GetEnv(OmaEndpointContract.EndpointEnvVar) ?? settings.LlmEndpoint;
         if (configured is not null && !HostSettings.IsLocalEndpoint(configured))
         {
-            log.Add($"llm.endpoint {configured} is remote; using it as-is (no local Foundry).");
+            log.Add($"llm.endpoint {configured} is remote; using it as-is (no local llama-server).");
             var remote = new InferenceState(
-                InferenceState.RemoteBackend, configured, null, null, settings.LlmModel, null,
-                settings.VisionEnabled, null, false, Now());
+                InferenceState.RemoteBackend, configured, null, null, null, null, null, null, null,
+                settings.LlmModel, null, settings.VisionEnabled, false, Now());
             return new UpResult(true, remote, log, null);
         }
 
-        var cli = await new FoundryCliDetector(_deps.Cli).DetectAsync(ct);
-        if (!cli.Found)
+        var catalog = ModelLadder.Locate(_deps.GetEnv);
+        if (catalog is null)
         {
-            return Fail(log, "Foundry Local CLI not found. Run: .\\win\\openmono.ps1 setup "
-                + "(installs it with: winget install Microsoft.FoundryLocal).");
+            return Fail(log, "scripts\\models.json (the model ladder) was not found. Run OpenMono from its git checkout: .\\win\\openmono.ps1 start");
         }
 
-        if (!cli.IsSupported)
+        ModelLadder ladder;
+        try
         {
-            return Fail(log, $"Foundry Local CLI {cli.Version?.ToString() ?? "(unknown version)"} is older than "
-                + $"{FoundryConstants.MinCliVersion}. Update it: winget upgrade Microsoft.FoundryLocal");
+            ladder = ModelLadder.Load(catalog);
+        }
+        catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException or InvalidDataException or KeyNotFoundException or InvalidOperationException)
+        {
+            return Fail(log, $"{catalog} is not a usable model catalog: {ex.Message}");
         }
 
-        log.Add($"Foundry Local CLI {cli.Version}.");
+        var plan = await PlanAsync(ladder, ct);
+        log.Add(plan.Gpu is { } g
+            ? $"NVIDIA GPU: {g.Name}, {g.DedicatedVramGiB:F0} GB VRAM; driver CUDA {plan.DriverCuda?.ToString() ?? "unknown"}."
+            : "No NVIDIA GPU detected: CPU-only.");
 
-        var gpus = await _deps.Gpu.ProbeAsync(ct);
-        var vram = gpus.Where(g => g.IsNvidia).Select(g => (long?)g.DedicatedVramBytes).Max();
-        log.Add(vram is { } v
-            ? $"NVIDIA GPU VRAM: {Math.Round(v / (1024.0 * 1024 * 1024))} GB."
-            : "No dedicated NVIDIA GPU detected: CPU-only.");
-
-        var device = vram is null ? FoundryCatalogDevice.Cpu : FoundryCatalogDevice.Cuda;
-        var view = await LoadCatalogAsync(device, ct);
-        if (!view.Known)
+        var requested = options.ModelOverride;
+        ModelRung? forced = null;
+        if (requested is not null)
         {
-            log.Add("Foundry catalog unavailable (`foundry model list` and " + FoundryWebCatalogClient.DefaultApiUrl
-                + "); `foundry model load` validates the alias.");
+            forced = ladder.Find(requested);
+            if (forced is null)
+            {
+                return Fail(log, $"--model {requested} is not in the Windows model ladder ({catalog}). "
+                    + $"Choose one of: {string.Join(", ", ladder.All.Select(r => r.Alias).Distinct())}.");
+            }
+        }
+        else if (settings.LlmModel is { } kept)
+        {
+            forced = ladder.Find(kept);
+            log.Add(forced is not null
+                ? $"llm.model={kept} is set in settings.json; serving that ladder model."
+                : $"llm.model={kept} is set in settings.json but is not a Windows ladder model; llama-server serves the ladder model and the agent keeps llm.model.");
         }
 
-        var selection = Select(options, vram, view, out var selectError);
-        if (selection is null)
-        {
-            return Fail(log, selectError!);
-        }
-
-        log.Add(selection.Reason);
-        if (view.Describe(selection.ModelAlias) is { FileSizeBytes: { } bytes } described)
-        {
-            log.Add($"{described.Alias}: about {bytes / (1024.0 * 1024 * 1024):F1} GB download on first use "
-                + $"({described.Task ?? "chat"}, input {string.Join("+", described.InputModalities)}).");
-        }
-
-        var endpoint = $"http://127.0.0.1:{options.Port}";
-        var service = new CliFoundryService(
-            _deps.Cli, new FoundryHealthChecker(_deps.Http), _deps.Delay, _deps.HealthAttempts);
-        var loadTarget = selection.CpuOnly ? CpuVariant(view, selection.ModelAlias) : null;
-        if (selection.CpuOnly)
-        {
-            log.Add(loadTarget is not null
-                ? $"Loading the generic CPU variant {loadTarget} from the Foundry catalog."
-                : $"The Foundry catalog lists no CPU variant id for {selection.ModelAlias} here; loading the alias, "
-                    + "and Foundry picks the variant this machine can run.");
-        }
-
-        var keepModel = options.ModelOverride is null ? settings.LlmModel : null;
-        var served = await service.StartOrAdoptAsync(selection.ModelAlias, endpoint, ct, loadTarget, keepModel);
-        log.AddRange(served.Log);
-
-        if (!served.Healthy)
-        {
-            return Fail(log, $"Foundry Local is not serving on {served.Endpoint}. "
-                + "Check `foundry server status` and `foundry server logs`, then run `openmono doctor`.");
-        }
-
-        if (served.ServedModelId is null && served.ForeignModels.Count > 0)
-        {
-            var target = loadTarget ?? selection.ModelAlias;
-            return Fail(log, $"Foundry Local on {served.Endpoint} serves {string.Join(", ", served.ForeignModels)}, not "
-                + $"{selection.ModelAlias}, and `foundry model load {target}` did not make {selection.ModelAlias} available. "
-                + "The agent does not run on a model outside the OpenMono ladder. Run `foundry model load " + target
-                + "`, check `foundry server logs`, then run .\\win\\openmono.ps1 start again. To use another model on purpose, "
-                + "pass --model or set llm.model in settings.json.");
-        }
-
+        var modelsDir = ModelStore.ModelsDirFor(catalog, _deps.GetEnv);
+        var downloadHttp = _deps.DownloadHttp ?? _deps.Http;
+        var store = new ModelStore(downloadHttp, modelsDir, _deps.GetEnv, _deps.Progress);
+        var installer = new LlamaCppInstaller(downloadHttp, _deps.HomeDir, _deps.GetEnv, _deps.Progress);
+        var service = new LlamaServerService(
+            _deps.Server, new ServerHealthChecker(_deps.Http), _deps.Delay, _deps.HealthAttempts);
         var previous = _store.Load();
-        var probeModel = served.ServedModelId ?? selection.ModelAlias;
+        var withMmproj = settings.VisionEnabled != false;
+        var logFile = Path.Combine(_deps.HomeDir, ".openmono", "win", "llama-server.log");
 
-        bool? probeAccepted;
-        string probeDetail;
-        if (previous is not null
-            && previous.VisionProbeAccepted is not null
-            && string.Equals(previous.Endpoint, served.Endpoint, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(previous.ServedModelId, served.ServedModelId, StringComparison.Ordinal)
-            && served.ServedModelId is not null)
+        string? lastError = null;
+        foreach (var accel in plan.Accels)
         {
-            probeAccepted = previous.VisionProbeAccepted;
-            probeDetail = $"Reusing the earlier image probe for {probeModel}.";
-            log.Add(probeDetail);
+            var rung = forced ?? plan.RungFor(accel);
+            log.Add($"{LlamaCppRelease.Describe(accel)}: {rung.Label}.");
+
+            var install = await installer.EnsureAsync(accel, plan.DriverCuda, options.Update, ct);
+            log.AddRange(install.Log);
+            if (install.Build is null)
+            {
+                lastError = install.Error;
+                log.Add($"llama.cpp {LlamaCppRelease.Describe(accel)} build unavailable: {install.Error}");
+                continue;
+            }
+
+            var files = await store.EnsureAsync(rung, withMmproj, ct);
+            log.AddRange(files.Log);
+            if (files.Error is not null)
+            {
+                return Fail(log, files.Error + " Run the same command again to resume the download.");
+            }
+
+            var context = files.MmprojPath is null ? rung.Context : rung.VisionContext;
+            var config = new LlamaServerConfig(
+                files.ModelPath,
+                files.MmprojPath,
+                rung.Alias,
+                options.Port,
+                context,
+                rung.Kv,
+                accel,
+                LlamaServerArgs.DefaultThreads(_deps.GetEnv, accel),
+                logFile,
+                _deps.GetEnv(LlamaCppConstants.ApiKeyEnvVar));
+
+            var running = previous is { Backend: InferenceState.LlamaBackend, StartedByUs: true, ServerFingerprint: { } fp }
+                ? new RunningServer(previous.ServerPid, fp)
+                : null;
+            var served = await service.StartOrAdoptAsync(install.Build, config, running, InstallRoot, ct);
+            log.AddRange(served.Log);
+            if (!served.Ok)
+            {
+                lastError = served.Error;
+                if (served.Crashed && accel != plan.Accels[^1])
+                {
+                    log.Add($"WARNING: the llama.cpp {LlamaCppRelease.Describe(accel)} build failed ({served.Error}); "
+                        + "falling back to the next backend.");
+                    continue;
+                }
+
+                return Fail(log, served.Error!);
+            }
+
+            var vision = WindowsVisionConfig.Resolve(settings.VisionEnabled, files.MmprojPath is not null, rung.Alias);
+            log.Add(vision.Reason);
+            if (options.Vision && !vision.VisionEnabled)
+            {
+                return Fail(log, $"{vision.Reason} A vision session cannot start; the images were not sent.");
+            }
+
+            if (options.Vision)
+            {
+                log.Add($"Vision session: {rung.Alias} takes images; they are sent with each turn.");
+            }
+
+            var agentModel = settings.LlmModel is not null && forced is null && requested is null ? null : rung.Alias;
+            var state = new InferenceState(
+                InferenceState.LlamaBackend,
+                $"http://127.0.0.1:{options.Port}",
+                rung.Alias,
+                files.ModelPath,
+                accel.ToString().ToLowerInvariant(),
+                install.Build.Id,
+                served.Pid,
+                LlamaServerArgs.Fingerprint(install.Build.Id, config),
+                logFile,
+                agentModel,
+                context,
+                vision.VisionEnabled,
+                served.StartedByUs,
+                Now());
+
+            if (options.Persist)
+            {
+                _store.Save(state);
+            }
+
+            return new UpResult(true, state, log, null);
         }
-        else
-        {
-            var probe = await new FoundryVisionProbe(_deps.Http).ProbeAsync(served.Endpoint, probeModel, ct);
-            probeAccepted = probe.Accepted;
-            probeDetail = probe.Detail;
-        }
 
-        var vision = WindowsVisionConfig.ApplyProbeResult(
-            settings.VisionEnabled,
-            new VisionProbeResult(probeAccepted == true, null, probeModel, probeDetail));
-        log.Add(vision.Reason);
-
-        // One model per machine: a model that refuses images is reported, never
-        // swapped for another (a 24 GB+ card keeps qwen3.8-27b regardless).
-        var refusal = probeAccepted == true
-            ? "inference.vision_enabled=false is set"
-            : $"{selection.ModelAlias} did not accept image input in this Foundry release";
-        if (options.Vision && !vision.VisionEnabled)
-        {
-            return Fail(log, $"{refusal}, so a vision session cannot start. The images were not sent. "
-                + "OpenMono serves one model per machine and does not load a second one for images.");
-        }
-
-        if (options.Vision)
-        {
-            log.Add($"Vision session: {selection.ModelAlias} accepted image input; images are sent with each turn.");
-        }
-        else if (!vision.VisionEnabled)
-        {
-            log.Add($"Images: {refusal}. The agent refuses image attachments with a warning (never drops them silently); "
-                + $"OpenMono keeps serving {selection.ModelAlias} and does not load a second model.");
-        }
-
-        string? agentModel = served.ServedModelId;
-        if (settings.LlmModel is not null && !options.Vision && options.ModelOverride is null)
-        {
-            agentModel = null;
-            log.Add($"llm.model={settings.LlmModel} is set in settings.json; the agent keeps it.");
-        }
-
-        var startedByUs = served.StartedByUs
-            || (previous?.StartedByUs == true
-                && string.Equals(previous.Endpoint, served.Endpoint, StringComparison.OrdinalIgnoreCase));
-
-        var state = new InferenceState(
-            InferenceState.FoundryBackend,
-            served.Endpoint,
-            selection.ModelAlias,
-            served.ServedModelId,
-            agentModel,
-            selection.ContextTokens,
-            vision.VisionEnabled,
-            probeAccepted,
-            startedByUs,
-            Now())
-        {
-            ToolCalling = agentModel is null && settings.LlmModel is not null
-                ? null
-                : ToolCallingFor(view, served.ServedModelId),
-        };
-
-        if (options.Persist)
-        {
-            _store.Save(state);
-        }
-
-        return new UpResult(true, state, log, null);
+        return Fail(log, lastError ?? "No llama.cpp backend could start on this machine.");
     }
 
-    public async Task<DownResult> DownAsync(bool force, CancellationToken ct = default)
+    // Which builds to try and which model each serves. NVIDIA: CUDA when the
+    // driver reports a CUDA version, else Vulkan; CPU is always last. Without
+    // NVIDIA there is no GPU rung: the CPU model only.
+    public async Task<MachinePlan> PlanAsync(ModelLadder ladder, CancellationToken ct = default)
+    {
+        var gpus = await _deps.Gpu.ProbeAsync(ct);
+        var nvidia = gpus.Where(g => g.IsNvidia).OrderByDescending(g => g.DedicatedVramBytes).FirstOrDefault();
+        if (nvidia is null)
+        {
+            return new MachinePlan(null, null, [Accel.Cpu], ladder.Cpu, ladder.Cpu);
+        }
+
+        Version? cuda = null;
+        try
+        {
+            var smi = await _deps.Cli.RunAsync("nvidia-smi", "", ct);
+            cuda = smi.Succeeded ? LlamaCppRelease.ParseDriverCudaVersion(smi.StandardOutput) : null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // No banner: the CUDA build cannot be matched to the driver.
+        }
+
+        Accel[] accels = cuda is null ? [Accel.Vulkan, Accel.Cpu] : [Accel.Cuda, Accel.Vulkan, Accel.Cpu];
+        return new MachinePlan(nvidia, cuda, accels, ladder.Pick(nvidia.DedicatedVramBytes), ladder.Cpu);
+    }
+
+    public Task<DownResult> DownAsync(bool force) => Task.FromResult(Down(force));
+
+    private DownResult Down(bool force)
     {
         var state = _store.Load();
         if (state?.Backend == InferenceState.RemoteBackend)
@@ -225,119 +253,27 @@ public sealed class InferenceOrchestrator
             return new DownResult(false, "Inference is remote; nothing local to stop.");
         }
 
-        if (state?.StartedByUs != true && !force)
+        if (state is { StartedByUs: false } && !force)
         {
             return new DownResult(false,
-                "Foundry Local was not started by OpenMono; leaving it running. Use --force to stop it anyway.");
+                $"The server on {state.Endpoint} was not started by OpenMono; leaving it running. Use --force to stop OpenMono's llama-server anyway.");
         }
 
-        var service = new CliFoundryService(_deps.Cli, new FoundryHealthChecker(_deps.Http), _deps.Delay, _deps.HealthAttempts);
-        CliResult result;
-        try
+        var pids = _deps.Server.FindUnder(InstallRoot).ToList();
+        if (state?.ServerPid is { } pid && _deps.Server.IsRunning(pid) && !pids.Contains(pid))
         {
-            result = await service.StopAsync(ct);
+            pids.Add(pid);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+
+        foreach (var p in pids)
         {
-            return new DownResult(false, $"Could not run foundry server stop: {ex.Message}");
+            _deps.Server.Stop(p);
         }
 
         _store.Delete();
-        return result.Succeeded
-            ? new DownResult(true, "Foundry Local daemon stopped.")
-            : new DownResult(false, "foundry server stop failed: " + (result.StandardOutput + result.StandardError).Trim());
-    }
-
-    // `foundry model list` first. On a GPU machine the public catalog API is
-    // read only when the local list is empty, and otherwise from its cache for
-    // size and modality notes, so a normal start makes no extra network call.
-    // A CPU-only machine reads the CPU catalog (cached for an hour) for the
-    // generic CPU variant id, which `foundry model list` does not report.
-    private async Task<FoundryCatalogView> LoadCatalogAsync(FoundryCatalogDevice device, CancellationToken ct)
-    {
-        var local = await new FoundryCatalogClient(_deps.Cli).ListModelsAsync(ct);
-        var web = await FoundryWebCatalogClient.FromEnvironment(_deps.Http, _deps.GetEnv, _deps.HomeDir)
-            .ListAsync(device, cacheOnly: local.Count > 0 && device != FoundryCatalogDevice.Cpu, ct: ct);
-        return new FoundryCatalogView(local, web);
-    }
-
-    // Tool calling is read from the served variant id, not the alias: variants of
-    // one alias differ. A variant the catalog lists without supportsToolCalling=true
-    // gets false, so the agent starts with tools described in the prompt; anything
-    // else is unknown (null). Even "true" is not proof (qwen3.5-9b-cuda-gpu:4 says
-    // true and still has no tool markers), so the agent switches at runtime when
-    // Foundry refuses structured tools.
-    public static bool? ToolCallingFor(FoundryCatalogView view, string? servedModelId)
-    {
-        if (servedModelId is null)
-        {
-            return null;
-        }
-
-        var variant = view.WebModels.FirstOrDefault(m =>
-            string.Equals(m.VariantId, servedModelId, StringComparison.OrdinalIgnoreCase));
-        return variant is null ? null : variant.SupportsToolCalling == true;
-    }
-
-    public static string? CpuVariant(FoundryCatalogView view, string alias) =>
-        view.Describe(alias) is { VariantId: { Length: > 0 } id } model
-            && string.Equals(model.ExecutionProvider, FoundryConstants.CpuExecutionProvider, StringComparison.OrdinalIgnoreCase)
-            ? id
-            : null;
-
-    private static ModelSelection? Select(UpOptions options, long? vram, FoundryCatalogView view, out string? error)
-    {
-        error = null;
-        if (options.ModelOverride is { } requested)
-        {
-            var alias = view.Known ? view.Resolve(requested) : requested;
-            if (alias is null)
-            {
-                error = $"--model {requested} is not in the Foundry catalog ({view.Source}); nothing was downloaded. "
-                    + $"See {FoundryWebCatalogClient.ModelsPageUrl} or run: .\\win\\openmono.ps1 catalog";
-                return null;
-            }
-
-            var ctx = vram >= FoundryConstants.FullContextVramBytes
-                ? FoundryConstants.MaxContextTokens
-                : FoundryConstants.StandardContextTokens;
-            var cpuNote = vram is null && FoundryModelLadder.CpuOnly.All(r => !string.Equals(r.Alias, alias, StringComparison.OrdinalIgnoreCase))
-                ? $" No dedicated NVIDIA GPU: it runs on the CPU, where OpenMono would pick {FoundryConstants.CpuModelAlias}."
-                : "";
-            return new ModelSelection(alias, ctx, false, $"Model override: {alias}.{cpuNote}");
-        }
-
-        // An unreadable catalog must not demote a 24 GB box: ask Foundry for
-        // the ladder alias directly and let `model load` validate it.
-        var selection = ModelSelector.Select(vram, view.Known ? view.Resolve : alias => alias);
-        if (selection is null)
-        {
-            error = NothingInCatalog(vram, view);
-        }
-
-        return selection;
-    }
-
-    public static string NothingInCatalog(long? vram, FoundryCatalogView view)
-    {
-        var rung = ModelSelector.RungFor(vram);
-        if (ReferenceEquals(rung, FoundryModelLadder.Target))
-        {
-            return $"{FoundryConstants.TargetModelAlias} is not in the Foundry catalog ({view.Source}). A 24 GB+ card serves only "
-                + $"{FoundryConstants.TargetModelAlias}, so nothing was downloaded. Update Foundry Local "
-                + $"(winget upgrade Microsoft.FoundryLocal) and check {FoundryWebCatalogClient.ModelsPageUrl}.";
-        }
-
-        if (vram is null)
-        {
-            return $"No dedicated NVIDIA GPU, so this machine serves only {string.Join(" or ", FoundryModelLadder.CpuOnly.Select(r => r.Alias))} "
-                + $"on the CPU, and neither is in the Foundry catalog ({view.Source}); nothing was downloaded. "
-                + $"Check {FoundryWebCatalogClient.ModelsPageUrl}.";
-        }
-
-        var candidates = FoundryModelLadder.Text.SkipWhile(r => !ReferenceEquals(r, rung)).Select(r => r.Alias);
-        return $"None of the models for this card ({string.Join(", ", candidates)}) are in the Foundry catalog "
-            + $"({view.Source}); nothing was downloaded. Check {FoundryWebCatalogClient.ModelsPageUrl}.";
+        return pids.Count > 0
+            ? new DownResult(true, $"llama-server stopped (pid {string.Join(", ", pids)}).")
+            : new DownResult(false, "No llama-server started by OpenMono is running.");
     }
 
     private static UpResult Fail(List<string> log, string error) => new(false, null, log, error);
