@@ -75,6 +75,7 @@ exit 0
   }
   if ($code -ne 0) { throw "openmono.ps1 run failed under $Shell (exit $code)." }
 
+  if (-not (Test-Path $env:FAKE_DOCKER_OUT)) { throw 'openmono.ps1 agent never ran docker compose run.' }
   $run = Get-Content $env:FAKE_DOCKER_OUT -Raw | ConvertFrom-Json
   $argv = @($run.args)
   $failures = @()

@@ -5,8 +5,8 @@ using System.Text.Json;
 
 // One binary, several personalities, chosen by the executable's file name
 // (the smoke script copies FakeTool.exe to foundry.exe, docker.exe, ...).
-// Every invocation is appended to FAKE_LOG; docker writes its argv and the
-// compose interpolation variables to FAKE_DOCKER_OUT as JSON.
+// Every invocation is appended to FAKE_LOG; docker compose run writes its argv
+// and the compose interpolation variables to FAKE_DOCKER_OUT as JSON.
 var name = Path.GetFileNameWithoutExtension(Environment.ProcessPath ?? "FakeTool").ToLowerInvariant();
 if (name == "faketool" && args.Length > 0)
 {
@@ -60,8 +60,10 @@ static int Docker(string[] args)
         return 0;
     }
 
+    // Only the agent launch is captured; status and stop also call docker
+    // (ps, rm) and must not overwrite it.
     var output = Environment.GetEnvironmentVariable("FAKE_DOCKER_OUT");
-    if (!string.IsNullOrEmpty(output))
+    if (!string.IsNullOrEmpty(output) && args.Length > 0 && args[0] == "compose" && args.Contains("run"))
     {
         var env = new Dictionary<string, string?>();
         foreach (var key in new[] { "WORKSPACE", "HOME", "OPENMONO_ENDPOINT", "CTX_SIZE", "OPENMONO_VISION_ENABLED", "OPENMONO_API_KEY" })
