@@ -480,7 +480,7 @@ exit 0
   $calls = Invoke-Scenario 'restart' $restartBody $gpuEnv
   if (@($calls | Where-Object { $_ -like 'llama-server build b9000*' }).Count -ne 2) { $failures.Add('[restart] expected exactly two llama-server starts') }
   Assert-Called 'restart' $calls 'llama-server * --threads 3 *'
-  $running = Get-OwnLlama
+  $running = @(Get-OwnLlama)
   if ($running.Count -ne 1) { $failures.Add("[restart] $($running.Count) llama-server processes running, expected 1") }
 
   # Every user command once.
@@ -524,7 +524,7 @@ exit `$LASTEXITCODE
       if ($entries -notcontains $want) { $failures.Add("[commands] diag zip missing $want") }
     }
   }
-  if ((Get-OwnLlama).Count -ne 0) { $failures.Add('[commands] stop left llama-server running') }
+  if (@(Get-OwnLlama).Count -ne 0) { $failures.Add('[commands] stop left llama-server running') }
 
   # No Git, no .NET SDK: winget installs both, then setup carries on in the
   # same session. git.exe is only reachable through the refreshed PATH.
