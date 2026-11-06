@@ -668,29 +668,16 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
             if (ex.StatusCode is null)
             {
                 renderer.WriteError($"LLM error: {ex.Message}");
-                await TryRecoverLlamaServerAsync(renderer, config.WorkingDirectory, config.Llm.Endpoint, config.Llm.ApiKey);
+                if (config.Llm.IsFoundry)
+                    renderer.WriteInfo($"Foundry Local is not reachable at {config.Llm.Endpoint}. "
+                        + "On the Windows host run: .\\win\\openmono.ps1 start");
+                else
+                    await TryRecoverLlamaServerAsync(renderer, config.WorkingDirectory, config.Llm.Endpoint, config.Llm.ApiKey);
             }
             else
             {
                 renderer.WriteError($"LLM error: {ex.Message}");
-                var hint = ex.StatusCode switch
-                {
-                    System.Net.HttpStatusCode.InternalServerError =>
-                        "llama-server returned 500. Likely causes: context too long (KV cache overflow), " +
-                        "out of GPU memory, or model crash.\n" +
-                        "Check logs: docker logs llama-server --tail 40",
-                    System.Net.HttpStatusCode.ServiceUnavailable =>
-                        "llama-server is busy or still loading — wait a moment and try again.\n" +
-                        "Check status: curl http://localhost:7474/health",
-                    System.Net.HttpStatusCode.TooManyRequests =>
-                        "llama-server rate limit hit — wait a moment and try again.",
-                    System.Net.HttpStatusCode.BadRequest =>
-                        "llama-server rejected the request (400). The conversation may be malformed.\n" +
-                        "Try starting a new session: /new",
-                    _ =>
-                        "Check: curl http://localhost:7474/health",
-                };
-                renderer.WriteInfo(hint);
+                renderer.WriteInfo(OpenMono.Llm.LlmErrorHints.For(ex.StatusCode.Value, config.Llm));
             }
             Log.Error("LLM connection failed", ex);
         }
@@ -1073,17 +1060,15 @@ static async Task TryDetectActualModelAsync(AppConfig config)
         if (doc.RootElement.TryGetProperty("data", out var data)
             && data.ValueKind == System.Text.Json.JsonValueKind.Array)
         {
-            foreach (var item in data.EnumerateArray())
+            var ids = data.EnumerateArray()
+                .Where(item => item.TryGetProperty("id", out var idEl) && idEl.ValueKind == System.Text.Json.JsonValueKind.String)
+                .Select(item => item.GetProperty("id").GetString()!)
+                .ToList();
+            if (OpenMono.Llm.ServedModelPicker.Pick(config.Llm.Model, ids) is { } name)
             {
-                if (item.TryGetProperty("id", out var idEl)
-                    && idEl.ValueKind == System.Text.Json.JsonValueKind.String
-                    && !string.IsNullOrWhiteSpace(idEl.GetString()))
-                {
-                    var name = idEl.GetString()!;
-                    config.Llm.Model = name;
-                    Log.Debug($"Detected model from /v1/models: {name}");
-                    return;
-                }
+                config.Llm.Model = name;
+                Log.Debug($"Detected model from /v1/models: {name}");
+                return;
             }
         }
     }

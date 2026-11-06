@@ -9,7 +9,7 @@ name: win
 on:
   push:
     branches: [win]
-    paths: ['win/**', '.github/workflows/win.yml', '.gitattributes', 'docker/**']
+    paths: ['win/**', '.github/workflows/win.yml', '.gitattributes', 'docker/**', 'src/**']
   workflow_dispatch:
 
 jobs:
@@ -29,6 +29,22 @@ jobs:
         run: dotnet build win/OpenMono.Win.sln -c Release
       - name: Test win solution
         run: dotnet test win/OpenMono.Win.sln -c Release --no-build
+
+  # The agent that runs in the Linux container, which the Windows port changes
+  # for Foundry Local (request shape, 400 replies, served-model pick).
+  # ResolveBaseUrl_EmptyHostOs_StillKeepsLiteralDockerGatewayName needs
+  # /.dockerenv (it only passes inside a container), so it is skipped here.
+  agent-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: win
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Agent tests
+        run: dotnet test src/OpenMono.Tests -c Release --filter "FullyQualifiedName!~ResolveBaseUrl_EmptyHostOs_StillKeepsLiteralDockerGatewayName"
 
   # Live check that every ladder alias is still in the public Foundry Local
   # catalog (https://foundrylocal.ai/api/models). Informational: a catalog

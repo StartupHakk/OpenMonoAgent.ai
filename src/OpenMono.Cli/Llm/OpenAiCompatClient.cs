@@ -38,12 +38,21 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
     private string? _reportedModel;
 
     private readonly string _model;
+    private readonly bool _foundry;
+    private readonly bool _toolCalling;
 
     public OpenAiCompatClient(LlmConfig config)
+        : this(config, new HttpClient { Timeout = TimeSpan.FromMinutes(10) })
+    {
+    }
+
+    internal OpenAiCompatClient(LlmConfig config, HttpClient http)
     {
         _endpoint = config.Endpoint.TrimEnd('/');
         _model = config.Model;
-        _http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        _foundry = config.IsFoundry;
+        _toolCalling = config.ToolCalling ?? true;
+        _http = http;
         EnsureRequestGate(config.MaxConcurrentRequests);
     }
 
@@ -91,7 +100,7 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                 await Task.Delay(retryDelay, ct);
             }
 
-            var requestBody = BuildRequestBody(messages, tools, options, _model);
+            var requestBody = BuildRequestBody(messages, tools, options, _model, _foundry, _toolCalling);
             var requestJson = JsonSerializer.Serialize(requestBody, JsonOptions.Default);
 
             if (attempt == 0)
@@ -119,6 +128,7 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
             if (ApiKey is not null)
                 request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", ApiKey);
 
+            LlmRequestRejectedException? rejected = null;
             try
             {
                 response = await _http.SendAsync(
@@ -137,7 +147,17 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                     response.Content = new StringContent(body, Encoding.UTF8, "application/json");
                 }
 
-                if (IsRetryableStatus(response.StatusCode))
+                // A 400 is the same on every attempt: keep the server's reason
+                // (unsupported field, model cannot take tools, ...) and do not retry.
+                if (response.StatusCode == System.Net.HttpStatusCode.BadRequest)
+                {
+                    var body = await response.Content.ReadAsStringAsync(ct);
+                    Log.Warn($"LLM request rejected (HTTP 400): {Truncate(body, 500)}");
+                    response.Dispose();
+                    response = null;
+                    rejected = new LlmRequestRejectedException(body);
+                }
+                else if (IsRetryableStatus(response.StatusCode))
                 {
                     lastException = new HttpRequestException(
                         $"HTTP {(int)response.StatusCode} {response.StatusCode}",
@@ -148,7 +168,7 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                     continue;
                 }
 
-                response.EnsureSuccessStatusCode();
+                response?.EnsureSuccessStatusCode();
             }
             catch (HttpRequestException ex) when (attempt < MaxRetries)
             {
@@ -165,6 +185,9 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                 response?.Dispose();
                 response = null;
             }
+
+            if (rejected is not null)
+                throw rejected;
 
             if (response is null)
                 continue;
@@ -449,11 +472,13 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
 
     private static string Truncate(string? s, int max) => string.IsNullOrEmpty(s) ? "" : (s.Length <= max ? s : s[..max] + "…");
 
-    private static object BuildRequestBody(
+    internal static object BuildRequestBody(
         IReadOnlyList<Message> messages,
         JsonElement? tools,
         LlmOptions options,
-        string configModel)
+        string configModel,
+        bool foundry = false,
+        bool toolCalling = true)
     {
         var model = string.IsNullOrEmpty(options.Model) ? configModel : options.Model;
 
@@ -497,6 +522,9 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
             },
             _ => new { role = "user", content = m.Content },
         }).ToList();
+
+        if (foundry)
+            return BuildFoundryBody(model, apiMessages, tools, options, toolCalling);
 
         var body = new Dictionary<string, object?>
         {
@@ -555,6 +583,37 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                 type = "json_schema",
                 json_schema = new { name = "playbook_step_output", strict = true, schema },
             };
+        }
+
+        return body;
+    }
+
+    // Foundry Local's OpenAI-compatible API answers 400 to fields it does not
+    // know (top_k, min_p, repetition_penalty, chat_template_kwargs,
+    // reasoning_effort, stream_options, ...), and to tools when the model
+    // cannot call them. Send standard OpenAI fields only.
+    private static Dictionary<string, object?> BuildFoundryBody(
+        string model,
+        List<object> apiMessages,
+        JsonElement? tools,
+        LlmOptions options,
+        bool toolCalling)
+    {
+        var body = new Dictionary<string, object?>
+        {
+            ["model"] = model,
+            ["messages"] = apiMessages,
+            ["temperature"] = options.Temperature,
+            ["top_p"] = options.TopP,
+            ["max_tokens"] = options.MaxTokens,
+            ["stream"] = true,
+        };
+
+        if (toolCalling && tools.HasValue && tools.Value.ValueKind == JsonValueKind.Array &&
+            tools.Value.GetArrayLength() > 0)
+        {
+            body["tools"] = tools.Value;
+            body["tool_choice"] = "auto";
         }
 
         return body;
