@@ -5,7 +5,7 @@
     <AssemblyName>FakeTool</AssemblyName>
     <RootNamespace>OpenMono.Win.FakeTools</RootNamespace>
     <IsPackable>false</IsPackable>
-    <Description>CI-only stand-ins for foundry.exe, docker.exe, nvidia-smi.exe, and a Foundry HTTP server, so the Windows smoke test drives openmono.ps1 end to end without a GPU or Docker.</Description>
+    <Description>CI-only stand-ins for llama-server.exe, docker.exe, nvidia-smi.exe, winget.exe, wsl.exe, and a download server (llama.cpp releases, GGUF files, installers), so the Windows smoke test drives openmono.ps1 end to end without a GPU or Docker.</Description>
   </PropertyGroup>
 
 </Project>

@@ -5,14 +5,16 @@
 .DESCRIPTION
   The Windows counterpart of the bash `openmono` launcher. Same subcommands,
   same agent: the agent runs in its Linux Docker container exactly as on
-  Mac/Linux. The one platform difference is inference: Foundry Local on the
-  Windows host (127.0.0.1:7474) instead of llama.cpp, reached from the
-  container through host.docker.internal.
+  Mac/Linux. Inference is the same llama.cpp llama-server, run natively on
+  the Windows host (official llama.cpp Windows build: CUDA, then Vulkan, then
+  CPU) on 127.0.0.1:7474 instead of in a compose service, and reached from
+  the container through host.docker.internal. The GGUF model ladder lives in
+  scripts/models.json next to the Linux one.
 
   Commands:
-    setup                  Install prerequisites (Git, .NET SDK, Foundry Local, Docker Desktop), build
-                             the agent image, start inference
-    start                  Start (or adopt) Foundry Local and load the model
+    setup                  Install prerequisites (Git, .NET SDK, Docker Desktop), build the agent
+                             image, install llama.cpp and download the GGUF model, start llama-server
+    start                  Start (or reuse) llama-server with this machine's model
     stop [flags]           Stop inference (default). Flags: --agent, --all, --force
     status                 Inference and agent container status
     agent [args]           Run the agent in its container (TUI by default)
@@ -20,11 +22,10 @@
                              --vision       image session on this machine's model (fails loudly
                                             if it refuses images; no second model)
                              any other args are passed to the agent unchanged
-    logs                   Follow the Foundry Local daemon logs
-    catalog [check]        List the Foundry Local catalog (https://foundrylocal.ai/models) or
-                             check the model ladder against it and name this machine's model
-                             --device cuda|cpu|webgpu  --refresh  --strict  --json
-    doctor                 Check the machine (Docker, Foundry, GPU, CUDA, model catalog, routes, ACP)
+    logs                   Follow the llama-server log
+    models [check]         The GGUF model ladder and this machine's model (--json); `check`
+                             verifies the llama.cpp release and every model URL online
+    doctor                 Check the machine (Docker, GPU, llama.cpp, model, routes, ACP)
     diag [--out FILE.zip]  Write a redacted diagnostics bundle for bug reports
     help                   This text
 
@@ -82,6 +83,7 @@ function Build-Launcher {
 
 function Invoke-Launcher {
   if (-not (Test-Path $LauncherDll)) { Build-Launcher }
+  if (-not $env:OPENMONO_WIN_REPO) { $env:OPENMONO_WIN_REPO = $RepoDir }
   $native = @($args | ForEach-Object { ConvertTo-NativeArgument ([string]$_) })
   & dotnet $LauncherDll @native
 }
@@ -105,29 +107,30 @@ function Initialize-HostDirs {
 }
 
 function Invoke-Setup {
-  Write-Info 'Setting up OpenMono for Windows (Foundry Local inference, Linux agent container).'
+  Write-Info 'Setting up OpenMono for Windows (llama.cpp inference on the host, Linux agent container).'
   Confirm-HostPrerequisites
   Build-Launcher
   & (Join-Path (Join-Path $WinDir 'scripts') 'bootstrap.ps1') -SkipHostPrerequisites
-  Write-Info 'Checking the model ladder against the Foundry Local catalog...'
-  Invoke-Launcher catalog check | Out-Host
-  if ($LASTEXITCODE -ne 0) { throw 'No model this machine may serve is in the Foundry catalog; nothing was downloaded. Run: .\win\openmono.ps1 catalog check --refresh' }
   Assert-Docker
   Initialize-HostDirs
   $null = Repair-ContainerLineEndings $DockerDir
   Write-Info 'Building the agent image (docker compose build agent)...'
   & docker compose -f $ComposeFile build agent
   if ($LASTEXITCODE -ne 0) { throw 'Agent image build failed.' }
-  Invoke-Start
+  Invoke-Launcher models | Out-Host
+  Invoke-Start -Update
   Write-Host ''
   Invoke-Launcher doctor
   Write-Host ''
   Write-Ok 'Setup complete. Run: .\win\openmono.ps1 agent'
 }
 
-function Invoke-Start {
-  Write-Info 'Starting inference (Foundry Local)...'
-  Invoke-Launcher inference up
+# -Update (setup): install the newest llama.cpp build when one is out, as
+# install.sh pulls the newest llama-server image. A first run downloads the
+# build and the GGUF either way.
+function Invoke-Start([switch]$Update) {
+  Write-Info 'Starting inference (llama.cpp llama-server)...'
+  if ($Update) { Invoke-Launcher inference up --update } else { Invoke-Launcher inference up }
   if ($LASTEXITCODE -ne 0) { throw 'Inference did not start. Run: .\win\openmono.ps1 doctor' }
 }
 
@@ -225,8 +228,14 @@ function Invoke-Agent([string[]]$AgentArgs) {
 }
 
 function Invoke-Logs {
-  if (-not (Test-Command 'foundry')) { throw 'Foundry Local CLI not found. Run: .\win\openmono.ps1 setup' }
-  & foundry server logs --follow
+  $log = Join-Path (Join-Path (Join-Path $UserHome '.openmono') 'win') 'llama-server.log'
+  $state = Join-Path (Join-Path (Join-Path $UserHome '.openmono') 'win') 'inference.json'
+  if (Test-Path $state) {
+    $recorded = (Get-Content $state -Raw | ConvertFrom-Json).log_file
+    if ($recorded) { $log = $recorded }
+  }
+  if (-not (Test-Path $log)) { throw "No llama-server log yet ($log). Run: .\win\openmono.ps1 start" }
+  Get-Content -Path $log -Tail 50 -Wait
 }
 
 function Show-Help {
@@ -250,7 +259,7 @@ try {
     'agent' { Invoke-Agent $rest }
     'logs' { Invoke-Logs }
     'doctor' { Invoke-Launcher doctor --workdir (Get-Location).Path; exit $LASTEXITCODE }
-    'catalog' { Invoke-Launcher catalog @rest; exit $LASTEXITCODE }
+    'models' { Invoke-Launcher models @rest; exit $LASTEXITCODE }
     'diag' { Invoke-Launcher diag --workdir (Get-Location).Path @rest; exit $LASTEXITCODE }
     'help' { Show-Help }
     '--help' { Show-Help }

@@ -4,7 +4,7 @@ using System.Text;
 using System.Text.Json;
 
 // One binary, several personalities, chosen by the executable's file name
-// (the smoke script copies FakeTool.exe to foundry.exe, docker.exe, ...).
+// (the smoke script copies FakeTool.exe to llama-server.exe, docker.exe, ...).
 // Every invocation is appended to FAKE_LOG; docker compose run writes its argv
 // and the compose interpolation variables to FAKE_DOCKER_OUT as JSON.
 var name = Path.GetFileNameWithoutExtension(Environment.ProcessPath ?? "FakeTool").ToLowerInvariant();
@@ -18,14 +18,24 @@ Log($"{name} {string.Join(' ', args)}");
 
 switch (name)
 {
-    case "foundry":
-        return Foundry(string.Join(' ', args));
+    case "llama-server":
+        await LlamaServer(args);
+        return 0;
     case "nvidia-smi":
         // FAKE_NO_GPU=1: a machine without an NVIDIA GPU (driver present but no device).
         if (Environment.GetEnvironmentVariable("FAKE_NO_GPU") == "1")
         {
             Console.Error.WriteLine("NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver.");
             return 9;
+        }
+
+        // Bare `nvidia-smi` prints the banner with the driver's CUDA version
+        // (FAKE_CUDA overrides 12.8); the query prints one name, MiB row.
+        if (args.All(string.IsNullOrEmpty))
+        {
+            var cuda = Environment.GetEnvironmentVariable("FAKE_CUDA") is { Length: > 0 } v ? v : "12.8";
+            Console.WriteLine($"| NVIDIA-SMI 572.16    Driver Version: 572.16    CUDA Version: {cuda}     |");
+            return 0;
         }
 
         Console.WriteLine("NVIDIA GeForce RTX 4090, 24564");
@@ -42,42 +52,12 @@ switch (name)
     case "wsl":
         return Wsl(args);
     case "server":
-        await Server(int.Parse(args.Length > 0 ? args[0] : "7474", System.Globalization.CultureInfo.InvariantCulture));
+        Port = int.Parse(args.Length > 0 ? args[0] : "7480", System.Globalization.CultureInfo.InvariantCulture);
+        await Server(Port);
         return 0;
     default:
         Console.Error.WriteLine($"FakeTool: unknown personality '{name}'.");
         return 64;
-}
-
-static int Foundry(string command)
-{
-    switch (command)
-    {
-        case "--version":
-            Console.WriteLine("foundry 0.13.0");
-            return 0;
-        case "server status":
-            Console.WriteLine("Status: Running");
-            Console.WriteLine("Local Endpoint: http://127.0.0.1:7474");
-            return 0;
-        case var load when load.StartsWith("model load ", StringComparison.Ordinal):
-            // FAKE_SERVED names a file the fake server lists as the served model.
-            var served = Environment.GetEnvironmentVariable("FAKE_SERVED");
-            if (!string.IsNullOrEmpty(served))
-            {
-                var id = load["model load ".Length..].Trim();
-                File.WriteAllText(served, id.Contains(':') ? id : id + "-cuda-gpu:1");
-            }
-
-            Console.WriteLine("loaded");
-            return 0;
-        case "model list --output json":
-            Console.WriteLine("""[{"alias":"qwen3.8-27b"},{"alias":"qwen3.5-9b"},{"alias":"qwen3.5-4b"},{"alias":"qwen3.5-2b"},{"alias":"qwen3.5-0.8b"}]""");
-            return 0;
-        default:
-            Console.WriteLine("ok");
-            return 0;
-    }
 }
 
 static int Docker(string[] args)
@@ -237,10 +217,8 @@ static int Wsl(string[] args)
     return string.IsNullOrEmpty(state) || File.Exists(state) ? 0 : 1;
 }
 
-// Minimal OpenAI-compatible stand-in: lists one served model and refuses
-// image parts, like a text-only build. Also answers the Foundry catalog API
-// (POST /api/models) in two pages linked by continuationToken, and appends
-// each catalog request body to FAKE_API_LOG.
+// Download server for the no-winget installers, the llama.cpp release feed
+// and its Windows zips, and GGUF files (OPENMONO_MODEL_MIRROR layout).
 static async Task Server(int port)
 {
     var listener = new TcpListener(IPAddress.Loopback, port);
@@ -259,6 +237,49 @@ static async Task Server(int port)
     }
 }
 
+// A llama-server stand-in: serves /health, /v1/models and /props for the
+// --alias it was started with until it is killed, and writes --log-file.
+static async Task LlamaServer(string[] args)
+{
+    string? Arg(string flag) =>
+        args.Select((a, i) => (a, i)).Where(x => x.a == flag && x.i + 1 < args.Length).Select(x => args[x.i + 1]).FirstOrDefault();
+
+    var port = int.Parse(Arg("--port") ?? "7474", System.Globalization.CultureInfo.InvariantCulture);
+    var alias = Arg("--alias") ?? "model";
+    var vision = Arg("--mmproj") is not null;
+    Log("llama-server build " + Path.GetFileName(AppContext.BaseDirectory.TrimEnd('\\', '/')));
+    if (Arg("--log-file") is { } logFile)
+    {
+        File.AppendAllText(logFile, $"main: server is listening on http://127.0.0.1:{port} - model {alias}, build {Path.GetFileName(AppContext.BaseDirectory.TrimEnd('\\', '/'))}{Environment.NewLine}");
+    }
+
+    var listener = new TcpListener(IPAddress.Loopback, port);
+    listener.Start();
+    while (true)
+    {
+        using var client = await listener.AcceptTcpClientAsync();
+        try
+        {
+            var stream = client.GetStream();
+            var request = await ReadRequestAsync(stream);
+            var (status, body) = request.StartsWith("GET /health", StringComparison.Ordinal)
+                ? (200, """{"status":"ok"}""")
+                : request.StartsWith("GET /v1/models", StringComparison.Ordinal)
+                    ? (200, JsonSerializer.Serialize(new { data = new[] { new { id = alias } } }))
+                : request.StartsWith("GET /props", StringComparison.Ordinal)
+                    ? (200, JsonSerializer.Serialize(new { model_alias = alias, modalities = new { vision } }))
+                : request.StartsWith("POST /v1/chat/completions", StringComparison.Ordinal)
+                    ? (200, """{"choices":[{"message":{"content":"ok"}}]}""")
+                    : (404, "{}");
+            await Send(stream, status, "application/json", Encoding.UTF8.GetBytes(body));
+        }
+        catch (IOException)
+        {
+            // Same as the download server.
+        }
+    }
+}
+
 static async Task Respond(NetworkStream stream)
 {
     var request = await ReadRequestAsync(stream);
@@ -268,16 +289,17 @@ static async Task Respond(NetworkStream stream)
         return;
     }
 
-    var (status, body) = request.StartsWith("GET /v1/models", StringComparison.Ordinal)
-        ? (200, JsonSerializer.Serialize(new { data = new[] { new { id = ServedModel() } } }))
-        : request.StartsWith("POST /api/models", StringComparison.Ordinal)
-            ? (200, CatalogPage(request))
-        : request.StartsWith("POST /v1/chat/completions", StringComparison.Ordinal)
-            ? (request.Contains("image_url", StringComparison.Ordinal)
-                ? (400, """{"error":"image input not supported"}""")
-                : (200, """{"choices":[{"message":{"content":"ok"}}]}"""))
-            : (404, "{}");
-    await Send(stream, status, "application/json", Encoding.UTF8.GetBytes(body));
+    // GGUF downloads: zeros of a plausible size (the launcher rejects bodies
+    // under 64 MB for a model and 16 MB for a projector as error pages).
+    if (request.StartsWith("GET /models/", StringComparison.Ordinal))
+    {
+        Log("download " + request.Split(' ')[1]);
+        var mmproj = request.StartsWith("GET /models/mmproj", StringComparison.Ordinal);
+        await SendZeros(stream, (mmproj ? 16L : 64L) * 1024 * 1024 + 1);
+        return;
+    }
+
+    await Send(stream, 404, "application/json", Encoding.UTF8.GetBytes("{}"));
 }
 
 static async Task Send(NetworkStream stream, int status, string contentType, byte[] payload)
@@ -288,15 +310,30 @@ static async Task Send(NetworkStream stream, int status, string contentType, byt
     await stream.WriteAsync(payload);
 }
 
+static async Task SendZeros(NetworkStream stream, long length)
+{
+    var head = Encoding.ASCII.GetBytes(
+        $"HTTP/1.1 200 X\r\nContent-Type: application/octet-stream\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n");
+    await stream.WriteAsync(head);
+    var chunk = new byte[1 << 20];
+    for (var left = length; left > 0; left -= chunk.Length)
+    {
+        await stream.WriteAsync(chunk.AsMemory(0, (int)Math.Min(chunk.Length, left)));
+    }
+}
+
 // The no-winget installers: a Git for Windows release listing (only the
 // plain MinGit zip for the machine's architecture may be picked), the
 // FAKE_MINGIT_ZIP archive, and a dotnet-install.ps1 that links -InstallDir
-// to the real SDK in FAKE_DOTNET_DIR.
+// to the real SDK in FAKE_DOTNET_DIR. The llama.cpp release feed lists a
+// newest tag without Windows binaries, then b9000 with the real Windows
+// asset names; its zips are FAKE_LLAMA_ZIP (llama-server) and
+// FAKE_CUDART_ZIP (CUDA runtime DLLs).
 static (string ContentType, byte[] Body)? Download(string request)
 {
     if (request.StartsWith("GET /git-release", StringComparison.Ordinal))
     {
-        object Asset(string name) => new { name, browser_download_url = "http://127.0.0.1:7474/mingit/" + name };
+        object Asset(string name) => new { name, browser_download_url = $"http://127.0.0.1:{Port}/mingit/" + name };
         return ("application/json", JsonSerializer.SerializeToUtf8Bytes(new
         {
             tag_name = "v2.51.0.windows.1",
@@ -316,6 +353,37 @@ static (string ContentType, byte[] Body)? Download(string request)
         return ("application/zip", File.ReadAllBytes(Environment.GetEnvironmentVariable("FAKE_MINGIT_ZIP")!));
     }
 
+    if (request.StartsWith("GET /llama-releases", StringComparison.Ordinal))
+    {
+        object Asset(string name) => new { name, browser_download_url = $"http://127.0.0.1:{Port}/llama/" + name, size = 1 };
+        return ("application/json", JsonSerializer.SerializeToUtf8Bytes(new object[]
+        {
+            new { tag_name = "v0.9.0", assets = Array.Empty<object>() },
+            new
+            {
+                tag_name = "b9000",
+                assets = new[]
+                {
+                    Asset("llama-b9000-bin-win-cuda-12.4-x64.zip"),
+                    Asset("llama-b9000-bin-win-cuda-13.5-x64.zip"),
+                    Asset("cudart-llama-bin-win-cuda-12.4-x64.zip"),
+                    Asset("cudart-llama-bin-win-cuda-13.5-x64.zip"),
+                    Asset("llama-b9000-bin-win-vulkan-x64.zip"),
+                    Asset("llama-b9000-bin-win-cpu-x64.zip"),
+                    Asset("llama-b9000-bin-win-sycl-x64.zip"),
+                },
+            },
+        }));
+    }
+
+    if (request.StartsWith("GET /llama/", StringComparison.Ordinal))
+    {
+        var asset = request.Split(' ')[1]["/llama/".Length..];
+        Log("download " + asset);
+        var zip = Environment.GetEnvironmentVariable(asset.StartsWith("cudart", StringComparison.Ordinal) ? "FAKE_CUDART_ZIP" : "FAKE_LLAMA_ZIP");
+        return ("application/zip", File.ReadAllBytes(zip!));
+    }
+
     if (request.StartsWith("GET /dotnet-install.ps1", StringComparison.Ordinal))
     {
         return ("text/plain", Encoding.UTF8.GetBytes("""
@@ -329,79 +397,6 @@ static (string ContentType, byte[] Body)? Download(string request)
     }
 
     return null;
-}
-
-static string ServedModel()
-{
-    var served = Environment.GetEnvironmentVariable("FAKE_SERVED");
-    return !string.IsNullOrEmpty(served) && File.Exists(served) ? File.ReadAllText(served).Trim() : "qwen3.8-27b-cuda-gpu:1";
-}
-
-static string CatalogPage(string request)
-{
-    var apiLog = Environment.GetEnvironmentVariable("FAKE_API_LOG");
-    var requestBody = request[(request.IndexOf("\r\n\r\n", StringComparison.Ordinal) + 4)..];
-    if (!string.IsNullOrEmpty(apiLog))
-    {
-        File.AppendAllText(apiLog, requestBody + Environment.NewLine);
-    }
-
-    var cpu = requestBody.Contains("CPUExecutionProvider", StringComparison.Ordinal);
-    object Model(string alias, string variant, string task, string inputs, long bytes) => new
-    {
-        annotations = new { tags = new { alias, task, inputModalities = inputs, supportsToolCalling = "true", contextLength = "262144" } },
-        properties = new
-        {
-            id = variant,
-            variantInfo = new
-            {
-                variantMetadata = new
-                {
-                    device = cpu ? "cpu" : "gpu",
-                    executionProvider = cpu ? "CPUExecutionProvider" : "CUDAExecutionProvider",
-                    fileSizeBytes = bytes,
-                    vRamFootprintBytes = bytes,
-                },
-            },
-        },
-    };
-
-    if (cpu)
-    {
-        return JsonSerializer.Serialize(new
-        {
-            value = new[]
-            {
-                Model("qwen3.5-9b", "qwen3.5-9b-generic-cpu:3", "vision-language-chat", "text,image", 5840016799),
-                Model("qwen3.5-4b", "qwen3.5-4b-generic-cpu:3", "vision-language-chat", "text,image", 3235313264),
-                Model("qwen3.5-2b", "qwen3.5-2b-generic-cpu:3", "vision-language-chat", "text,image", 1877016577),
-                Model("qwen3.5-0.8b", "qwen3.5-0.8b-generic-cpu:3", "vision-language-chat", "text,image", 1088056779),
-            },
-            continuationToken = (string?)null,
-        });
-    }
-
-    var page = requestBody.Contains("\"continuationToken\":\"fake-page-2\"", StringComparison.Ordinal)
-        ? new
-        {
-            value = new[]
-            {
-                Model("qwen3.5-4b", "qwen3.5-4b-cuda-gpu:4", "vision-language-chat", "text,image", 4402341478),
-                Model("qwen3.5-2b", "qwen3.5-2b-cuda-gpu:4", "vision-language-chat", "text,image", 3113851289),
-                Model("qwen3.5-0.8b", "qwen3.5-0.8b-cuda-gpu:4", "vision-language-chat", "text,image", 1503238553),
-            },
-            continuationToken = (string?)null,
-        }
-        : new
-        {
-            value = new[]
-            {
-                Model("qwen3.8-27b", "qwen3.8-27b-cuda-gpu:1", "coding", "text", 19219982336),
-                Model("qwen3.5-9b", "qwen3.5-9b-cuda-gpu:4", "vision-language-chat", "text,image", 7516192768),
-            },
-            continuationToken = (string?)"fake-page-2",
-        };
-    return JsonSerializer.Serialize(page);
 }
 
 static async Task<string> ReadRequestAsync(NetworkStream stream)
@@ -451,4 +446,9 @@ static void Log(string line)
     {
         File.AppendAllText(path, line + Environment.NewLine);
     }
+}
+
+static partial class Program
+{
+    public static int Port { get; set; } = 7480;
 }

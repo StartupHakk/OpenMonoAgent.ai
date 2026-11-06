@@ -22,4 +22,3 @@ openmono        text eol=lf
 *.ico           binary
 *.zip           binary
 *.gguf          binary
-*.onnx          binary

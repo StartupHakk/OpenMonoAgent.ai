@@ -3,17 +3,19 @@
   Windows CI smoke test: drives win/openmono.ps1 end to end with fake tools.
 
 .DESCRIPTION
-  Builds FakeTool and stages it as foundry.exe, docker.exe, nvidia-smi.exe,
-  winget.exe, and wsl.exe ahead of everything else on PATH (any real
-  docker.exe directory is removed from PATH), starts a fake Foundry HTTP
-  server on 127.0.0.1:7474, then runs these scenarios under the requested
-  shell:
+  Builds FakeTool and stages it as docker.exe, nvidia-smi.exe, winget.exe,
+  and wsl.exe ahead of everything else on PATH (any real docker.exe
+  directory is removed from PATH), packs it as llama-server.exe into fake
+  llama.cpp Windows release zips, starts a fake download server on
+  127.0.0.1:7480 (llama.cpp release feed and zips, GGUF files, installers),
+  then runs these scenarios under the requested shell:
 
-    docker-missing  `setup` with no Docker and no WSL: the model ladder is
-                    checked against the (fake) Foundry catalog API, both
-                    pages; WSL is enabled, Docker Desktop is installed with
-                    winget and started, the engine is waited for, and the
-                    agent image is built.
+    docker-missing  `setup` with no Docker and no WSL: WSL is enabled, Docker
+                    Desktop is installed with winget and started, the engine
+                    is waited for, and the agent image is built; llama.cpp
+                    (the CUDA build for the fake driver's CUDA 12.8) and the
+                    24 GB rung's GGUF and projector are downloaded and
+                    llama-server is started on 127.0.0.1:7474.
     docker-stopped  `setup` with Docker installed but the engine stopped:
                     nothing is installed, Docker Desktop is started and
                     waited for. Git and the .NET SDK are present, so neither
@@ -29,21 +31,20 @@
                     at first. Asserts the docker invocation of the agent
                     launch: argument quoting (embedded quotes, a trailing
                     backslash, a workspace path with a space), the ACP
-                    publish, and the compose variables.
-    cpu-only        `start` with no NVIDIA GPU: qwen3.5-2b is served as its
-                    generic CPU variant from the (fake) CPU catalog, and no
-                    larger model is ever loaded.
-    foreign-model   `start` against a running Foundry that serves a
-                    DeepSeek-R1-Distill OpenVINO model: the daemon is adopted
-                    (never a second server) and the model is replaced by the
-                    ladder model.
+                    publish, and the compose variables (model alias, vision
+                    context), and that `stop` ends llama-server.
+    cpu-only        `start` with no NVIDIA GPU: the llama.cpp CPU build serves
+                    Qwen3.5-2B, and no larger model is ever downloaded.
+    foreign-server  `start` while another llama-server, serving a model of
+                    its own, holds 127.0.0.1:7474: start fails and says so,
+                    and no second server is started.
     agent-crlf      `agent` when the agent image was built from CRLF files
                     (its entrypoint has \r): the image is rebuilt with LF
                     before the container starts.
     line-endings    Repair-ContainerLineEndings on a CRLF copy of docker/:
                     every text file ends up LF, binaries are left alone.
 
-  No GPU, Docker engine, WSL, or Foundry install is needed.
+  No GPU, Docker engine, WSL, llama.cpp, or model download is needed.
 #>
 param(
   [ValidateSet('pwsh', 'powershell')]
@@ -71,12 +72,28 @@ function Install-Fake([string]$Dir, [string[]]$Names) {
   Copy-Item (Join-Path $fakeOut '*') $Dir -Recurse -Force
   foreach ($n in $Names) { Copy-Item (Join-Path $fakeOut 'FakeTool.exe') (Join-Path $Dir "$n.exe") }
 }
-Install-Fake $toolsBin @('foundry', 'nvidia-smi', 'winget', 'wsl')
+Install-Fake $toolsBin @('nvidia-smi', 'winget', 'wsl')
 Install-Fake $dockerBin @('docker')
 Install-Fake $desktopDir @('Docker Desktop')
 $toolsNoWinget = Join-Path $work 'tools-no-winget'
 New-Item -ItemType Directory -Force -Path $toolsNoWinget | Out-Null
-Install-Fake $toolsNoWinget @('foundry', 'nvidia-smi', 'wsl')
+Install-Fake $toolsNoWinget @('nvidia-smi', 'wsl')
+
+# The (fake) llama.cpp Windows zips: llama-server.exe at the zip root, as in
+# the real release, and a CUDA runtime zip with the DLLs beside it.
+$llamaSrc = Join-Path $work 'llama-src'
+New-Item -ItemType Directory -Force -Path $llamaSrc | Out-Null
+Install-Fake $llamaSrc @('llama-server')
+$env:FAKE_LLAMA_ZIP = Join-Path $work 'llama.zip'
+Compress-Archive -Path (Join-Path $llamaSrc '*') -DestinationPath $env:FAKE_LLAMA_ZIP -Force
+$cudartSrc = Join-Path $work 'cudart-src'
+New-Item -ItemType Directory -Force -Path $cudartSrc | Out-Null
+Set-Content -Path (Join-Path $cudartSrc 'cudart64_12.dll') -Value 'fake'
+$env:FAKE_CUDART_ZIP = Join-Path $work 'cudart.zip'
+Compress-Archive -Path (Join-Path $cudartSrc '*') -DestinationPath $env:FAKE_CUDART_ZIP -Force
+$foreignBin = Join-Path $work 'foreign-llama'
+New-Item -ItemType Directory -Force -Path $foreignBin | Out-Null
+Install-Fake $foreignBin @('llama-server')
 
 # The (fake) MinGit release zip: cmd\git.exe, as in the real MinGit layout.
 $minGitSrc = Join-Path $work 'mingit-src'
@@ -94,17 +111,25 @@ $barePath = (@($cleanPath -split ';') | Where-Object {
   }) -join ';'
 $env:FAKE_DOCKER_OUT = Join-Path $work 'docker.json'
 $env:OPENMONO_DOCKER_WAIT_SECONDS = '60'
-$env:OPENMONO_FOUNDRY_CATALOG_URL = 'http://127.0.0.1:7474/api/models'
-$env:FAKE_API_LOG = Join-Path $work 'catalog-api.log'
-$env:FAKE_SERVED = Join-Path $work 'served-model.txt'
-Remove-Item (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.openmono\win\foundry-catalog-*.json') -ErrorAction SilentlyContinue
+$env:OPENMONO_LLAMA_CPP_RELEASES_URL = 'http://127.0.0.1:7480/llama-releases'
+$env:OPENMONO_MODEL_MIRROR = 'http://127.0.0.1:7480'
+$env:OPENMONO_LLAMA_CPP_DIR = Join-Path $work 'llama.cpp'
+$env:OPENMONO_MODELS_DIR = Join-Path $work 'models'
 Remove-Item (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.openmono\win\agent-image-lf.txt') -ErrorAction SilentlyContinue
 $exe = if ($Shell -eq 'pwsh') { 'pwsh' } else { 'powershell.exe' }
 $launcher = Join-Path $root 'win\openmono.ps1'
 $state = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.openmono\win\inference.json'
 $failures = New-Object System.Collections.Generic.List[string]
 
+# Every llama-server here is a FakeTool copy under $work; none may outlive a scenario.
+function Stop-FakeLlama {
+  Get-Process -Name 'llama-server' -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -and $_.Path.StartsWith($work, [StringComparison]::OrdinalIgnoreCase) } |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+}
+
 function Invoke-Scenario([string]$Name, [string]$Body, [hashtable]$Environment) {
+  Stop-FakeLlama
   $log = Join-Path $work "calls-$Name.log"
   $env:FAKE_LOG = $log
   foreach ($key in $Environment.Keys) { [Environment]::SetEnvironmentVariable($key, $Environment[$key], 'Process') }
@@ -143,13 +168,13 @@ function Assert-NotCalled([string]$Name, [object[]]$Calls, [string]$Pattern) {
   if ($Calls | Where-Object { $_ -like $Pattern }) { $failures.Add("[$Name] unexpected call like [$Pattern]") }
 }
 
-$server = Start-Process -FilePath (Join-Path $toolsBin 'FakeTool.exe') -ArgumentList 'server', '7474' -PassThru -WindowStyle Hidden
+$server = Start-Process -FilePath (Join-Path $toolsBin 'FakeTool.exe') -ArgumentList 'server', '7480' -PassThru -WindowStyle Hidden
 try {
   $up = $false
   for ($i = 0; $i -lt 50 -and -not $up; $i++) {
-    try { Invoke-RestMethod -Uri 'http://127.0.0.1:7474/v1/models' -TimeoutSec 2 | Out-Null; $up = $true } catch { Start-Sleep -Milliseconds 200 }
+    try { Invoke-RestMethod -Uri 'http://127.0.0.1:7480/llama-releases' -TimeoutSec 2 | Out-Null; $up = $true } catch { Start-Sleep -Milliseconds 200 }
   }
-  if (-not $up) { throw 'Fake Foundry server did not come up.' }
+  if (-not $up) { throw 'Fake download server did not come up.' }
 
   $setupBody = @"
 & '$launcher' setup
@@ -171,10 +196,14 @@ exit `$LASTEXITCODE
   Assert-Called 'docker-missing' $calls 'docker compose version*'
   Assert-Called 'docker-missing' $calls 'docker compose -f * build agent*'
   if (@($calls | Where-Object { $_ -like 'docker info*' }).Count -lt 2) { $failures.Add('[docker-missing] engine was not re-checked after starting Docker Desktop') }
-  $api = @()
-  if (Test-Path $env:FAKE_API_LOG) { $api = @(Get-Content $env:FAKE_API_LOG) }
-  if (-not ($api | Where-Object { $_ -like '*CUDAExecutionProvider*' })) { $failures.Add('[docker-missing] setup never queried the Foundry catalog API') }
-  if (-not ($api | Where-Object { $_ -like '*"continuationToken":"fake-page-2"*' })) { $failures.Add('[docker-missing] setup did not follow the catalog continuationToken') }
+  Assert-Called 'docker-missing' $calls 'download llama-b9000-bin-win-cuda-12.4-x64.zip*'
+  Assert-Called 'docker-missing' $calls 'download cudart-llama-bin-win-cuda-12.4-x64.zip*'
+  Assert-Called 'docker-missing' $calls 'download /models/Qwen3.8-27B-UD-Q4_K_M.gguf*'
+  Assert-Called 'docker-missing' $calls 'download /models/mmproj-qwen3.8-27B-F16.gguf*'
+  Assert-Called 'docker-missing' $calls 'llama-server build b9000-cuda-12.4*'
+  Assert-Called 'docker-missing' $calls 'llama-server --model *Qwen3.8-27B-UD-Q4_K_M.gguf --alias Qwen3.8-27B-UD-Q4_K_M --host 127.0.0.1 --port 7474 *--n-gpu-layers 99 *'
+  if ((Get-CallIndex $calls 'llama-server build*') -lt (Get-CallIndex $calls 'docker compose -f * build agent*')) { $failures.Add('[docker-missing] llama-server started before the agent image was built') }
+  Assert-NotCalled 'docker-missing' $calls 'download /models/Qwen3.5-*'
 
   # Docker installed, engine stopped: start and wait, never reinstall.
   $calls = Invoke-Scenario 'docker-stopped' $setupBody @{
@@ -187,6 +216,8 @@ exit `$LASTEXITCODE
   Assert-NotCalled 'docker-stopped' $calls 'wsl --install*'
   Assert-Called 'docker-stopped' $calls 'docker desktop*'
   Assert-Called 'docker-stopped' $calls 'docker compose -f * build agent*'
+  Assert-Called 'docker-stopped' $calls 'llama-server build b9000-cuda-12.4*'
+  Assert-NotCalled 'docker-stopped' $calls 'download *'
   Assert-NotCalled 'docker-stopped' $calls 'winget install --id Git.Git*'
   Assert-NotCalled 'docker-stopped' $calls 'winget install --id Microsoft.DotNet.SDK*'
   if ((Get-Output 'docker-stopped') -notmatch 'Git \d+\.\d+\.\d+ found\.') { $failures.Add('[docker-stopped] setup did not report the installed Git') }
@@ -213,8 +244,9 @@ exit 0
     FAKE_WSL_STATE = $null
   }
   Assert-Called 'agent' $calls 'docker desktop*'
-  Assert-Called 'agent' $calls 'foundry --version*'
-  Assert-NotCalled 'agent' $calls 'foundry server stop*'
+  Assert-Called 'agent' $calls 'llama-server build b9000-cuda-12.4*'
+  if (@($calls | Where-Object { $_ -like 'llama-server build*' }).Count -ne 1) { $failures.Add('[agent] agent did not reuse the llama-server that start began') }
+  if (Get-Process -Name 'llama-server' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($work, [StringComparison]::OrdinalIgnoreCase) }) { $failures.Add('[agent] stop left llama-server running') }
   Assert-NotCalled 'agent' $calls 'winget *'
   Assert-Called 'agent' $calls 'docker run --rm --entrypoint od openmono-agent:latest*'
   Assert-NotCalled 'agent' $calls 'docker compose -f * build agent*'
@@ -230,18 +262,21 @@ exit 0
     for ($i = 0; $i -lt 5; $i++) {
       if ($tail[$i] -cne $expectedTail[$i]) { $failures.Add("[agent] agent arg $i was [$($tail[$i])], expected [$($expectedTail[$i])]") }
     }
-    foreach ($want in @('run', '--rm', '127.0.0.1:7475:7475', 'HOST_ACP_PORT=7475', 'OPENMONO_LLM_BACKEND=foundry', "HOST_WORKSPACE_PATH=$project", 'OPENMONO_MODEL=qwen3.8-27b-cuda-gpu:1')) {
+    foreach ($want in @('run', '--rm', '127.0.0.1:7475:7475', 'HOST_ACP_PORT=7475', "HOST_WORKSPACE_PATH=$project", 'OPENMONO_MODEL=Qwen3.8-27B-UD-Q4_K_M')) {
       if ($argv -notcontains $want) { $failures.Add("[agent] docker args missing [$want]") }
     }
+    if ($argv | Where-Object { $_ -like 'OPENMONO_LLM_BACKEND=*' }) { $failures.Add('[agent] docker args still name an LLM backend') }
     if ($run.env.OPENMONO_ENDPOINT -ne 'http://host.docker.internal:7474') { $failures.Add("[agent] OPENMONO_ENDPOINT was [$($run.env.OPENMONO_ENDPOINT)]") }
     if ($run.env.WORKSPACE -ne ($project -replace '\\', '/')) { $failures.Add("[agent] WORKSPACE was [$($run.env.WORKSPACE)]") }
-    if ($run.env.CTX_SIZE -ne '65536') { $failures.Add("[agent] CTX_SIZE was [$($run.env.CTX_SIZE)]") }
-    if ($run.env.OPENMONO_VISION_ENABLED -ne '0') { $failures.Add("[agent] OPENMONO_VISION_ENABLED was [$($run.env.OPENMONO_VISION_ENABLED)]") }
+    if ($run.env.CTX_SIZE -ne '172032') { $failures.Add("[agent] CTX_SIZE was [$($run.env.CTX_SIZE)]") }
+    if ($run.env.OPENMONO_VISION_ENABLED -ne '1') { $failures.Add("[agent] OPENMONO_VISION_ENABLED was [$($run.env.OPENMONO_VISION_ENABLED)]") }
   }
 
-  # No NVIDIA GPU: the CPU rung only, loaded by its catalog variant id.
+  # No NVIDIA GPU: the llama.cpp CPU build and the CPU rung only.
   $cpuBody = @"
 & '$launcher' start
+if (`$LASTEXITCODE -ne 0) { exit 10 }
+& '$launcher' stop
 exit `$LASTEXITCODE
 "@
   $calls = Invoke-Scenario 'cpu-only' $cpuBody @{
@@ -251,31 +286,47 @@ exit `$LASTEXITCODE
     FAKE_WSL_STATE = $null
     FAKE_NO_GPU = '1'
   }
-  Assert-Called 'cpu-only' $calls 'foundry model load qwen3.5-2b-generic-cpu:3*'
-  foreach ($big in @('qwen3.8-27b', 'qwen3.5-9b', 'qwen3.5-4b')) { Assert-NotCalled 'cpu-only' $calls "foundry model load $big*" }
+  Assert-Called 'cpu-only' $calls 'download llama-b9000-bin-win-cpu-x64.zip*'
+  Assert-Called 'cpu-only' $calls 'download /models/Qwen3.5-2B-UD-Q4_K_XL.gguf*'
+  Assert-Called 'cpu-only' $calls 'llama-server build b9000-cpu*'
+  Assert-Called 'cpu-only' $calls 'llama-server --model *Qwen3.5-2B-UD-Q4_K_XL.gguf --alias Qwen3.5-2B-UD-Q4_K_XL *--threads-batch *'
+  Assert-NotCalled 'cpu-only' $calls 'llama-server *--n-gpu-layers*'
+  foreach ($big in @('Qwen3.8-27B', 'Qwen3.5-9B', 'Qwen3.5-4B')) { Assert-NotCalled 'cpu-only' $calls "download /models/$big*" }
   if (-not (Test-Path $state)) {
     $failures.Add('[cpu-only] start wrote no inference state')
   } else {
     $inference = Get-Content $state -Raw | ConvertFrom-Json
-    if ($inference.model_alias -ne 'qwen3.5-2b') { $failures.Add("[cpu-only] model_alias was [$($inference.model_alias)]") }
-    if ($inference.served_model_id -ne 'qwen3.5-2b-generic-cpu:3') { $failures.Add("[cpu-only] served_model_id was [$($inference.served_model_id)]") }
+    if ($inference.model_alias -ne 'Qwen3.5-2B-UD-Q4_K_XL') { $failures.Add("[cpu-only] model_alias was [$($inference.model_alias)]") }
+    if ($inference.accel -ne 'cpu') { $failures.Add("[cpu-only] accel was [$($inference.accel)]") }
   }
 
-  # Foundry already serving someone else's model: adopt the daemon, switch the model.
-  $deepSeek = 'DeepSeek-R1-Distill-Qwen-1.5B-openvino-gpu:2'
-  Set-Content -Path $env:FAKE_SERVED -Value $deepSeek
-  $calls = Invoke-Scenario 'foreign-model' $cpuBody @{
+  # Someone else's llama-server, serving its own model, already holds 7474:
+  # start fails with the reason and never starts a second server.
+  $foreignExe = Join-Path $foreignBin 'llama-server.exe'
+  $foreignBody = @"
+`$foreign = Start-Process -FilePath '$foreignExe' -ArgumentList '--port 7474 --alias Llama-3.3-70B-Instruct-Q4_K_M' -PassThru -WindowStyle Hidden
+for (`$i = 0; `$i -lt 50; `$i++) {
+  try { Invoke-RestMethod -Uri 'http://127.0.0.1:7474/health' -TimeoutSec 2 | Out-Null; break } catch { Start-Sleep -Milliseconds 200 }
+}
+`$out = Join-Path '$work' 'foreign-start.out'
+`$err = Join-Path '$work' 'foreign-start.err'
+`$p = Start-Process -FilePath '$exe' -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File "$launcher" start' -RedirectStandardOutput `$out -RedirectStandardError `$err -NoNewWindow -Wait -PassThru
+Get-Content `$out, `$err
+`$alive = -not `$foreign.HasExited
+Stop-Process -Id `$foreign.Id -Force -ErrorAction SilentlyContinue
+if (`$p.ExitCode -eq 0) { Write-Host 'start succeeded against a foreign server'; exit 30 }
+if (-not `$alive) { Write-Host 'the foreign server was stopped'; exit 31 }
+exit 0
+"@
+  $calls = Invoke-Scenario 'foreign-server' $foreignBody @{
     PATH = "$dockerBin;$toolsBin;$cleanPath"
     OPENMONO_DOCKER_DESKTOP_DIR = $desktopDir
     FAKE_NO_GPU = $null
   }
-  Assert-Called 'foreign-model' $calls 'foundry model load qwen3.8-27b*'
-  Assert-NotCalled 'foreign-model' $calls 'foundry server start*'
-  if (-not (Get-Output 'foreign-model').Contains("Replaced the previously served model $deepSeek with qwen3.8-27b-cuda-gpu:1")) {
-    $failures.Add('[foreign-model] start did not report replacing the foreign model')
-  }
-  if ((Test-Path $state) -and ((Get-Content $state -Raw | ConvertFrom-Json).served_model_id -ne 'qwen3.8-27b-cuda-gpu:1')) {
-    $failures.Add('[foreign-model] the agent model is not the ladder model')
+  Assert-NotCalled 'foreign-server' $calls 'llama-server build b9000*'
+  $out = Get-Output 'foreign-server'
+  foreach ($want in @('Port 7474 is taken by a server OpenMono did not start', 'Llama-3.3-70B-Instruct-Q4_K_M')) {
+    if (-not $out.Contains($want)) { $failures.Add("[foreign-server] output missing [$want]") }
   }
 
   # No Git, no .NET SDK: winget installs both, then setup carries on in the
@@ -314,9 +365,9 @@ exit `$LASTEXITCODE
     PATH = "$dockerBin;$toolsNoWinget;$barePath"
     OPENMONO_DOCKER_DESKTOP_DIR = $desktopDir
     OPENMONO_PATH_REGISTRY_FILE = $registry
-    OPENMONO_GIT_RELEASE_API = 'http://127.0.0.1:7474/git-release'
+    OPENMONO_GIT_RELEASE_API = 'http://127.0.0.1:7480/git-release'
     OPENMONO_GIT_INSTALL_DIR = $fallbackGit
-    OPENMONO_DOTNET_INSTALL_SCRIPT_URL = 'http://127.0.0.1:7474/dotnet-install.ps1'
+    OPENMONO_DOTNET_INSTALL_SCRIPT_URL = 'http://127.0.0.1:7480/dotnet-install.ps1'
     OPENMONO_DOTNET_INSTALL_DIR = $fallbackDotnet
     FAKE_GIT_DIR = $null
     FAKE_DOTNET_DIR = $realDotnetDir
@@ -344,6 +395,8 @@ exit `$LASTEXITCODE
 & '$launcher' start
 if (`$LASTEXITCODE -ne 0) { exit 10 }
 & '$launcher' agent --acp-only
+if (`$LASTEXITCODE -ne 0) { exit 11 }
+& '$launcher' stop
 exit `$LASTEXITCODE
 "@
   $calls = Invoke-Scenario 'agent-crlf' $crlfBody @{
@@ -394,7 +447,8 @@ exit 0
     Get-ChildItem $work -Filter 'calls-*.log' | ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content $_.FullName | ForEach-Object { Write-Host "  $_" } }
     exit 1
   }
-  Write-Host "Windows smoke test passed under $Shell (docker-missing, docker-stopped, agent, cpu-only, foreign-model, prereqs-winget, prereqs-fallback, agent-crlf, line-endings)."
+  Write-Host "Windows smoke test passed under $Shell (docker-missing, docker-stopped, agent, cpu-only, foreign-server, prereqs-winget, prereqs-fallback, agent-crlf, line-endings)."
 } finally {
   if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
+  Stop-FakeLlama
 }

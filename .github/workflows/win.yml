@@ -1,15 +1,15 @@
 # Windows-only CI for the `win` branch. Not present on `main`.
 # Builds the win/ solution, runs the GPU-free unit tests, and parse-checks
 # the PowerShell host scripts under both PowerShell 7 and Windows
-# PowerShell 5.1, and (non-blocking) checks the model ladder against the
-# live Foundry catalog API. Model download and Foundry serving are never
-# attempted.
+# PowerShell 5.1, runs the openmono.ps1 smoke test with fake tools, and
+# (non-blocking) checks the live llama.cpp release and model ladder URLs.
+# llama.cpp and the GGUF models are never downloaded.
 name: win
 
 on:
   push:
     branches: [win]
-    paths: ['win/**', '.github/workflows/win.yml', '.gitattributes', 'docker/**', 'src/**']
+    paths: ['win/**', '.github/workflows/win.yml', '.gitattributes', 'docker/**', 'src/**', 'scripts/models.json']
   workflow_dispatch:
 
 jobs:
@@ -30,8 +30,8 @@ jobs:
       - name: Test win solution
         run: dotnet test win/OpenMono.Win.sln -c Release --no-build
 
-  # The agent that runs in the Linux container, which the Windows port changes
-  # for Foundry Local (request shape, 400 replies, served-model pick).
+  # The agent that runs in the Linux container and talks to the host's
+  # llama-server through host.docker.internal.
   # ResolveBaseUrl_EmptyHostOs_StillKeepsLiteralDockerGatewayName needs
   # /.dockerenv (it only passes inside a container), so it is skipped here.
   agent-tests:
@@ -46,10 +46,11 @@ jobs:
       - name: Agent tests
         run: dotnet test src/OpenMono.Tests -c Release --filter "FullyQualifiedName!~ResolveBaseUrl_EmptyHostOs_StillKeepsLiteralDockerGatewayName"
 
-  # Live check that every ladder alias is still in the public Foundry Local
-  # catalog (https://foundrylocal.ai/api/models). Informational: a catalog
-  # change or an outage must not block the branch.
-  catalog-live:
+  # Live check that the newest llama.cpp release still ships the CUDA,
+  # Vulkan and CPU Windows x64 zips, and that every GGUF in the Windows
+  # ladder still downloads (HEAD only). Informational: an upstream change or
+  # an outage must not block the branch.
+  models-live:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -59,10 +60,12 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - name: openmono-win catalog check --strict
+      - name: openmono-win models check
+        env:
+          OPENMONO_WIN_REPO: ${{ github.workspace }}
         run: |
           dotnet build win/src/OpenMono.Win.Launcher -c Release
-          dotnet win/src/OpenMono.Win.Launcher/bin/Release/net10.0/openmono-win.dll catalog check --strict --refresh
+          dotnet win/src/OpenMono.Win.Launcher/bin/Release/net10.0/openmono-win.dll models check
 
   powershell:
     runs-on: windows-latest
