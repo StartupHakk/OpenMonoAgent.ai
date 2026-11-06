@@ -46,7 +46,9 @@ paths stay unchanged, and `main` is not touched.
 5. Lifecycle: `start` reuses the llama-server it started when the build, model
    and flags match, and restarts it otherwise. A server on 7474 that OpenMono
    did not start is reused only when it already serves the selected model;
-   otherwise `start` fails and names what that server serves. `stop` only
+   otherwise `start` fails before downloading anything and names what that
+   server serves. Only a build that exits while loading falls back to the
+   next backend; a server still loading is waited for (up to 10 minutes). `stop` only
    stops a server OpenMono started (`--force` to override). State lives in
    `~/.openmono/win/inference.json`, the llama.cpp builds in
    `~/.openmono/win/llama.cpp/`, the GGUFs in the repository's `models/`
@@ -121,18 +123,24 @@ win/
 
 ## Testing
 
-- Unit tests (`dotnet test win/OpenMono.Win.sln`) cover the ladder, the
-  llama.cpp release pick, downloads with resume, the llama-server command
-  line, start, reuse and fallback, the agent launch, doctor and diag. They run
-  on Windows and Linux CI without a GPU, llama.cpp or network.
-- `.github/workflows/win.yml` (only on `win`) builds and tests on
-  `windows-latest` and `ubuntu-latest`, runs the agent tests, parse-checks the
-  PowerShell scripts under pwsh 7 and Windows PowerShell 5.1, and runs the
-  smoke test under both shells. A non-blocking job runs `models check`
-  against the live llama.cpp releases and Hugging Face.
+See the Testing section of `win/README.md` for the commands.
+
+- Unit tests (`dotnet test win/OpenMono.Win.sln`) cover the ladder and VRAM
+  boundaries, the backend pick, the llama.cpp release pick and install with
+  its failure paths, downloads with resume and error pages, the llama-server
+  command line for every rung, the health wait, crash fallback, reuse,
+  foreign servers, stop, the agent launch, doctor and diag. They run on
+  Windows and Linux CI without a GPU, llama.cpp or network.
+- `win/tests/smoke/windows-smoke.ps1` drives `openmono.ps1` end to end under
+  PowerShell 7 and 5.1 with fake tools and a fake llama-server.
+- `win/tests/live/llama-live.ps1` runs the real llama.cpp build and GGUF:
+  start, reuse, a chat, the read_file tool round trip, an image, stop.
+- `.github/workflows/win.yml` (only on `win`) runs all of the above; the live
+  check and `models check` are non-blocking jobs because they depend on
+  GitHub and Hugging Face.
 - Manual matrix Spencer runs: NVIDIA 24 GB+, a smaller NVIDIA card, a machine
   without an NVIDIA GPU (CPU build), and a machine already running a
-  llama-server on 7474.
+  llama-server on 7474 (the README lists the steps).
 
 ## What only Spencer can provide
 
