@@ -118,50 +118,138 @@ public sealed class WindowsContainerEndpointTests
 
 public sealed class WindowsContainerStackTests
 {
-    private static WindowsStackConfig Config() => new(
-        WorkDir: "C:\\Users\\spencer\\proj",
-        HomeDir: "C:\\Users\\spencer",
-        ComposeFile: "C:\\openmono\\docker\\docker-compose.yml",
-        InferenceEndpoint: "http://127.0.0.1:7474",
-        Model: "qwen3.8-27b");
+    private const string Work = "C:\\Users\\spencer\\proj";
+    private const string Home = "C:\\Users\\spencer";
+    private const string Compose = "C:\\openmono\\docker\\docker-compose.yml";
+
+    private static AgentRunRequest Request(params string[] agentArgs) => new(
+        WorkDir: Work,
+        HomeDir: Home,
+        ComposeFile: Compose,
+        AgentArgs: agentArgs,
+        Endpoint: "http://127.0.0.1:7474",
+        Model: "qwen3.8-27b-instruct-cuda-gpu:1",
+        ContextTokens: 65536,
+        VisionEnabled: false,
+        FileExists: _ => false,
+        DirectoryExists: _ => false);
 
     [Fact]
-    public void EndpointReachesHostFoundry()
+    public void ComposeEnvironmentPointsAgentAtHostFoundry()
     {
-        Config().ContainerEndpoint.Should().Be("http://host.docker.internal:7474");
+        var plan = WindowsContainerStack.Build(Request());
+
+        plan.Environment["OPENMONO_ENDPOINT"].Should().Be("http://host.docker.internal:7474");
+        plan.Environment["WORKSPACE"].Should().Be("C:/Users/spencer/proj");
+        plan.Environment["HOME"].Should().Be("C:/Users/spencer");
+        plan.Environment["CTX_SIZE"].Should().Be("65536");
+        plan.Environment["OPENMONO_VISION_ENABLED"].Should().Be("0");
     }
 
     [Fact]
-    public void DockerArgsMirrorAgentContainerShape()
+    public void DefaultRunMirrorsBashSandboxLauncher()
     {
-        var args = WindowsContainerStack.ToDockerArgs(Config());
+        var plan = WindowsContainerStack.Build(Request());
 
-        args.Should().Contain("compose -f");
-        args.Should().Contain("-p 127.0.0.1:7475:7475");
-        args.Should().Contain("-v \"C:\\Users\\spencer\\proj:/workspace\"");
-        args.Should().Contain("-e OPENMONO_ENDPOINT=http://host.docker.internal:7474");
-        args.Should().Contain("-e OPENMONO_MODEL=qwen3.8-27b");
-        args.Should().Contain("-e OPENMONO_HOST_OS=Windows");
-        args.Should().Contain("-e HOST_ACP_PORT=7475");
-        args.Should().Contain("agent --acp-only --acp-port 7475");
-        args.Should().NotContain("llama-server");
-        args.Should().NotContain("OPENMONO_API_KEY=");
+        plan.DockerArgs.Should().StartWith(["compose", "-f", Compose, "run", "--rm", "--user", "1000:1000"]);
+        plan.DockerArgs.Should().ContainInOrder("-e", "HOME=/home/agent");
+        plan.DockerArgs.Should().Contain($"WORKSPACE={Work}");
+        plan.DockerArgs.Should().Contain($"HOST_WORKSPACE_PATH={Work}");
+        plan.DockerArgs.Should().Contain("OPENMONO_MODEL=qwen3.8-27b-instruct-cuda-gpu:1");
+        plan.DockerArgs.Should().Contain("GIT_TERMINAL_PROMPT=0");
+        plan.DockerArgs.Should().Contain("GIT_CONFIG_VALUE_0=/workspace");
+        plan.DockerArgs[^1].Should().Be("agent");
+        plan.DockerArgs.Should().NotContain("-d");
+        plan.DockerArgs.Should().NotContain("--name");
+        plan.DockerArgs.Should().NotContain("-p");
+        plan.AcpHostPort.Should().BeNull();
     }
 
     [Fact]
-    public void ApiKeyTravelsAsBareEnvFlag()
+    public void AgentArgsPassThroughAfterServiceName()
     {
-        var config = Config() with { ApiKey = "secret" };
-        var env = WindowsContainerStack.EnvironmentArgs(config);
+        var plan = WindowsContainerStack.Build(Request("-p", "explain this repo"));
 
-        env.Should().Contain("-e OPENMONO_API_KEY");
-        WindowsContainerStack.ToDockerArgs(config).Should().NotContain("secret");
+        plan.DockerArgs.TakeLast(3).Should().Equal("agent", "-p", "explain this repo");
+        plan.AcpHostPort.Should().BeNull();
     }
 
     [Fact]
-    public void DiscoveryUrlPointsAtPublishedAcp()
+    public void AcpOnlyPublishesLoopbackPort()
     {
-        WindowsContainerStack.DiscoveryUrl(Config()).Should().Be("http://127.0.0.1:7475/api/v1/discovery");
+        var plan = WindowsContainerStack.Build(Request("--acp-only"));
+
+        plan.DockerArgs.Should().ContainInOrder("-p", "127.0.0.1:7475:7475");
+        plan.DockerArgs.Should().Contain("HOST_ACP_PORT=7475");
+        plan.AcpHostPort.Should().Be(7475);
+    }
+
+    [Fact]
+    public void AcpOnlyHonorsExplicitPort()
+    {
+        var plan = WindowsContainerStack.Build(Request("--acp-only", "--acp-port", "7575"));
+
+        plan.DockerArgs.Should().ContainInOrder("-p", "127.0.0.1:7575:7575");
+        plan.DockerArgs.Should().Contain("HOST_ACP_PORT=7575");
+    }
+
+    [Fact]
+    public void ApiKeyNeverAppearsInPlan()
+    {
+        var plan = WindowsContainerStack.Build(Request());
+
+        plan.DockerArgs.Should().NotContain(a => a.Contains("OPENMONO_API_KEY"));
+        plan.Environment.Keys.Should().NotContain("OPENMONO_API_KEY");
+    }
+
+    [Fact]
+    public void GitMountsOnlyWhatExists()
+    {
+        var request = Request() with
+        {
+            FileExists = p => p.EndsWith(".gitconfig", StringComparison.Ordinal),
+            DirectoryExists = p => p.EndsWith(".ssh", StringComparison.Ordinal),
+        };
+
+        var plan = WindowsContainerStack.Build(request);
+
+        plan.DockerArgs.Should().Contain(a => a.EndsWith("/.gitconfig:/home/agent/.gitconfig:ro"));
+        plan.DockerArgs.Should().Contain(a => a.EndsWith("/.ssh:/home/agent/.ssh:ro"));
+        plan.DockerArgs.Should().NotContain(a => a.Contains(".git-credentials"));
+    }
+
+    [Fact]
+    public void NoGitAuthSkipsGitPlumbing()
+    {
+        var plan = WindowsContainerStack.Build(Request() with { NoGitAuth = true });
+
+        plan.DockerArgs.Should().NotContain(a => a.StartsWith("GIT_"));
+    }
+
+    [Fact]
+    public void RemoteEndpointPassesThroughUntouched()
+    {
+        var plan = WindowsContainerStack.Build(Request() with { Endpoint = "http://inference.lan:7474" });
+
+        plan.Environment["OPENMONO_ENDPOINT"].Should().Be("http://inference.lan:7474");
+    }
+
+    [Fact]
+    public void LocalWebGatewayIsDroppedWithNote()
+    {
+        var plan = WindowsContainerStack.Build(Request() with { WebGateway = "http://localhost:8080", WebSearch = "1" });
+
+        plan.Environment.Keys.Should().NotContain("OPENMONO_WEB_GATEWAY");
+        plan.Notes.Should().ContainSingle(n => n.Contains("web.gateway"));
+    }
+
+    [Fact]
+    public void RemoteWebGatewayPassesThrough()
+    {
+        var plan = WindowsContainerStack.Build(Request() with { WebGateway = "http://gateway.lan:8080", WebSearch = "1" });
+
+        plan.Environment["OPENMONO_WEB_GATEWAY"].Should().Be("http://gateway.lan:8080");
+        plan.Environment["OPENMONO_WEB_SEARCH"].Should().Be("1");
     }
 }
 
