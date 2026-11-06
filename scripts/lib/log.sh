@@ -55,26 +55,63 @@ if [ -n "${BASH_VERSION:-}" ]; then
         local exit_code=$?
         local line="${BASH_LINENO[0]:-?}"
         local cmd="${BASH_COMMAND:-?}"
-        _log "FATAL: exit $exit_code at line $line — $cmd"
+        # _log is defined below. A failure while choosing the log file (a
+        # root-owned ~/.openmono/logs) used to hit this trap first and die
+        # with "_log: command not found" on top of the permission error.
+        if declare -F _log >/dev/null 2>&1; then
+            _log "FATAL: exit $exit_code at line $line — $cmd" || true
+        else
+            printf 'FATAL: exit %s at line %s — %s\n' "$exit_code" "$line" "$cmd" >&2
+        fi
     }
     trap '_trap_err' ERR
 fi
 
 OPENMONO_VERBOSE="${OPENMONO_VERBOSE:-0}"
 
-# Log file: shared across install_prereqs.sh and install.sh within one setup run
+# True when this user can create the directory and write a file in it.
+# mkdir -p on an existing root-owned directory succeeds, so writability is
+# checked separately. Used as an if-test so set -e does not abort setup.
+_openmono_dir_writable() {
+    local d="$1" probe
+    mkdir -p "$d" 2>/dev/null || return 1
+    [ -w "$d" ] || return 1
+    probe="$d/.write-probe-$$"
+    : > "$probe" 2>/dev/null || return 1
+    rm -f "$probe" 2>/dev/null || true
+    return 0
+}
+
+# Log file: shared across install_prereqs.sh and install.sh within one setup run.
+# ~/.openmono/logs is often root-owned when a previous agent container created
+# it through a docker-compose tmpfs mount. That must not abort setup.
 if [ -z "${OPENMONO_LOG_FILE:-}" ]; then
-    OPENMONO_LOG_DIR="${OPENMONO_LOG_DIR:-$HOME/.openmono/logs}"
-    mkdir -p "$OPENMONO_LOG_DIR"
+    _om_preferred_log_dir="${OPENMONO_LOG_DIR:-$HOME/.openmono/logs}"
+    if _openmono_dir_writable "$_om_preferred_log_dir"; then
+        OPENMONO_LOG_DIR="$_om_preferred_log_dir"
+    else
+        OPENMONO_LOG_DIR="${TMPDIR:-/tmp}/openmono-logs-${USER:-$UID}"
+        if ! _openmono_dir_writable "$OPENMONO_LOG_DIR"; then
+            OPENMONO_LOG_DIR="${TMPDIR:-/tmp}"
+        fi
+        printf '%s\n' "  Cannot write ${_om_preferred_log_dir} (permission denied; it may be root-owned)." >&2
+        printf '%s\n' "  Logging to ${OPENMONO_LOG_DIR} instead." >&2
+        printf '%s\n' "  If ~/.openmono is left over from an older agent run: sudo chown -R \"\$USER\" ~/.openmono" >&2
+    fi
     OPENMONO_LOG_FILE="$OPENMONO_LOG_DIR/setup-$(date +%Y%m%d-%H%M%S).log"
-    export OPENMONO_LOG_FILE
-    : > "$OPENMONO_LOG_FILE"
+    export OPENMONO_LOG_DIR OPENMONO_LOG_FILE
+    if ! : > "$OPENMONO_LOG_FILE" 2>/dev/null; then
+        OPENMONO_LOG_FILE="${TMPDIR:-/tmp}/openmono-setup-$(date +%Y%m%d-%H%M%S).log"
+        export OPENMONO_LOG_FILE
+        : > "$OPENMONO_LOG_FILE" 2>/dev/null || { OPENMONO_LOG_FILE=/dev/null; export OPENMONO_LOG_FILE; }
+    fi
+    unset _om_preferred_log_dir
 fi
 
 # ── Internal ────────────────────────────────────────────────────────────────
 
 _log() {
-    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$OPENMONO_LOG_FILE"
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$OPENMONO_LOG_FILE" 2>/dev/null || true
 }
 
 # ── Public helpers ──────────────────────────────────────────────────────────

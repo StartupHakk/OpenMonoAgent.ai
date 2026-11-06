@@ -29,6 +29,87 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/StartupHakk/OpenMonoAgent.ai/refs/heads/main/get-openmono.sh)
 ```
 
+### Dual Tesla V100S workstation (`v100` branch)
+
+This branch is a separate install profile. `main` is unchanged. A fresh install
+from `v100` uses the validated serving config only when the machine has two or
+more Tesla V100S 32GB cards. The GeForce GTX 1650 is never selected for
+inference. Any other machine keeps the stock installer.
+
+On that workstation the defaults are Strata, Unsloth UD-Q3_K_XL
+(`--family unsloth --model UD-Q3_K_XL`, served as
+`qwen3.8-flash-next-unsloth-ud-q3_k_xl`), 4 parallel slots, 128k context,
+int8 KV, vision off, MTP drafting, and `--gpu` set to the V100S indices
+(0,1 when those cards are enumerated first). Bind stays `0.0.0.0` and the
+port stays 7474.
+
+Use `v100 --full` so this one workstation installs both the agent and inference.
+The V100S profile skips the CUDA 13 toolkit (CUDA 13 cannot target Volta, sm_70)
+and asks Strata for its installed Control engine (0.1.57+), which is what
+UD-Q3_K_XL requires.
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/StartupHakk/OpenMonoAgent.ai/refs/heads/v100/get-openmono.sh) v100 --full
+```
+
+If `~/.openmono` already exists from an older agent run and is root-owned (a
+Docker tmpfs mount does this), give it back to your user before setup.
+Otherwise the installer cannot write its log under that directory:
+
+```bash
+sudo chown -R "$USER" ~/.openmono
+```
+
+If the repo is already cloned:
+
+```bash
+git fetch origin v100
+git checkout v100
+openmono setup --full
+```
+
+`--model=`, `--cpu`, `OPENMONO_INFERENCE_BACKEND`, and `--options` still override
+those defaults.
+
+On that same dual V100S gate, setup also installs a chassis fan service
+(`openmono-v100-gpu-fan.service`). It reads Tesla V100 / V100S temperatures
+only (the hotter card wins) and writes PWM to the header labeled CHA_FAN1.
+The GTX 1650 is ignored. CPU_FAN is never written. If CHA_FAN1 cannot be
+identified, the service logs the error and leaves every fan header alone.
+Other machines do not get this unit.
+
+On the ASUS PRIME X299-DELUXE the installer also loads the `nct6775` module
+(persisted for boot). That board's NCT6796 chip publishes pwm nodes and no
+fan labels. When labels are absent, the service uses pwm1 as CHA_FAN1 and
+does not write pwm2. Any other board with no CHA_FAN1 label is left alone.
+
+This service only affects fans whose PWM line is driven by CHA_FAN1. The two
+Misieren V100 blowers (12 V, 3.8 A each, about 7.6 A together) must keep 12 V
+and ground on a PSU adapter, not on a typical SATA-powered hub (those hubs are
+often about 4.5 A total). The PWM wire (fourth pin) is what should follow
+CHA_FAN1. If the blowers are powered only from a 2-pin adapter with no PWM
+wire, they stay full speed and this script will not slow them down. In the
+BIOS, set CHA_FAN1 to PWM mode and leave CPU_FAN for the CPU cooler.
+
+The curve holds about 50 percent at or below 40 C and is at 100 percent from
+55 C up, so the cards are at full chassis airflow well before the 75 C
+practical ceiling. Fans are never stopped. If temperatures cannot be read, or
+a write fails, CHA_FAN1 is set to 100 percent when that channel is known.
+
+Already installed box, without a full reinstall:
+
+```bash
+git fetch origin v100
+git checkout v100
+sudo bash scripts/v100-gpu-fan.sh --install
+```
+
+Full install, including the fan service when the two V100S cards are present:
+
+```bash
+OPENMONO_HOST_BRIDGE=0 bash <(curl -fsSL https://raw.githubusercontent.com/StartupHakk/OpenMonoAgent.ai/refs/heads/v100/get-openmono.sh) v100 --full
+```
+
 The installer will ask you one question before it does anything:
 
 > [!IMPORTANT]
