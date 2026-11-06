@@ -37,10 +37,10 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - name: Parse-check host scripts (pwsh 7 and Windows PowerShell 5.1)
+      - name: Parse-check win PowerShell scripts (pwsh 7 and Windows PowerShell 5.1)
         shell: pwsh
         run: |
-          $scripts = @('win/openmono.ps1') + (Get-ChildItem win/scripts -Filter *.ps1 | ForEach-Object { $_.FullName })
+          $scripts = @(Get-ChildItem win -Recurse -Filter *.ps1 | ForEach-Object { $_.FullName })
           $check = {
             param($files)
             $bad = 0
