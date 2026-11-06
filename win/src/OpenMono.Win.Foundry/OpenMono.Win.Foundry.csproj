@@ -6,11 +6,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- M1 drives the Foundry CLI and probes for the SDK assembly at runtime.
-         When the Microsoft.AI.Foundry.Local package coordinate is confirmed on
-         a Windows machine, add the PackageReference here and promote
-         SdkBackendProbe to a typed client. See win/docs/BUILD-PLAN.md. -->
-    <!-- <PackageReference Include="Microsoft.AI.Foundry.Local" Version="0.13.0" /> -->
+    <!-- Foundry lifecycle is driven through the CLI. The SDK package is
+         Microsoft.AI.Foundry.Local 2.x (CLI 0.13.0 ships 2.3.0); it is not
+         referenced because the CLI covers every host control and the SDK
+         would add a native runtime to CI. See win/docs/BUILD-PLAN.md note 1. -->
   </ItemGroup>
 
 </Project>

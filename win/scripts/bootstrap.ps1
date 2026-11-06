@@ -50,9 +50,6 @@ Write-Host '[openmono] Checking NVIDIA GPU...'
 & "$PSScriptRoot\check-cuda.ps1"
 
 Write-Host ''
-Write-Host '[openmono] Next steps:'
-Write-Host "  1. foundry model load $TargetModel   (about 18 GB download on first run)"
-Write-Host '  2. foundry server status             (note the local API URL)'
-Write-Host '  3. Start the Windows host, which adopts or binds http://127.0.0.1:7474'
-Write-Host ''
-Write-Host '[openmono] Bootstrap complete.'
+Write-Host '[openmono] Foundry prerequisites checked. Next:'
+Write-Host "  .\win\openmono.ps1 start   (serves $TargetModel on http://127.0.0.1:7474; about 18 GB download on first run)"
+Write-Host '  .\win\openmono.ps1 agent   (the OpenMono agent in its Linux container)'

@@ -2,10 +2,10 @@ using System.Reflection;
 
 namespace OpenMono.Win.Foundry;
 
-// M1 stub for the optional C# SDK path. The host prefers the CLI until the
-// Microsoft.AI.Foundry.Local package coordinate is confirmed (see csproj and
-// BUILD-PLAN.md). This probe only reports whether the SDK assembly is present
-// so a future typed client can activate without changing callers.
+// Optional C# SDK path (Microsoft.AI.Foundry.Local 2.x). The host drives the
+// CLI (see csproj and BUILD-PLAN.md note 1); this probe only reports whether
+// the SDK assembly is present so a typed client could activate later without
+// changing callers.
 public sealed record SdkProbeResult(bool Available, string? Version, string Detail);
 
 public static class SdkBackendProbe

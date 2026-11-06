@@ -1,6 +1,7 @@
 # Windows-only CI for the `win` branch. Not present on `main`.
-# Builds the win/ solution and runs the GPU-free unit tests.
-# Model download and Foundry serving are never attempted in CI.
+# Builds the win/ solution, runs the GPU-free unit tests, and parse-checks
+# the PowerShell host scripts under both PowerShell 7 and Windows
+# PowerShell 5.1. Model download and Foundry serving are never attempted.
 name: win
 
 on:
@@ -26,3 +27,37 @@ jobs:
         run: dotnet build win/OpenMono.Win.sln -c Release
       - name: Test win solution
         run: dotnet test win/OpenMono.Win.sln -c Release --no-build
+
+  powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: win
+      - name: Parse-check host scripts (pwsh 7 and Windows PowerShell 5.1)
+        shell: pwsh
+        run: |
+          $scripts = @('win/openmono.ps1') + (Get-ChildItem win/scripts -Filter *.ps1 | ForEach-Object { $_.FullName })
+          $check = {
+            param($files)
+            $bad = 0
+            foreach ($f in $files) {
+              $errs = $null
+              [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f).Path, [ref]$null, [ref]$errs) | Out-Null
+              foreach ($e in @($errs)) { if ($e) { Write-Host "$f($($e.Extent.StartLineNumber)): $($e.Message)"; $bad++ } }
+            }
+            $bad
+          }
+          $pwshErrors = & $check $scripts
+          $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(
+            "`$files = @('" + ($scripts -join "','") + "'); & {" + $check.ToString() + "} `$files"))
+          $winpsErrors = [int](powershell.exe -NoProfile -EncodedCommand $encoded | Select-Object -Last 1)
+          Write-Host "pwsh parse errors: $pwshErrors; Windows PowerShell 5.1 parse errors: $winpsErrors"
+          if ($pwshErrors -ne 0 -or $winpsErrors -ne 0) { exit 1 }
+      - name: openmono.ps1 help runs on both shells
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File win/openmono.ps1 help
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File win/openmono.ps1 help
+          if ($LASTEXITCODE -ne 0) { exit 1 }

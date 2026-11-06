@@ -23,13 +23,22 @@ control code lives in `win/`. oma-bot stays Linux, same as the core agent.
   in the child process environment, never on the command line. Linux maps
   loopback to the `llama-server` compose service; macOS maps it to
   `host.docker.internal`.
-- **ACP layer.** The in-container `AcpServer.Build` hosts Kestrel on
-  `localhost:7475` (`AcpServerSettings.Port`, `BindAllInterfaces = false`) with
+- **ACP layer.** The in-container `AcpServer.Build` hosts Kestrel on port
+  7475 (`AcpServerSettings.Port`; `Program.cs` sets `BindAllInterfaces` only
+  when `/.dockerenv` exists, so the published host port stays the boundary) with
   routes under `/api/v1/...` (`discovery`, `sessions`, `messages`, `turn` with
   `message`/`permission`/`user_input`/`playbookPermission`/`plan_decision`
   bodies streamed back as SSE, plus `diffs`/`undo`/`redo` and `host` pairing).
-  `AcpLockFileWriter` writes `<workspace>/.openmono/agent.lock` so editors can
+  `AcpLockFileWriter` writes `<workspace>/.openmono/agent.lock` (needs
+  `HOST_WORKSPACE_PATH`; `HOST_ACP_PORT` is the published port) so editors can
   discover the server.
+- **Launchers.** Bash `openmono agent` (`cmd_agent_sandbox`) runs
+  `docker compose run --rm --user uid:gid -e HOME -e WORKSPACE <git mounts> agent "$@"`
+  after exporting compose variables (`WORKSPACE`, `OPENMONO_ENDPOINT`, web
+  settings). The TUI runs in the foreground with ACP in the background on
+  7475. The extension's DockerManager instead runs the image with
+  `-p 127.0.0.1:{port}:7475 -e HOST_ACP_PORT -e HOST_WORKSPACE_PATH`
+  (`scripts/acp-smoke.sh` exercises that shape).
 - **Graph technology.** `code-review-graph` (probed with `--version`; when its
   database exists in `~/.openmono/graph-db`, `<workdir>/.code-review-graph`, or
   `~/.code-review-graph`, it is registered as the `code-graph` MCP server) and
@@ -41,33 +50,39 @@ control code lives in `win/`. oma-bot stays Linux, same as the core agent.
 
 ## What Windows changes (all in `win/`)
 
-- **Endpoint mapping** (`WindowsContainerEndpoint`): loopback inference roots
-  map to `http://host.docker.internal:{port}` (the Docker Desktop route to the
-  Windows host, same as macOS), `/v1`-prefixed paths preserved, remote hosts
-  untouched. Mirrors `AgentContainer.MapEndpoint` for Windows; no upstream edit.
-- **Stack config** (`WindowsContainerStack` + `win/scripts/start-stack.ps1` /
-  `stop-stack.ps1`): same compose service, same ACP publish on loopback, same
-  volume and env shape as `AgentContainer.EnsureAsync`, except
-  `OPENMONO_ENDPOINT` points at host Foundry, `OPENMONO_HOST_OS=Windows`, no
-  `--user uid:gid`, and no llama-server/caddy profiles (inference is
-  host-native). API keys stay out of the command line.
-- **ACP** (`WindowsAcpWiring`): no server code duplicated. The host needs the
-  published address (`http://127.0.0.1:7475`, discovery at
-  `/api/v1/discovery`) and the lock path `<workspace>/.openmono/agent.lock`.
-- **Graph** (`WindowsGraphArtifacts`): same artifact paths upstream checks
-  (`graph-db` dirs, `graphify-out/graph.json` or `GRAPH_REPORT.md`), evaluated
-  on the host copy of the mounted workspace. The tools themselves run
-  in-container, unchanged.
-- **Host shell** (`WindowsShellSelector`): install, bootstrap, first-run,
-  Foundry lifecycle, and stack management are PowerShell (`pwsh.exe`, then
-  `powershell.exe`). The agent's Bash tool is untouched Linux bash.
-- **Host guardrails** (`WindowsGuardrails`): Windows-destructive shapes
-  (`format`, `diskpart`, `bcdedit`, `reg delete`, recursive deletes of `C:\`
-  and `C:\Windows`) as candidates for the host daemon's `host.deny_list`,
-  which is checked first. The agent pipeline is unchanged.
-- **Vision** (`WindowsImagePolicy`, `WindowsVisionConfig`, `win/docs/VISION.md`):
-  the model name for image turns flows via `OPENMONO_MODEL`; the vision flag
-  flows via `OPENMONO_VISION_ENABLED`. Images are never silently dropped.
+- **Launcher** (`win/openmono.ps1` over `openmono-win agent-plan`, built by
+  `WindowsContainerStack.Build`): the same `docker compose run --rm` of the
+  same `agent` service as `cmd_agent_sandbox`, the same `-e` and git mounts,
+  the same compose variables, plus:
+  - `OPENMONO_ENDPOINT=http://host.docker.internal:7474` (the macOS
+    native-inference rewrite), so the container reaches host Foundry;
+  - `--user 1000:1000` (Windows has no uid; the image makes `/home/agent`
+    1777 and `/etc/passwd` writable for any uid, so the sandbox stays
+    non-root);
+  - `HOST_WORKSPACE_PATH=<Windows path>` as the extension's DockerManager
+    sets it, so `agent.lock` names the folder VS Code has open;
+  - `OPENMONO_MODEL=<served Foundry id>` and `CTX_SIZE=<context for this GPU>`;
+  - with `--acp-only`, `-p 127.0.0.1:{port}:{port}` and `HOST_ACP_PORT`
+    (the `AgentContainer` shape). The default TUI run publishes nothing, as
+    on Linux.
+- **Endpoint mapping** (`WindowsContainerEndpoint`): loopback roots map to
+  `host.docker.internal` with the port kept and `/v1` paths preserved; remote
+  hosts pass through. Mirrors `AgentContainer.MapEndpoint`.
+- **ACP** (`WindowsAcpWiring`): no server code duplicated. Discovery is at
+  `http://127.0.0.1:7475/api/v1/discovery`; `openmono doctor` reports it.
+- **Graph** (`WindowsGraphArtifacts`): the same artifact paths upstream checks,
+  read on the host copy of the mounted workspace, reported by `doctor`. The
+  tools run in-container, unchanged; `~/.code-review-graph` is created up
+  front so Docker does not create the bind source itself.
+- **Host shell** (`WindowsShellSelector`): host controls are PowerShell
+  (`pwsh.exe`, then `powershell.exe`). The agent's Bash tool is untouched
+  Linux bash inside the container.
+- **Host guardrails** (`WindowsGuardrails`): Windows-destructive command
+  shapes, ready for the host-bridge `host.deny_list` once host mode exists on
+  Windows. The agent pipeline is unchanged.
+- **Vision** (`WindowsVisionConfig`, `win/docs/VISION.md`): the probe outcome
+  flows via `OPENMONO_VISION_ENABLED`; `--vision` sessions use the Foundry
+  vision alias. Images are never silently dropped.
 
 ## Ports on a Windows machine
 
@@ -77,23 +92,31 @@ control code lives in `win/`. oma-bot stays Linux, same as the core agent.
 | Inference (from containers) | `http://host.docker.internal:7474` | `WindowsContainerEndpoint` |
 | Agent ACP server | `http://127.0.0.1:7475` | `AcpServerSettings.Port`, `WindowsAcpWiring` |
 
-## Upstream changes needed: none
+## Upstream changes needed
 
-One candidate tiny upstream edit is worked around in `win/` instead and listed
-here for Spencer:
+None for the launcher path. For Spencer, three optional follow-ups:
 
-1. `AgentContainer.MapEndpoint` has macOS and Linux branches. Windows hosts
-   need the `host.docker.internal` branch (same as macOS). `win/` implements
-   the identical mapping in `WindowsContainerEndpoint`; a future upstream
-   `OperatingSystem.IsWindows()` branch would make the wrapper a thin call,
-   changing no behavior on other platforms.
+1. `AgentContainer.MapEndpoint` (HostBridge) has macOS and Linux branches; a
+   Windows branch identical to macOS would let `openmono agent --host` work
+   once host mode is ported. `win/` already has the same mapping.
+2. The VS Code extension's DockerManager starts its own container. Its
+   source is not in this repo, so whether it rewrites a loopback
+   `llm.endpoint` for the container is unverified. If it does not, a
+   container it starts on Windows dials its own loopback instead of Foundry.
+   Until verified, run `openmono agent --acp-only` from the project folder
+   and let the extension attach on 7475.
+3. Per-turn vision model routing (`inference.vision_model`), described in
+   `win/docs/VISION.md`.
 
 ## Manual check (Windows)
 
-```
-.\win\scripts\bootstrap.ps1     # Foundry CLI, CUDA/cuDNN visibility
-.\win\scripts\start-stack.ps1   # Docker check, Foundry adopt, agent container start
-curl http://127.0.0.1:7475/api/v1/discovery   # version, agent_id, status ready
-curl http://127.0.0.1:7474/v1/models          # Foundry serving (vision probe runs at host start)
-.\win\scripts\stop-stack.ps1    # remove the agent container; Foundry keeps serving
+```powershell
+.\win\openmono.ps1 setup                       # prerequisites, agent image, Foundry up, doctor
+cd C:\path\to\project
+C:\path\to\OpenMonoAgent.ai\win\openmono.ps1 doctor             # every check ok or info; "container route" must be ok
+C:\path\to\OpenMonoAgent.ai\win\openmono.ps1 agent --acp-only   # ACP published on 127.0.0.1:7475
+curl.exe http://127.0.0.1:7475/api/v1/discovery  # host_workspace is the Windows path
+Get-Content .openmono\agent.lock                 # same port and workspace
+# open the folder in VS Code, open the OpenMono Agent panel, send a turn
+C:\path\to\OpenMonoAgent.ai\win\openmono.ps1 stop --agent       # remove the ACP container; Foundry keeps serving
 ```

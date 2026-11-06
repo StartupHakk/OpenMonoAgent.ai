@@ -20,17 +20,12 @@ otherwise unchanged in intent.
    is no native Windows in-process agent. The BUILD-PLAN body below still
    describes in-process hosting in places; where it does, this note wins.
 
-These notes record where this snapshot differs from the original plan text, or
-where the scaffold makes an explicit provisional choice. The plan body below is
-otherwise unchanged in intent.
-
-1. Foundry Local C# SDK package: at scaffold time the exact shipping package
-   name and version for `Microsoft.AI.Foundry.Local` is not pinned, so the
-   `OpenMono.Win.Foundry` project does NOT take a hard NuGet dependency yet.
-   The host drives the Foundry CLI for M1 and probes for the SDK assembly at
-   runtime (`FoundryConstants.SdkAssemblyName`). When the package coordinate is
-   confirmed on a Windows machine, add the `PackageReference` where the csproj
-   placeholder comment indicates and promote the probe to a typed client.
+1. Foundry Local C# SDK package: the coordinate is `Microsoft.AI.Foundry.Local`
+   (2.x; Foundry Local CLI 0.13.0 ships SDK and runtime 2.3.0). The
+   `OpenMono.Win.Foundry` project still takes no NuGet dependency: Foundry
+   lifecycle is a host control, the CLI covers it, and the SDK would pull a
+   native runtime into CI for no gain. `SdkBackendProbe` only reports whether
+   the assembly is present. Revisit if a CLI gap appears.
 2. Fallback model alias: the plan leaves the under-24-GB fallback open. The
    scaffold uses `qwen3-4b` as a provisional constant (`FallbackModelAlias`)
    and always resolves the real catalog spelling at runtime, so a wrong guess
@@ -46,6 +41,44 @@ otherwise unchanged in intent.
    falls back to `{endpoint}/v1/models`. Foundry Local serves `/v1/models`,
    so the existing detection path covers the Foundry endpoint with no upstream
    change.
+6. Foundry CLI surface (verified against the Foundry Local CLI reference and
+   the 0.10 to 0.13 release notes; 0.10 replaced the old `service` group with
+   `server`): `foundry server start --port 7474 --idle-timeout 0` pins the
+   port and keeps the daemon up, `foundry server status|stop|logs`, and
+   `foundry model load|list` (`--output json` for scripting). The host starts
+   the daemon on the pinned port before `model load`, because a load against
+   a stopped daemon would auto-start it on another port. A daemon the user
+   already runs is adopted (on 7474, or wherever `server status` says), and
+   `openmono stop` only stops a daemon OpenMono started.
+7. Served model ids: Foundry's `/v1/models` lists variant ids such as
+   `qwen3.8-27b-instruct-cuda-gpu:1`, not the alias. `FoundryModelIdResolver`
+   maps the alias to the served id (variant-suffix aware, GPU variant
+   preferred) and the launcher passes it as `OPENMONO_MODEL`, unless
+   `llm.model` is set in `settings.json`, which is respected. An empty
+   `/v1/models` list means "up, nothing loaded", not "down".
+8. VRAM classes: cards report slightly under their marketed size (RTX 4090:
+   24564 MiB, RTX 5090: 32607 MiB), so the 24 GB and 32 GB classes are
+   matched from 1 GiB below nominal.
+9. No Desktop (WinUI) project: the plan's native chat UI and step 4 of the
+   build sequence are superseded by note 0. The Windows UX is the existing
+   one: the agent TUI in the container and the VS Code extension over ACP.
+10. Host launcher: `win/openmono.ps1` (pwsh 7 or Windows PowerShell 5.1) has
+    the bash launcher's subcommands (`setup`, `start`, `stop`, `status`,
+    `agent`, `logs`, `doctor`). Decision logic lives in the tested
+    `OpenMono.Win.Launcher` console app (`openmono-win`), which PowerShell
+    calls; `agent` runs the same `docker compose run --rm ... agent` as
+    `cmd_agent_sandbox`, with `OPENMONO_ENDPOINT=http://host.docker.internal:7474`.
+    Setup needs the .NET SDK 10.0.403+, the same prerequisite as `install.ps1`.
+11. Vision with a single-model agent: the agent sends every turn to one
+    model, so per-turn switching to a vision model needs an upstream change
+    (listed in `docs/VISION.md`). Until then the launcher probes the coding
+    model; when it is text-only, vision stays off (the agent warns on an
+    attached image, never drops it silently) and `openmono agent --vision`
+    starts a session on the Foundry vision alias.
+12. Not yet on Windows: host mode (`openmono agent --host`, the HostBridge
+    daemon runs host commands and would need a PowerShell executor), the
+    clipboard image bridge, and the optional local web gateway services
+    (Caddy, SearXNG, Scrapling). The agent's built-in web fallbacks apply.
 
 ## Goal
 
