@@ -8,6 +8,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "OpenMono.Win.AgentHost", "s
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "OpenMono.Win.Tests", "tests\OpenMono.Win.Tests\OpenMono.Win.Tests.csproj", "{A11CE5AA-0101-4B11-9C11-AAAA00000003}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "OpenMono.Win.Launcher", "src\OpenMono.Win.Launcher\OpenMono.Win.Launcher.csproj", "{A11CE5AA-0101-4B11-9C11-AAAA00000004}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -26,5 +28,9 @@ Global
 		{A11CE5AA-0101-4B11-9C11-AAAA00000003}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{A11CE5AA-0101-4B11-9C11-AAAA00000003}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{A11CE5AA-0101-4B11-9C11-AAAA00000003}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A11CE5AA-0101-4B11-9C11-AAAA00000004}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A11CE5AA-0101-4B11-9C11-AAAA00000004}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A11CE5AA-0101-4B11-9C11-AAAA00000004}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A11CE5AA-0101-4B11-9C11-AAAA00000004}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

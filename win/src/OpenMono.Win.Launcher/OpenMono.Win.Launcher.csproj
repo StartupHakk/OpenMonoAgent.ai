@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>openmono-win</AssemblyName>
+    <RootNamespace>OpenMono.Win.Launcher</RootNamespace>
+    <Description>Host-side decision logic behind win/openmono.ps1: Foundry Local lifecycle, doctor checks, and the docker compose plan for the Linux agent container.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../OpenMono.Win.Foundry/OpenMono.Win.Foundry.csproj" />
+    <ProjectReference Include="../OpenMono.Win.AgentHost/OpenMono.Win.AgentHost.csproj" />
+  </ItemGroup>
+
+</Project>
