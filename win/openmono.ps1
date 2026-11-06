@@ -10,7 +10,8 @@
   container through host.docker.internal.
 
   Commands:
-    setup                  Install prerequisites, build the agent image, start inference
+    setup                  Install prerequisites (Foundry Local, Docker Desktop), build
+                             the agent image, start inference
     start                  Start (or adopt) Foundry Local and load the model
     stop [flags]           Stop inference (default). Flags: --agent, --all, --force
     status                 Inference and agent container status
@@ -37,6 +38,7 @@ $LauncherDll = Join-Path (Join-Path (Join-Path (Split-Path -Parent $LauncherProj
 $LauncherDll = Join-Path $LauncherDll 'openmono-win.dll'
 $UserHome = [Environment]::GetFolderPath('UserProfile')
 $MinDotnet = [Version]'10.0.403'
+. (Join-Path (Join-Path $WinDir 'scripts') 'docker.ps1')
 
 function Write-Info([string]$Message) { Write-Host "[openmono] $Message" }
 function Write-Ok([string]$Message) { Write-Host "[openmono] $Message" -ForegroundColor Green }
@@ -82,14 +84,11 @@ function Invoke-Launcher {
   & dotnet $LauncherDll @native
 }
 
+# Like the bash launcher's _ensure_docker: start the engine and wait rather
+# than fail. Installing Docker is left to setup.
 function Assert-Docker {
-  if (-not (Test-Command 'docker')) {
-    throw 'Docker is not installed. Install Docker Desktop (WSL 2 backend): winget install Docker.DockerDesktop'
-  }
-  & docker info *> $null
-  if ($LASTEXITCODE -ne 0) {
-    throw 'Docker engine is not running. Start Docker Desktop and re-run.'
-  }
+  $rerun = '.\win\openmono.ps1 ' + $command
+  Confirm-DockerReady -Rerun $rerun
 }
 
 # Host directories the compose file bind-mounts. Created up front so Docker
@@ -237,7 +236,7 @@ if ($args.Count -gt 0) {
 
 try {
   switch ($command) {
-    'setup' { Invoke-Setup }
+    'setup' { Invoke-Setup; exit 0 }
     'start' { Invoke-Start }
     'stop' { Invoke-Stop $rest }
     'status' { Invoke-Status }

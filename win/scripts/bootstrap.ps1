@@ -4,11 +4,13 @@
 
 .DESCRIPTION
   Checks for the Foundry Local CLI (0.13.0+), installs it with winget when
-  missing, verifies NVIDIA GPU and CUDA/cuDNN visibility, and prints the next
-  steps (model download, server start). Idempotent: safe to re-run.
+  missing, verifies NVIDIA GPU and CUDA/cuDNN visibility, then makes sure
+  Docker Desktop is installed (winget, with WSL 2) and its engine is running,
+  and prints the next steps. Idempotent: safe to re-run.
 #>
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'docker.ps1')
 
 $MinFoundry = [Version]'0.13.0'
 $TargetModel = 'qwen3.8-27b'
@@ -49,7 +51,10 @@ if ($version -lt $MinFoundry) {
 Write-Host '[openmono] Checking NVIDIA GPU...'
 & "$PSScriptRoot\check-cuda.ps1"
 
+Write-Host '[openmono] Checking Docker (the agent runs in a Linux container)...'
+Confirm-DockerReady -Install
+
 Write-Host ''
-Write-Host '[openmono] Foundry prerequisites checked. Next:'
+Write-Host '[openmono] Prerequisites checked. Next:'
 Write-Host "  .\win\openmono.ps1 start   (serves $TargetModel on http://127.0.0.1:7474; about 18 GB download on first run)"
 Write-Host '  .\win\openmono.ps1 agent   (the OpenMono agent in its Linux container)'

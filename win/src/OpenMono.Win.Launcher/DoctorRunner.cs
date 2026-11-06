@@ -120,7 +120,7 @@ public sealed class DoctorRunner
         {
             checks.Add(new DoctorCheck("docker", CheckLevel.Fail,
                 "Docker engine is not reachable.",
-                "Install Docker Desktop (WSL 2 backend) and start it: winget install Docker.DockerDesktop"));
+                "Run .\\win\\openmono.ps1 setup: it installs Docker Desktop (winget, WSL 2) if missing and starts it."));
             return false;
         }
 

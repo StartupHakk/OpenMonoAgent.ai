@@ -9,13 +9,14 @@ host control, in PowerShell.
 
 ## Quick start
 
-Prerequisites: Windows 11, Docker Desktop (WSL 2 backend), .NET SDK 10.0.403+
-(same as `install.ps1`), an NVIDIA GPU with 24 GB VRAM for `qwen3.8-27b`
+Prerequisites: Windows 11, .NET SDK 10.0.403+ (same as `install.ps1`), winget
+(`setup` uses it to install Foundry Local and, when missing, Docker Desktop
+with WSL 2), an NVIDIA GPU with 24 GB VRAM for `qwen3.8-27b`
 (smaller GPUs get a smaller model), and CUDA plus cuDNN on `PATH` (Foundry
 Local does not install them).
 
 ```powershell
-.\win\openmono.ps1 setup     # Foundry CLI (winget), CUDA check, agent image, start inference, doctor
+.\win\openmono.ps1 setup     # Foundry CLI and Docker Desktop (winget), CUDA check, agent image, start inference, doctor
 cd C:\path\to\project
 C:\path\to\OpenMonoAgent.ai\win\openmono.ps1 agent              # the agent TUI, sandboxed in its container
 C:\path\to\OpenMonoAgent.ai\win\openmono.ps1 agent --acp-only   # ACP on 127.0.0.1:7475 for the VS Code extension
@@ -23,7 +24,7 @@ C:\path\to\OpenMonoAgent.ai\win\openmono.ps1 agent --acp-only   # ACP on 127.0.0
 
 | Command | What it does |
 | --- | --- |
-| `setup` | Installs or checks prerequisites, builds `openmono-win` and the agent image, starts inference, runs `doctor` |
+| `setup` | Installs or checks prerequisites (Foundry Local; Docker Desktop and WSL 2 when missing, then starts Docker Desktop and waits for its engine), builds `openmono-win` and the agent image, starts inference, runs `doctor`. Prints numbered steps for what only you can finish (restart, first-launch agreement, sign-out) |
 | `start` | Adopts a running Foundry daemon or starts one on 7474, loads the model for this GPU |
 | `stop` | Stops Foundry only if OpenMono started it (`--force` to override). `--agent` or `--all` also removes agent containers |
 | `status` | Inference endpoint, served models, and agent containers |

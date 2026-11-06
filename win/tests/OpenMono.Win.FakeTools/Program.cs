@@ -25,6 +25,12 @@ switch (name)
         return 0;
     case "docker":
         return Docker(args);
+    case "docker desktop":
+        return DockerDesktop();
+    case "winget":
+        return Winget(args);
+    case "wsl":
+        return Wsl(args);
     case "server":
         await Server(int.Parse(args.Length > 0 ? args[0] : "7474", System.Globalization.CultureInfo.InvariantCulture));
         return 0;
@@ -55,8 +61,34 @@ static int Foundry(string command)
 
 static int Docker(string[] args)
 {
+    // FAKE_DOCKER_ENGINE names a file that exists while the engine runs;
+    // unset means always running.
     if (args.Length > 0 && args[0] == "info")
     {
+        var engine = Environment.GetEnvironmentVariable("FAKE_DOCKER_ENGINE");
+        if (!string.IsNullOrEmpty(engine) && !File.Exists(engine))
+        {
+            Console.Error.WriteLine("error during connect: open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified.");
+            return 1;
+        }
+
+        if (args.Contains("--format"))
+        {
+            Console.WriteLine("linux");
+        }
+
+        return 0;
+    }
+
+    if (args.Length > 0 && args[0] == "--version")
+    {
+        Console.WriteLine("Docker version 27.5.1, build fake");
+        return 0;
+    }
+
+    if (args.Length > 0 && args[0] == "version")
+    {
+        Console.WriteLine("27.5.1");
         return 0;
     }
 
@@ -75,6 +107,69 @@ static int Docker(string[] args)
     }
 
     return 0;
+}
+
+// Brings the fake engine up after a delay, so callers must wait and re-check.
+static int DockerDesktop()
+{
+    var engine = Environment.GetEnvironmentVariable("FAKE_DOCKER_ENGINE");
+    if (!string.IsNullOrEmpty(engine))
+    {
+        Thread.Sleep(3000);
+        File.WriteAllText(engine, "running");
+    }
+
+    return 0;
+}
+
+// `winget install --id Docker.DockerDesktop` lays out the real install shape
+// under OPENMONO_DOCKER_DESKTOP_DIR: Docker Desktop.exe and resources\bin\docker.exe.
+static int Winget(string[] args)
+{
+    if (args.Length > 0 && args[0] == "install" && args.Contains("Docker.DockerDesktop"))
+    {
+        var dir = Environment.GetEnvironmentVariable("OPENMONO_DOCKER_DESKTOP_DIR");
+        if (string.IsNullOrEmpty(dir))
+        {
+            Console.Error.WriteLine("FakeTool: OPENMONO_DOCKER_DESKTOP_DIR is not set.");
+            return 1;
+        }
+
+        StageAs(dir, "Docker Desktop");
+        StageAs(Path.Combine(dir, "resources", "bin"), "docker");
+        Console.WriteLine("Successfully installed");
+    }
+
+    return 0;
+}
+
+static void StageAs(string dir, string name)
+{
+    Directory.CreateDirectory(dir);
+    foreach (var file in Directory.GetFiles(AppContext.BaseDirectory, "FakeTool.*"))
+    {
+        File.Copy(file, Path.Combine(dir, Path.GetFileName(file)), overwrite: true);
+    }
+
+    var self = Environment.ProcessPath!;
+    File.Copy(self, Path.Combine(dir, name + Path.GetExtension(self)), overwrite: true);
+}
+
+// FAKE_WSL_STATE names a file that exists once WSL is installed; unset means installed.
+static int Wsl(string[] args)
+{
+    var state = Environment.GetEnvironmentVariable("FAKE_WSL_STATE");
+    if (args.Contains("--install"))
+    {
+        if (!string.IsNullOrEmpty(state))
+        {
+            File.WriteAllText(state, "installed");
+        }
+
+        return 0;
+    }
+
+    return string.IsNullOrEmpty(state) || File.Exists(state) ? 0 : 1;
 }
 
 // Minimal OpenAI-compatible stand-in: lists one served model and refuses
