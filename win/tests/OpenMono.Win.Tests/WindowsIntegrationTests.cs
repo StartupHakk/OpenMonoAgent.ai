@@ -8,35 +8,32 @@ namespace OpenMono.Win.Tests;
 public sealed class WindowsImagePolicyTests
 {
     [Fact]
-    public void TextTurnRoutesToTarget()
+    public void TextTurnUsesTheServedModel()
     {
-        var route = WindowsImagePolicy.RouteImageTurn(
-            hasImages: false, "qwen3.8-27b", null, "qwen2.5-vl-7b");
+        var route = WindowsImagePolicy.RouteImageTurn(hasImages: false, "qwen3.8-27b", null);
 
         route.ModelAlias.Should().Be("qwen3.8-27b");
     }
 
     [Fact]
-    public void RequireVisionModelReturnsRoutedModel()
+    public void RequireVisionModelReturnsTheServedModel()
     {
-        var route = FoundryVisionRouter.SelectModelForTurn(
-            true, "qwen3.8-27b", "qwen2.5-vl-7b",
-            new VisionProbeResult(false, 400, "qwen3.8-27b", "no images"), "qwen2.5-vl-7b");
+        var route = WindowsImagePolicy.RouteImageTurn(
+            true, "qwen3.5-9b", new VisionProbeResult(true, 200, "qwen3.5-9b", "ok"));
 
-        WindowsImagePolicy.RequireVisionModel(route, "qwen2.5-vl-7b").Should().Be("qwen2.5-vl-7b");
+        WindowsImagePolicy.RequireVisionModel(route).Should().Be("qwen3.5-9b");
     }
 
     [Fact]
     public void RequireVisionModelThrowsWithRecoverySteps()
     {
-        var route = FoundryVisionRouter.SelectModelForTurn(
-            true, "qwen3.8-27b", "qwen2.5-vl-7b",
-            new VisionProbeResult(false, 400, "qwen3.8-27b", "no images"), null);
+        var route = WindowsImagePolicy.RouteImageTurn(
+            true, "qwen3.8-27b", new VisionProbeResult(false, 400, "qwen3.8-27b", "no images"));
 
-        var act = () => WindowsImagePolicy.RequireVisionModel(route, "qwen2.5-vl-7b");
+        var act = () => WindowsImagePolicy.RequireVisionModel(route);
 
         act.Should().Throw<InvalidOperationException>()
-            .WithMessage("*foundry model load qwen2.5-vl-7b*vision_enabled*");
+            .WithMessage("*NOT sent*only qwen3.8-27b*vision_enabled*");
     }
 }
 

@@ -44,6 +44,11 @@ foreach ($prefix in $wanted) {
   }
 }
 
-Write-Host '[openmono] --- VRAM guidance ---'
-Write-Host '[openmono] Qwen3.8-27B needs 24 GB dedicated VRAM (64K context; 32 GB+ for up to 262K).'
-Write-Host '[openmono] Below 24 GB the host picks a smaller catalog model and tells you why.'
+# Keep in step with FoundryModelLadder.cs (a unit test compares them).
+Write-Host '[openmono] --- VRAM guidance (one model per machine) ---'
+Write-Host '[openmono]   24 GB and up  qwen3.8-27b   (always; 64K context, 32 GB+ for up to 262K)'
+Write-Host '[openmono]   12 GB         qwen3.5-9b    (text and images)'
+Write-Host '[openmono]   8 GB          qwen3.5-4b    (text and images)'
+Write-Host '[openmono]   4 GB          qwen3.5-2b    (text and images)'
+Write-Host '[openmono]   under 4 GB    qwen3.5-0.8b  (last resort)'
+Write-Host '[openmono] Aliases are checked against https://foundrylocal.ai/api/models before anything downloads.'

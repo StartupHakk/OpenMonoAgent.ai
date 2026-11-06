@@ -51,7 +51,7 @@ static int Foundry(string command)
             Console.WriteLine("Local Endpoint: http://127.0.0.1:7474");
             return 0;
         case "model list --output json":
-            Console.WriteLine("""[{"alias":"qwen3.8-27b"},{"alias":"qwen3-4b"},{"alias":"qwen2.5-vl-7b"}]""");
+            Console.WriteLine("""[{"alias":"qwen3.8-27b"},{"alias":"qwen3.5-9b"},{"alias":"qwen3.5-4b"},{"alias":"qwen3.5-2b"},{"alias":"qwen3.5-0.8b"}]""");
             return 0;
         default:
             Console.WriteLine("ok");
@@ -173,7 +173,9 @@ static int Wsl(string[] args)
 }
 
 // Minimal OpenAI-compatible stand-in: lists one served model and refuses
-// image parts, like a text-only build.
+// image parts, like a text-only build. Also answers the Foundry catalog API
+// (POST /api/models) in two pages linked by continuationToken, and appends
+// each catalog request body to FAKE_API_LOG.
 static async Task Server(int port)
 {
     var listener = new TcpListener(IPAddress.Loopback, port);
@@ -196,7 +198,9 @@ static async Task Respond(NetworkStream stream)
 {
     var request = await ReadRequestAsync(stream);
     var (status, body) = request.StartsWith("GET /v1/models", StringComparison.Ordinal)
-        ? (200, """{"data":[{"id":"qwen3.8-27b-instruct-cuda-gpu:1"}]}""")
+        ? (200, """{"data":[{"id":"qwen3.8-27b-cuda-gpu:1"}]}""")
+        : request.StartsWith("POST /api/models", StringComparison.Ordinal)
+            ? (200, CatalogPage(request))
         : request.StartsWith("POST /v1/chat/completions", StringComparison.Ordinal)
             ? (request.Contains("image_url", StringComparison.Ordinal)
                 ? (400, """{"error":"image input not supported"}""")
@@ -207,6 +211,48 @@ static async Task Respond(NetworkStream stream)
         $"HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {payload.Length}\r\nConnection: close\r\n\r\n");
     await stream.WriteAsync(head);
     await stream.WriteAsync(payload);
+}
+
+static string CatalogPage(string request)
+{
+    var apiLog = Environment.GetEnvironmentVariable("FAKE_API_LOG");
+    var requestBody = request[(request.IndexOf("\r\n\r\n", StringComparison.Ordinal) + 4)..];
+    if (!string.IsNullOrEmpty(apiLog))
+    {
+        File.AppendAllText(apiLog, requestBody + Environment.NewLine);
+    }
+
+    static object Model(string alias, string variant, string task, string inputs, long bytes) => new
+    {
+        annotations = new { tags = new { alias, task, inputModalities = inputs, supportsToolCalling = "true", contextLength = "262144" } },
+        properties = new
+        {
+            id = variant,
+            variantInfo = new { variantMetadata = new { device = "gpu", executionProvider = "CUDAExecutionProvider", fileSizeBytes = bytes, vRamFootprintBytes = bytes } },
+        },
+    };
+
+    var page = requestBody.Contains("\"continuationToken\":\"fake-page-2\"", StringComparison.Ordinal)
+        ? new
+        {
+            value = new[]
+            {
+                Model("qwen3.5-4b", "qwen3.5-4b-cuda-gpu:4", "vision-language-chat", "text,image", 4402341478),
+                Model("qwen3.5-2b", "qwen3.5-2b-cuda-gpu:4", "vision-language-chat", "text,image", 3113851289),
+                Model("qwen3.5-0.8b", "qwen3.5-0.8b-cuda-gpu:4", "vision-language-chat", "text,image", 1503238553),
+            },
+            continuationToken = (string?)null,
+        }
+        : new
+        {
+            value = new[]
+            {
+                Model("qwen3.8-27b", "qwen3.8-27b-cuda-gpu:1", "coding", "text", 19219982336),
+                Model("qwen3.5-9b", "qwen3.5-9b-cuda-gpu:4", "vision-language-chat", "text,image", 7516192768),
+            },
+            continuationToken = (string?)"fake-page-2",
+        };
+    return System.Text.Json.JsonSerializer.Serialize(page);
 }
 
 static async Task<string> ReadRequestAsync(NetworkStream stream)

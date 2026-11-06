@@ -41,6 +41,12 @@ public static class LauncherCli
             case "diag":
                 return await DiagAsync(deps, parsed, stdout, ct);
 
+            case "catalog":
+                return await CatalogListAsync(deps, parsed, stdout, stderr, ct);
+
+            case "catalog check":
+                return await CatalogCheckAsync(deps, parsed, stdout, ct);
+
             case "help":
                 stdout.WriteLine(Usage);
                 return 0;
@@ -89,7 +95,122 @@ public static class LauncherCli
         + "openmono-win inference status [--json]\n"
         + "openmono-win agent-plan --workdir DIR --compose FILE [--vision] [--model ALIAS] [--no-git-auth] -- <agent args>\n"
         + "openmono-win doctor [--workdir DIR] [--json]\n"
-        + "openmono-win diag [--out FILE.zip] [--workdir DIR]";
+        + "openmono-win diag [--out FILE.zip] [--workdir DIR]\n"
+        + "openmono-win catalog [--device cuda|cpu|webgpu] [--refresh] [--json]\n"
+        + "openmono-win catalog check [--refresh] [--strict] [--json]";
+
+    private static async Task<int> CatalogListAsync(LauncherDeps deps, LauncherArgs parsed, TextWriter stdout, TextWriter stderr, CancellationToken ct)
+    {
+        FoundryCatalogDevice? device = parsed.Value("--device")?.ToLowerInvariant() switch
+        {
+            null or "cuda" or "gpu" => FoundryCatalogDevice.Cuda,
+            "cpu" => FoundryCatalogDevice.Cpu,
+            "webgpu" => FoundryCatalogDevice.WebGpu,
+            _ => null,
+        };
+        if (device is null)
+        {
+            stderr.WriteLine($"Unknown --device {parsed.Value("--device")} (use cuda, cpu, or webgpu).");
+            return 2;
+        }
+
+        var web = await FoundryWebCatalogClient.FromEnvironment(deps.Http, deps.GetEnv, deps.HomeDir)
+            .ListAsync(device.Value, parsed.Flag("--refresh"), ct: ct);
+        if (parsed.Flag("--json"))
+        {
+            stdout.WriteLine(JsonSerializer.Serialize(
+                new { source = web.Source, ok = web.Ok, error = web.Error, from_cache = web.FromCache, models = web.Models },
+                InferenceStateStore.JsonOptions));
+            return web.Ok ? 0 : 1;
+        }
+
+        if (!web.Ok)
+        {
+            stderr.WriteLine($"Foundry catalog: {web.Source} unreachable ({web.Error}).");
+            return 1;
+        }
+
+        stdout.WriteLine($"Foundry Local catalog ({FoundryWebCatalogClient.ModelsPageUrl}), {device.Value} variants, {web.Models.Count} models:");
+        foreach (var m in web.Models.OrderBy(m => m.Alias, StringComparer.OrdinalIgnoreCase))
+        {
+            var ladder = FoundryModelLadder.Find(m.Alias) is { } rung ? $"  [ladder: {rung.VramClass}]" : "";
+            stdout.WriteLine($"  {m.Alias,-32} {CatalogCheck.Size(m.VramBytes),-16} {m.Task ?? "-",-28} "
+                + $"input {string.Join("+", m.InputModalities),-12} tools {(m.SupportsToolCalling == true ? "yes" : "no"),-3}  "
+                + $"ctx {m.ContextLength?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-"}{ladder}");
+        }
+
+        return 0;
+    }
+
+    // Exit 1 when a catalog answered but nothing this machine may serve is in
+    // it; with --strict also when the public catalog is unreachable or lacks
+    // any ladder alias.
+    private static async Task<int> CatalogCheckAsync(LauncherDeps deps, LauncherArgs parsed, TextWriter stdout, CancellationToken ct)
+    {
+        var check = await CatalogCheck.RunAsync(deps, parsed.Flag("--refresh"), ct);
+        var strict = parsed.Flag("--strict");
+        var failed = check.Unusable
+            || (strict && (check.View.Web?.Ok != true || check.MissingFromPublic.Count > 0));
+
+        if (parsed.Flag("--json"))
+        {
+            stdout.WriteLine(JsonSerializer.Serialize(new
+            {
+                ok = !failed,
+                source = check.View.Source,
+                public_catalog = new { url = check.View.Web?.Source, ok = check.View.Web?.Ok, error = check.View.Web?.Error, count = check.View.WebModels.Count },
+                local_catalog_count = check.View.LocalAliases.Count,
+                ladder = check.Rungs.Select(r => new
+                {
+                    alias = r.Rung.Alias,
+                    vram_class = r.Rung.VramClass,
+                    in_public_catalog = r.InPublicCatalog,
+                    in_local_catalog = r.InLocalCatalog,
+                    size_bytes = r.Metadata?.VramBytes,
+                    input = r.Metadata?.InputModalities,
+                }),
+                gpu = check.Gpu?.Name,
+                vram_bytes = check.Gpu?.DedicatedVramBytes,
+                pick = check.Pick?.ModelAlias,
+                reason = check.Pick?.Reason,
+                error = check.Error,
+            }, InferenceStateStore.JsonOptions));
+            return failed ? 1 : 0;
+        }
+
+        var web = check.View.Web!;
+        stdout.WriteLine("Foundry catalog: " + CatalogCheck.PublicSummary(web));
+        stdout.WriteLine(check.View.HasLocal
+            ? $"Local Foundry catalog (foundry model list): {check.View.LocalAliases.Count} aliases; it decides what this install can load."
+            : "Local Foundry catalog: not available (Foundry Local not installed yet); using the public catalog.");
+        stdout.WriteLine($"Windows model ladder (checked {FoundryModelLadder.CatalogCheckedOn}; one model per machine):");
+        foreach (var r in check.Rungs)
+        {
+            var present = check.View.HasLocal ? r.InLocalCatalog : r.InPublicCatalog;
+            var tag = present switch { true => "[ ok ]", false => "[MISSING]", null => "[ ?? ]" };
+            var detail = r.Metadata is { } m
+                ? $"{m.Task}, input {string.Join("+", m.InputModalities)}, {CatalogCheck.Size(m.VramBytes)}"
+                : r.Rung.VisionLanguage ? "vision-language" : "text";
+            var publicNote = r.InPublicCatalog == false && check.View.HasLocal ? " (not in the public catalog)" : "";
+            stdout.WriteLine($"  {tag,-9} {r.Rung.Alias,-14} {r.Rung.VramClass + " class",-17} {detail}{publicNote}");
+        }
+
+        var gpu = check.Gpu is { } g ? $"{g.Name}, {g.DedicatedVramGiB:F0} GB" : "no NVIDIA GPU detected";
+        if (check.Pick is { } pick)
+        {
+            stdout.WriteLine($"This machine ({gpu}): {pick.ModelAlias}. {pick.Reason}");
+        }
+        else if (check.Error is not null)
+        {
+            stdout.WriteLine($"This machine ({gpu}): {check.Error}");
+        }
+        else
+        {
+            stdout.WriteLine($"This machine ({gpu}): {check.PreferredRung.Alias} (not validated: no catalog answered; `foundry model load` checks it).");
+        }
+
+        return failed ? 1 : 0;
+    }
 
     private static int Report(UpResult result, bool json, TextWriter stdout, TextWriter stderr)
     {
@@ -287,7 +408,7 @@ public sealed class LauncherArgs
 {
     private static readonly HashSet<string> ValueKeys = new(StringComparer.Ordinal)
     {
-        "--model", "--port", "--workdir", "--compose", "--out",
+        "--model", "--port", "--workdir", "--compose", "--out", "--device",
     };
 
     private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
@@ -324,8 +445,8 @@ public sealed class LauncherArgs
 
         if (words.Count > 0)
         {
-            parsed.Command = words[0] == "inference" && words.Count > 1
-                ? $"inference {words[1]}"
+            parsed.Command = words[0] is "inference" or "catalog" && words.Count > 1
+                ? $"{words[0]} {words[1]}"
                 : words[0];
         }
 

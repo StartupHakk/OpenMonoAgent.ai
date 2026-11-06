@@ -1,0 +1,192 @@
+{
+ "totalCount": 10,
+ "value": [
+  {
+   "entityId": "azureml://registries/b98c40bc-36d6-4175-b131-bad4502fe1a3/type/models/objectId/qwen3.5-4b-cuda-gpu/version/4",
+   "kind": "Versioned",
+   "type": "models",
+   "annotations": {
+    "archived": false,
+    "labels": [
+     "default",
+     "latest",
+     "invisibleLatest"
+    ],
+    "tags": {
+     "alias": "qwen3.5-4b",
+     "task": "vision-language-chat",
+     "inputModalities": "text,image",
+     "outputModalities": "text",
+     "supportsToolCalling": "true",
+     "contextLength": "262144",
+     "license": "apache-2.0"
+    },
+    "name": "qwen3.5-4b-cuda-gpu"
+   },
+   "properties": {
+    "id": "qwen3.5-4b-cuda-gpu:4",
+    "name": "qwen3.5-4b-cuda-gpu",
+    "version": 4,
+    "variantInfo": {
+     "variantMetadata": {
+      "modelType": "ONNX",
+      "device": "gpu",
+      "executionProvider": "CUDAExecutionProvider",
+      "fileSizeBytes": 4384866247,
+      "vRamFootprintBytes": 4384866247
+     }
+    }
+   }
+  },
+  {
+   "entityId": "azureml://registries/b98c40bc-36d6-4175-b131-bad4502fe1a3/type/models/objectId/qwen3.5-2b-cuda-gpu/version/4",
+   "kind": "Versioned",
+   "type": "models",
+   "annotations": {
+    "archived": false,
+    "labels": [
+     "default",
+     "latest",
+     "invisibleLatest"
+    ],
+    "tags": {
+     "alias": "qwen3.5-2b",
+     "task": "vision-language-chat",
+     "inputModalities": "text,image",
+     "outputModalities": "text",
+     "supportsToolCalling": "true",
+     "contextLength": "262144",
+     "license": "apache-2.0"
+    },
+    "name": "qwen3.5-2b-cuda-gpu"
+   },
+   "properties": {
+    "id": "qwen3.5-2b-cuda-gpu:4",
+    "name": "qwen3.5-2b-cuda-gpu",
+    "version": 4,
+    "variantInfo": {
+     "variantMetadata": {
+      "modelType": "ONNX",
+      "device": "gpu",
+      "executionProvider": "CUDAExecutionProvider",
+      "fileSizeBytes": 3071007627,
+      "vRamFootprintBytes": 3071007627
+     }
+    }
+   }
+  },
+  {
+   "entityId": "azureml://registries/b98c40bc-36d6-4175-b131-bad4502fe1a3/type/models/objectId/qwen3.5-0.8b-cuda-gpu/version/4",
+   "kind": "Versioned",
+   "type": "models",
+   "annotations": {
+    "archived": false,
+    "labels": [
+     "default",
+     "latest",
+     "invisibleLatest"
+    ],
+    "tags": {
+     "alias": "qwen3.5-0.8b",
+     "task": "vision-language-chat",
+     "inputModalities": "text,image",
+     "outputModalities": "text",
+     "supportsToolCalling": "true",
+     "contextLength": "262144",
+     "license": "apache-2.0"
+    },
+    "name": "qwen3.5-0.8b-cuda-gpu"
+   },
+   "properties": {
+    "id": "qwen3.5-0.8b-cuda-gpu:4",
+    "name": "qwen3.5-0.8b-cuda-gpu",
+    "version": 4,
+    "variantInfo": {
+     "variantMetadata": {
+      "modelType": "ONNX",
+      "device": "gpu",
+      "executionProvider": "CUDAExecutionProvider",
+      "fileSizeBytes": 1555281448,
+      "vRamFootprintBytes": 1555281448
+     }
+    }
+   }
+  },
+  {
+   "entityId": "azureml://registries/b98c40bc-36d6-4175-b131-bad4502fe1a3/type/models/objectId/qwen3.5-2b-text-cuda-gpu/version/1",
+   "kind": "Versioned",
+   "type": "models",
+   "annotations": {
+    "archived": false,
+    "labels": [
+     "default",
+     "latest",
+     "invisibleLatest"
+    ],
+    "tags": {
+     "alias": "qwen3.5-2b-text",
+     "task": "chat-completion",
+     "inputModalities": "text",
+     "outputModalities": "text",
+     "supportsToolCalling": "true",
+     "contextLength": "262144",
+     "license": "apache-2.0"
+    },
+    "name": "qwen3.5-2b-text-cuda-gpu"
+   },
+   "properties": {
+    "id": "qwen3.5-2b-text-cuda-gpu:1",
+    "name": "qwen3.5-2b-text-cuda-gpu",
+    "version": 1,
+    "variantInfo": {
+     "variantMetadata": {
+      "modelType": "ONNX",
+      "device": "gpu",
+      "executionProvider": "CUDAExecutionProvider",
+      "fileSizeBytes": 1417129106,
+      "vRamFootprintBytes": 1417129106
+     }
+    }
+   }
+  },
+  {
+   "entityId": "azureml://registries/b98c40bc-36d6-4175-b131-bad4502fe1a3/type/models/objectId/qwen2.5-coder-7b-instruct-cuda-gpu/version/4",
+   "kind": "Versioned",
+   "type": "models",
+   "annotations": {
+    "archived": false,
+    "labels": [
+     "default",
+     "latest",
+     "invisibleLatest"
+    ],
+    "tags": {
+     "alias": "qwen2.5-coder-7b",
+     "task": "chat-completion",
+     "inputModalities": "text",
+     "outputModalities": "text",
+     "supportsToolCalling": "true",
+     "contextLength": "32768",
+     "license": "apache-2.0"
+    },
+    "name": "qwen2.5-coder-7b-instruct-cuda-gpu"
+   },
+   "properties": {
+    "id": "qwen2.5-coder-7b-instruct-cuda-gpu:4",
+    "name": "qwen2.5-coder-7b-instruct-cuda-gpu",
+    "version": 4,
+    "variantInfo": {
+     "variantMetadata": {
+      "modelType": "ONNX",
+      "device": "gpu",
+      "executionProvider": "CUDAExecutionProvider",
+      "fileSizeBytes": 5078798827,
+      "vRamFootprintBytes": 5078996910
+     }
+    }
+   }
+  }
+ ],
+ "nextSkip": null,
+ "continuationToken": null
+}

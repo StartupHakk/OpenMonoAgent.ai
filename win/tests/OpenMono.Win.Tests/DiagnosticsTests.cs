@@ -30,7 +30,7 @@ public sealed class DiagnosticsRedactorTests
     [Fact]
     public void OrdinaryTextIsKept()
     {
-        const string line = "Server healthy on http://127.0.0.1:7474. Serving qwen3.8-27b-instruct-cuda-gpu:1.";
+        const string line = "Server healthy on http://127.0.0.1:7474. Serving qwen3.8-27b-cuda-gpu:1.";
 
         DiagnosticsRedactor.RedactText(line, Home).Should().Be(line);
     }

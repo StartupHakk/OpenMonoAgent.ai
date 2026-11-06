@@ -15,7 +15,6 @@ public sealed record InferenceState(
     int? ContextTokens,
     bool? VisionEnabled,
     bool? VisionProbeAccepted,
-    string? VisionFallbackAlias,
     bool StartedByUs,
     string UpdatedUtc)
 {

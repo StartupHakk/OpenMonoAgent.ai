@@ -28,20 +28,24 @@ public sealed class FoundryRig : IDisposable
     private readonly HashSet<string> _loaded = new(StringComparer.OrdinalIgnoreCase);
     private bool _serving;
 
-    public FoundryRig(long vramGiB = 24, bool imagesAccepted = false, bool alreadyServing = false)
+    public static readonly string[] LadderCatalog =
+        ["qwen3.8-27b", "qwen3.5-9b", "qwen3.5-4b", "qwen3.5-2b", "qwen3.5-0.8b", "qwen3-8b"];
+
+    public FoundryRig(long vramGiB = 24, bool imagesAccepted = false, bool alreadyServing = false, string[]? catalog = null)
     {
         Home = Path.Combine(Path.GetTempPath(), "omw-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Path.Combine(Home, ".openmono"));
         _serving = alreadyServing;
 
         Runner.Respond(Exe, "--version", 0, "foundry 0.13.0\n");
+        var aliases = catalog ?? LadderCatalog;
         Runner.Respond(Exe, "model list --output json", 0,
-            """[{"alias":"qwen3.8-27b"},{"alias":"qwen3-4b"},{"alias":"qwen2.5-vl-7b"}]""");
+            JsonSerializer.Serialize(aliases.Select(a => new { alias = a })));
         Runner.Respond(Exe, "server status", 1, "", "not running");
         Runner.Respond(Exe, "server start --port 7474 --idle-timeout 0", 0, "started\n");
         Runner.OnCall(Exe, "server start --port 7474 --idle-timeout 0", () => _serving = true);
         Runner.Respond(Exe, "server stop", 0, "stopped\n");
-        foreach (var alias in new[] { "qwen3.8-27b", "qwen3-4b", "qwen2.5-vl-7b" })
+        foreach (var alias in LadderCatalog)
         {
             Runner.Respond(Exe, $"model load {alias}", 0, "loaded\n");
             Runner.OnCall(Exe, $"model load {alias}", () => _loaded.Add(alias));
@@ -49,7 +53,7 @@ public sealed class FoundryRig : IDisposable
 
         Http.RespondJson("/v1/models", () => JsonSerializer.Serialize(new
         {
-            data = _loaded.Select(a => new { id = a + "-instruct-cuda-gpu:1" }),
+            data = _loaded.Select(a => new { id = a + "-cuda-gpu:1" }),
         }));
         Http.Respond("/v1/chat/completions", imagesAccepted
             ? FakeHttpHandler.Json("""{"choices":[{"message":{"content":"ok"}}]}""")
@@ -110,8 +114,8 @@ public sealed class InferenceOrchestratorTests
         state.Backend.Should().Be(InferenceState.FoundryBackend);
         state.Endpoint.Should().Be("http://127.0.0.1:7474");
         state.ModelAlias.Should().Be("qwen3.8-27b");
-        state.ServedModelId.Should().Be("qwen3.8-27b-instruct-cuda-gpu:1");
-        state.AgentModel.Should().Be("qwen3.8-27b-instruct-cuda-gpu:1");
+        state.ServedModelId.Should().Be("qwen3.8-27b-cuda-gpu:1");
+        state.AgentModel.Should().Be("qwen3.8-27b-cuda-gpu:1");
         state.ContextTokens.Should().Be(65536);
         state.StartedByUs.Should().BeTrue();
         orchestrator.Store.Load().Should().BeEquivalentTo(state);
@@ -127,15 +131,75 @@ public sealed class InferenceOrchestratorTests
         result.State!.ContextTokens.Should().Be(262144);
     }
 
-    [Fact]
-    public async Task LowVramFallsBackToSmallerModel()
+    [Theory]
+    [InlineData(12, "qwen3.5-9b")]
+    [InlineData(8, "qwen3.5-4b")]
+    [InlineData(4, "qwen3.5-2b")]
+    [InlineData(2, "qwen3.5-0.8b")]
+    public async Task SmallerCardsServeTheQwen35Ladder(long vramGiB, string alias)
     {
-        using var rig = new FoundryRig(vramGiB: 12);
+        using var rig = new FoundryRig(vramGiB: vramGiB, imagesAccepted: true);
 
         var result = await new InferenceOrchestrator(rig.Deps()).UpAsync(new UpOptions());
 
-        result.State!.ModelAlias.Should().Be("qwen3-4b");
+        result.Ok.Should().BeTrue(result.Error);
+        result.State!.ModelAlias.Should().Be(alias);
+        result.State.ServedModelId.Should().Be(alias + "-cuda-gpu:1");
+        result.State.VisionEnabled.Should().BeTrue();
         result.Log.Should().Contain(l => l.Contains("below the 24 GB floor"));
+        rig.Runner.Calls.Where(c => c.Arguments.StartsWith("model load", StringComparison.Ordinal))
+            .Select(c => c.Arguments).Should().Equal($"model load {alias}");
+    }
+
+    [Fact]
+    public async Task MissingRungStepsDownToTheNextQwen35Model()
+    {
+        using var rig = new FoundryRig(vramGiB: 12, catalog: ["qwen3.8-27b", "qwen3.5-4b", "qwen3.5-2b"]);
+
+        var result = await new InferenceOrchestrator(rig.Deps()).UpAsync(new UpOptions());
+
+        result.State!.ModelAlias.Should().Be("qwen3.5-4b");
+        result.Log.Should().Contain(l => l.Contains("Not in the Foundry catalog: qwen3.5-9b"));
+    }
+
+    [Fact]
+    public async Task TwentyFourGbWithoutTheTargetInTheCatalogFailsAndDownloadsNothing()
+    {
+        using var rig = new FoundryRig(vramGiB: 24, catalog: ["qwen3.5-9b", "qwen3.5-4b"]);
+
+        var result = await new InferenceOrchestrator(rig.Deps()).UpAsync(new UpOptions());
+
+        result.Ok.Should().BeFalse();
+        result.Error.Should().Contain("serves only qwen3.8-27b").And.Contain("nothing was downloaded");
+        rig.Runner.Calls.Should().NotContain(c => c.Arguments.StartsWith("model load", StringComparison.Ordinal));
+        rig.Runner.Calls.Should().NotContain(c => c.Arguments.StartsWith("server start", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ModelOverrideOutsideTheCatalogIsRefused()
+    {
+        using var rig = new FoundryRig();
+
+        var result = await new InferenceOrchestrator(rig.Deps()).UpAsync(new UpOptions(ModelOverride: "qwen2.5-vl-7b"));
+
+        result.Ok.Should().BeFalse();
+        result.Error.Should().Contain("not in the Foundry catalog").And.Contain("https://foundrylocal.ai/models");
+        rig.Runner.Calls.Should().NotContain(c => c.Arguments.StartsWith("model load", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task EmptyLocalCatalogIsValidatedAgainstThePublicCatalog()
+    {
+        using var rig = new FoundryRig(vramGiB: 12, alreadyServing: true, catalog: []);
+        rig.Runner.Respond(FoundryRig.Exe, "model list", 0, "");
+        rig.Http.RespondJson("/api/models", () => CatalogFixtures.Page2Only);
+
+        var result = await new InferenceOrchestrator(rig.Deps()).UpAsync(new UpOptions());
+
+        result.Ok.Should().BeTrue(result.Error);
+        result.State!.ModelAlias.Should().Be("qwen3.5-4b");
+        result.Log.Should().Contain(l => l.Contains("Not in the Foundry catalog: qwen3.5-9b"));
+        result.Log.Should().Contain(l => l.StartsWith("qwen3.5-4b: about ", StringComparison.Ordinal) && l.Contains("GB download"));
     }
 
     [Fact]
@@ -146,8 +210,8 @@ public sealed class InferenceOrchestratorTests
         var result = await new InferenceOrchestrator(rig.Deps()).UpAsync(new UpOptions());
 
         result.State!.VisionEnabled.Should().BeFalse();
-        result.State.VisionFallbackAlias.Should().Be("qwen2.5-vl-7b");
-        result.Log.Should().Contain(l => l.StartsWith("Images:") && l.Contains("openmono agent --vision"));
+        result.State.ModelAlias.Should().Be("qwen3.8-27b");
+        result.Log.Should().Contain(l => l.StartsWith("Images:") && l.Contains("does not load a second model"));
     }
 
     [Fact]
@@ -171,30 +235,34 @@ public sealed class InferenceOrchestratorTests
         result.State!.VisionEnabled.Should().BeFalse();
     }
 
-    [Fact]
-    public async Task VisionSessionServesVisionModelWithoutPersisting()
+    [Theory]
+    [InlineData(24, "qwen3.8-27b")]
+    [InlineData(12, "qwen3.5-9b")]
+    public async Task VisionSessionServesTheSameModel(long vramGiB, string alias)
     {
-        using var rig = new FoundryRig(imagesAccepted: true);
+        using var rig = new FoundryRig(vramGiB: vramGiB, imagesAccepted: true);
         var orchestrator = new InferenceOrchestrator(rig.Deps());
 
         var result = await orchestrator.UpAsync(new UpOptions(Vision: true));
 
         result.Ok.Should().BeTrue(result.Error);
-        result.State!.ModelAlias.Should().Be("qwen2.5-vl-7b");
-        result.State.AgentModel.Should().Be("qwen2.5-vl-7b-instruct-cuda-gpu:1");
+        result.State!.ModelAlias.Should().Be(alias);
+        result.State.AgentModel.Should().Be(alias + "-cuda-gpu:1");
         result.State.VisionEnabled.Should().BeTrue();
-        orchestrator.Store.Load().Should().BeNull();
+        result.Log.Should().Contain(l => l.StartsWith("Vision session:"));
     }
 
     [Fact]
-    public async Task VisionSessionThatRefusesImagesFailsLoudly()
+    public async Task TwentyFourGbVisionSessionNeverLoadsASecondModel()
     {
-        using var rig = new FoundryRig(imagesAccepted: false);
+        using var rig = new FoundryRig(vramGiB: 24, imagesAccepted: false);
 
         var result = await new InferenceOrchestrator(rig.Deps()).UpAsync(new UpOptions(Vision: true));
 
         result.Ok.Should().BeFalse();
-        result.Error.Should().Contain("images were not sent");
+        result.Error.Should().Contain("images were not sent").And.Contain("does not load a second one");
+        rig.Runner.Calls.Where(c => c.Arguments.StartsWith("model load", StringComparison.Ordinal))
+            .Select(c => c.Arguments).Should().Equal("model load qwen3.8-27b");
     }
 
     [Fact]
@@ -332,6 +400,8 @@ public sealed class LauncherCliTests
     public void TwoWordInferenceCommands()
     {
         LauncherArgs.Parse(["inference", "up", "--json"]).Command.Should().Be("inference up");
+        LauncherArgs.Parse(["catalog", "check", "--strict"]).Command.Should().Be("catalog check");
+        LauncherArgs.Parse(["catalog", "--device", "cpu"]).Command.Should().Be("catalog");
         LauncherArgs.Parse([]).Command.Should().Be("help");
     }
 
@@ -355,7 +425,7 @@ public sealed class LauncherCliTests
         root.GetProperty("acp_port").GetInt32().Should().Be(7475);
         var args = root.GetProperty("docker_args").EnumerateArray().Select(e => e.GetString()).ToList();
         args.Should().Contain("127.0.0.1:7475:7475");
-        args.Should().Contain("OPENMONO_MODEL=qwen3.8-27b-instruct-cuda-gpu:1");
+        args.Should().Contain("OPENMONO_MODEL=qwen3.8-27b-cuda-gpu:1");
         args.TakeLast(2).Should().Equal("agent", "--acp-only");
         root.GetProperty("notes").EnumerateArray().Select(e => e.GetString())
             .Should().Contain(n => n!.StartsWith("Images:"));
@@ -457,7 +527,30 @@ public sealed class DoctorRunnerTests
         checks.Should().Contain(c => c.Name == "host shell" && c.Detail.Contains("powershell.exe"));
         checks.Should().Contain(c => c.Name == "container route" && c.Level == CheckLevel.Ok);
         checks.Should().Contain(c => c.Name == "acp" && c.Level == CheckLevel.Info);
+        checks.Should().Contain(c => c.Name == "model catalog" && c.Level == CheckLevel.Ok && c.Detail.StartsWith("qwen3.8-27b is in"));
         DoctorRunner.ExitCode(checks).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TwentyFourGbWithoutTheTargetModelFailsTheCatalogCheck()
+    {
+        using var rig = new FoundryRig(catalog: ["qwen3.5-9b", "qwen3.5-4b"]);
+
+        var checks = await new DoctorRunner(rig.Deps()).RunAsync(Input());
+
+        checks.Should().Contain(c => c.Name == "model catalog" && c.Level == CheckLevel.Fail
+            && c.Detail.Contains("serves only qwen3.8-27b"));
+    }
+
+    [Fact]
+    public async Task SmallerCardReportsItsQwen35Rung()
+    {
+        using var rig = new FoundryRig(vramGiB: 8);
+
+        var checks = await new DoctorRunner(rig.Deps()).RunAsync(Input());
+
+        checks.Should().Contain(c => c.Name == "model catalog" && c.Level == CheckLevel.Ok && c.Detail.StartsWith("qwen3.5-4b is in"));
+        checks.Should().Contain(c => c.Detail.Contains("below the 24 GB floor for qwen3.8-27b"));
     }
 
     [Fact]

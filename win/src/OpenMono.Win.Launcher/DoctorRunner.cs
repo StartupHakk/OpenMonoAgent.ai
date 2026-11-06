@@ -159,15 +159,19 @@ public sealed class DoctorRunner
         {
             checks.Add(new DoctorCheck("gpu", CheckLevel.Warn,
                 $"No NVIDIA GPU detected. {FoundryConstants.TargetModelAlias} needs 24 GB VRAM; "
-                    + $"{FoundryConstants.FallbackModelAlias} will be used."));
+                    + "smaller NVIDIA cards get the Qwen3.5 ladder (see `openmono catalog check`)."));
         }
         else
         {
-            var selection = ModelSelector.Select(nvidia.DedicatedVramBytes, FoundryConstants.TargetModelAlias);
+            var rung = ModelSelector.RungFor(nvidia.DedicatedVramBytes);
+            var isTarget = ReferenceEquals(rung, FoundryModelLadder.Target);
             checks.Add(new DoctorCheck("gpu",
-                selection.IsTargetModel ? CheckLevel.Ok : CheckLevel.Warn,
-                $"{nvidia.Name}, {nvidia.DedicatedVramGiB:F0} GB. {selection.Reason}"));
+                isTarget ? CheckLevel.Ok : CheckLevel.Info,
+                $"{nvidia.Name}, {nvidia.DedicatedVramGiB:F0} GB: {rung.VramClass} class, serves {rung.Alias}"
+                    + (isTarget ? "." : $" (below the 24 GB floor for {FoundryConstants.TargetModelAlias}; text and images).")));
         }
+
+        checks.Add(await ModelCatalogCheckAsync(ct));
 
         if (input.IsWindows)
         {
@@ -179,6 +183,33 @@ public sealed class DoctorRunner
                 : new DoctorCheck("cuda", nvidia is null ? CheckLevel.Info : CheckLevel.Fail,
                     string.Join(" ", cuda.Issues), cuda.Remediation));
         }
+    }
+
+    private async Task<DoctorCheck> ModelCatalogCheckAsync(CancellationToken ct)
+    {
+        var check = await CatalogCheck.RunAsync(_deps, ct: ct);
+        var web = check.View.Web!;
+        if (check.Unusable)
+        {
+            return new DoctorCheck("model catalog", CheckLevel.Fail, check.Error!,
+                $"Update Foundry Local (winget upgrade Microsoft.FoundryLocal); see {FoundryWebCatalogClient.ModelsPageUrl}");
+        }
+
+        if (!check.View.Known)
+        {
+            return new DoctorCheck("model catalog", CheckLevel.Warn,
+                CatalogCheck.PublicSummary(web) + " `foundry model load` will validate the alias.",
+                "Check the network, then: .\\win\\openmono.ps1 catalog check --refresh");
+        }
+
+        var pick = check.Pick!.ModelAlias;
+        var missing = check.MissingFromPublic;
+        return missing.Count == 0
+            ? new DoctorCheck("model catalog", CheckLevel.Ok,
+                $"{pick} is in the Foundry catalog ({check.View.Source}). {CatalogCheck.PublicSummary(web)}")
+            : new DoctorCheck("model catalog", CheckLevel.Warn,
+                $"{pick} is in the Foundry catalog ({check.View.Source}), but the public catalog lacks: {string.Join(", ", missing)}.",
+                "Run: .\\win\\openmono.ps1 catalog check --refresh");
     }
 
     // The one network hop that is new on Windows: from inside the Linux

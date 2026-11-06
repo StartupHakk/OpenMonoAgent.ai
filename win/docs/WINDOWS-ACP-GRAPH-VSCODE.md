@@ -105,8 +105,6 @@ None for the launcher path. For Spencer, three optional follow-ups:
    container it starts on Windows dials its own loopback instead of Foundry.
    Until verified, run `openmono agent --acp-only` from the project folder
    and let the extension attach on 7475.
-3. Per-turn vision model routing (`inference.vision_model`), described in
-   `win/docs/VISION.md`.
 
 ## Manual check (Windows)
 

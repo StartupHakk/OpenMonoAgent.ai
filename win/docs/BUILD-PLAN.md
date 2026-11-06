@@ -26,10 +26,15 @@ otherwise unchanged in intent.
    lifecycle is a host control, the CLI covers it, and the SDK would pull a
    native runtime into CI for no gain. `SdkBackendProbe` only reports whether
    the assembly is present. Revisit if a CLI gap appears.
-2. Fallback model alias: the plan leaves the under-24-GB fallback open. The
-   scaffold uses `qwen3-4b` as a provisional constant (`FallbackModelAlias`)
-   and always resolves the real catalog spelling at runtime, so a wrong guess
-   surfaces as a clear "not in catalog" error, never a bad download.
+2. Model ladder (locked; `FoundryModelLadder`): one model per machine by
+   dedicated VRAM. 24 GB and up always serves `qwen3.8-27b`, with no second
+   model and no switch for images, `--vision`, or a missing catalog entry (it
+   fails and downloads nothing instead). Below the 24 GB floor: 12 GB
+   `qwen3.5-9b`, 8 GB `qwen3.5-4b`, 4 GB `qwen3.5-2b`, under 4 GB
+   `qwen3.5-0.8b` as the last resort; all four are Qwen3.5 vision-language
+   models. A sub-24 GB rung missing from the catalog steps down to the next
+   smaller Qwen3.5 model, and the launcher names the skipped alias. The older
+   Qwen3 and Qwen-VL aliases are not used.
 3. Endpoint host spelling: the plan binds `127.0.0.1:7474`. OMA defaults use
    `localhost:7474`. These are the same loopback interface; the Windows host
    uses the `127.0.0.1` spelling and OMA config normalization treats them as
@@ -51,7 +56,7 @@ otherwise unchanged in intent.
    already runs is adopted (on 7474, or wherever `server status` says), and
    `openmono stop` only stops a daemon OpenMono started.
 7. Served model ids: Foundry's `/v1/models` lists variant ids such as
-   `qwen3.8-27b-instruct-cuda-gpu:1`, not the alias. `FoundryModelIdResolver`
+   `qwen3.8-27b-cuda-gpu:1`, not the alias. `FoundryModelIdResolver`
    maps the alias to the served id (variant-suffix aware, GPU variant
    preferred) and the launcher passes it as `OPENMONO_MODEL`, unless
    `llm.model` is set in `settings.json`, which is respected. An empty
@@ -69,12 +74,12 @@ otherwise unchanged in intent.
     calls; `agent` runs the same `docker compose run --rm ... agent` as
     `cmd_agent_sandbox`, with `OPENMONO_ENDPOINT=http://host.docker.internal:7474`.
     Setup needs the .NET SDK 10.0.403+, the same prerequisite as `install.ps1`.
-11. Vision with a single-model agent: the agent sends every turn to one
-    model, so per-turn switching to a vision model needs an upstream change
-    (listed in `docs/VISION.md`). Until then the launcher probes the coding
-    model; when it is text-only, vision stays off (the agent warns on an
-    attached image, never drops it silently) and `openmono agent --vision`
-    starts a session on the Foundry vision alias.
+11. Vision, one model per machine: the launcher probes the served model.
+    Below 24 GB the Qwen3.5 rungs take images. On 24 GB+ `qwen3.8-27b` is
+    served regardless; when it refuses images, vision stays off (the agent
+    warns on an attached image, never drops it silently) and
+    `openmono agent --vision` fails with that explanation rather than loading
+    another model. See `docs/VISION.md`.
 12. Not yet on Windows: host mode (`openmono agent --host`, the HostBridge
     daemon runs host commands and would need a PowerShell executor), the
     clipboard image bridge, and the optional local web gateway services
@@ -118,7 +123,7 @@ Sources: Foundry Local plus Qwen3.8-27B blog (devblogs.microsoft.com/foundry), f
 ┌─────────────────────────────────────────────────────────┐
 │  win/  (Windows-only)                                   │
 │  - Foundry host: detect or install Foundry Local,       │
-│    download and load qwen3.8-27b (or a smaller fallback)│
+│    download and load qwen3.8-27b (or a Qwen3.5 rung)    │
 │    start OpenAI-compatible server on 127.0.0.1:7474     │
 │  - Agent host: run OpenMono.Cli in process with         │
 │    Windows tool overrides (PowerShell shell, clipboard, │
@@ -248,11 +253,20 @@ hardcoding a file hash.
 - A code signing certificate, only if we add a shipped installer.
 - A yes before any pull request to `main`.
 
+13. Catalog discovery: every alias is resolved against `foundry model list`
+    when Foundry is installed and against the public catalog API,
+    `POST https://foundrylocal.ai/api/models` (the filter body the
+    https://foundrylocal.ai/models page sends, `pageSize` 50, paged by
+    `continuationToken`), before anything downloads.
+    `FoundryWebCatalogClient` caches each device's answer for an hour under
+    `~/.openmono/win/` and falls back to a stale cache offline. `setup` runs
+    `openmono-win catalog check`, and `doctor` reports a model catalog check.
+    `OPENMONO_FOUNDRY_CATALOG_URL` overrides the URL (`off` disables it).
+
 ## Open questions (do not block M1)
 
 - Whether web search (SearXNG) and page fetch return as optional Windows extras after M2.
 - Whether we ever expose Foundry Local through GitHub Copilot BYOK as well, or keep the endpoint private to OMA.
-- Default fallback model when VRAM is under 24 GB.
 
 ## Build sequence for the cloud agent
 

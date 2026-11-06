@@ -1,7 +1,9 @@
 # Windows-only CI for the `win` branch. Not present on `main`.
 # Builds the win/ solution, runs the GPU-free unit tests, and parse-checks
 # the PowerShell host scripts under both PowerShell 7 and Windows
-# PowerShell 5.1. Model download and Foundry serving are never attempted.
+# PowerShell 5.1, and (non-blocking) checks the model ladder against the
+# live Foundry catalog API. Model download and Foundry serving are never
+# attempted.
 name: win
 
 on:
@@ -27,6 +29,24 @@ jobs:
         run: dotnet build win/OpenMono.Win.sln -c Release
       - name: Test win solution
         run: dotnet test win/OpenMono.Win.sln -c Release --no-build
+
+  # Live check that every ladder alias is still in the public Foundry Local
+  # catalog (https://foundrylocal.ai/api/models). Informational: a catalog
+  # change or an outage must not block the branch.
+  catalog-live:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: win
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: openmono-win catalog check --strict
+        run: |
+          dotnet build win/src/OpenMono.Win.Launcher -c Release
+          dotnet win/src/OpenMono.Win.Launcher/bin/Release/net10.0/openmono-win.dll catalog check --strict --refresh
 
   powershell:
     runs-on: windows-latest

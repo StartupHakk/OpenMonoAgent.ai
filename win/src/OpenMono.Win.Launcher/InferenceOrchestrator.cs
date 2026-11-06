@@ -54,7 +54,7 @@ public sealed class InferenceOrchestrator
             log.Add($"llm.endpoint {configured} is remote; using it as-is (no local Foundry).");
             var remote = new InferenceState(
                 InferenceState.RemoteBackend, configured, null, null, settings.LlmModel, null,
-                settings.VisionEnabled, null, null, false, Now());
+                settings.VisionEnabled, null, false, Now());
             return new UpResult(true, remote, log, null);
         }
 
@@ -79,11 +79,25 @@ public sealed class InferenceOrchestrator
             ? $"NVIDIA GPU VRAM: {Math.Round(v / (1024.0 * 1024 * 1024))} GB."
             : "No NVIDIA GPU detected; Foundry picks the best available device for the alias.");
 
-        var catalog = new FoundryCatalogClient(_deps.Cli);
-        var catalogModels = await catalog.ListModelsAsync(ct);
+        var view = await LoadCatalogAsync(ct);
+        if (!view.Known)
+        {
+            log.Add("Foundry catalog unavailable (`foundry model list` and " + FoundryWebCatalogClient.DefaultApiUrl
+                + "); `foundry model load` validates the alias.");
+        }
 
-        var selection = Select(options, vram, catalogModels);
+        var selection = Select(options, vram, view, out var selectError);
+        if (selection is null)
+        {
+            return Fail(log, selectError!);
+        }
+
         log.Add(selection.Reason);
+        if (view.Describe(selection.ModelAlias) is { FileSizeBytes: { } bytes } described)
+        {
+            log.Add($"{described.Alias}: about {bytes / (1024.0 * 1024 * 1024):F1} GB download on first use "
+                + $"({described.Task ?? "chat"}, input {string.Join("+", described.InputModalities)}).");
+        }
 
         var endpoint = $"http://127.0.0.1:{options.Port}";
         var service = new CliFoundryService(
@@ -98,8 +112,6 @@ public sealed class InferenceOrchestrator
         }
 
         var previous = _store.Load();
-        var visionFallback = FoundryAliasResolver.Resolve(FoundryConstants.DefaultVisionFallbackAlias, catalogModels)
-            ?? FoundryConstants.DefaultVisionFallbackAlias;
         var probeModel = served.ServedModelId ?? selection.ModelAlias;
 
         bool? probeAccepted;
@@ -126,16 +138,25 @@ public sealed class InferenceOrchestrator
             new VisionProbeResult(probeAccepted == true, null, probeModel, probeDetail));
         log.Add(vision.Reason);
 
+        // One model per machine: a model that refuses images is reported, never
+        // swapped for another (a 24 GB+ card keeps qwen3.8-27b regardless).
+        var refusal = probeAccepted == true
+            ? "inference.vision_enabled=false is set"
+            : $"{selection.ModelAlias} did not accept image input in this Foundry release";
         if (options.Vision && !vision.VisionEnabled)
         {
-            return Fail(log, $"{selection.ModelAlias} did not accept image input, so a vision session cannot start. "
-                + "The images were not sent. Check `foundry model list` for a vision-capable alias and pass it with --model.");
+            return Fail(log, $"{refusal}, so a vision session cannot start. The images were not sent. "
+                + "OpenMono serves one model per machine and does not load a second one for images.");
         }
 
-        if (!vision.VisionEnabled && !options.Vision)
+        if (options.Vision)
         {
-            log.Add($"Images: {selection.ModelAlias} is text-only here. The agent warns when an image is attached; "
-                + $"start an image-capable session with `openmono agent --vision` (serves {visionFallback}).");
+            log.Add($"Vision session: {selection.ModelAlias} accepted image input; images are sent with each turn.");
+        }
+        else if (!vision.VisionEnabled)
+        {
+            log.Add($"Images: {refusal}. The agent refuses image attachments with a warning (never drops them silently); "
+                + $"OpenMono keeps serving {selection.ModelAlias} and does not load a second model.");
         }
 
         string? agentModel = served.ServedModelId;
@@ -158,11 +179,10 @@ public sealed class InferenceOrchestrator
             selection.ContextTokens,
             vision.VisionEnabled,
             probeAccepted,
-            visionFallback,
             startedByUs,
             Now());
 
-        if (options.Persist && !options.Vision)
+        if (options.Persist)
         {
             _store.Save(state);
         }
@@ -202,38 +222,60 @@ public sealed class InferenceOrchestrator
             : new DownResult(false, "foundry server stop failed: " + (result.StandardOutput + result.StandardError).Trim());
     }
 
-    private static ModelSelection Select(UpOptions options, long? vram, IReadOnlyList<string> catalog)
+    // `foundry model list` first; the public catalog API only when the local
+    // list is empty, and otherwise from its cache for size and modality notes,
+    // so a normal start makes no extra network call.
+    private async Task<FoundryCatalogView> LoadCatalogAsync(CancellationToken ct)
     {
-        if (options.Vision)
-        {
-            var alias = options.ModelOverride
-                ?? FoundryAliasResolver.Resolve(FoundryConstants.DefaultVisionFallbackAlias, catalog)
-                ?? FoundryConstants.DefaultVisionFallbackAlias;
-            return new ModelSelection(alias, FoundryConstants.StandardContextTokens, false,
-                $"Vision session: serving {alias} for image input.");
-        }
+        var local = await new FoundryCatalogClient(_deps.Cli).ListModelsAsync(ct);
+        var web = await FoundryWebCatalogClient.FromEnvironment(_deps.Http, _deps.GetEnv, _deps.HomeDir)
+            .ListAsync(FoundryCatalogDevice.Cuda, cacheOnly: local.Count > 0, ct: ct);
+        return new FoundryCatalogView(local, web);
+    }
 
+    private static ModelSelection? Select(UpOptions options, long? vram, FoundryCatalogView view, out string? error)
+    {
+        error = null;
         if (options.ModelOverride is { } requested)
         {
-            var alias = FoundryAliasResolver.Resolve(requested, catalog) ?? requested;
+            var alias = view.Known ? view.Resolve(requested) : requested;
+            if (alias is null)
+            {
+                error = $"--model {requested} is not in the Foundry catalog ({view.Source}); nothing was downloaded. "
+                    + $"See {FoundryWebCatalogClient.ModelsPageUrl} or run: .\\win\\openmono.ps1 catalog";
+                return null;
+            }
+
             var ctx = vram >= FoundryConstants.FullContextVramBytes
                 ? FoundryConstants.MaxContextTokens
                 : FoundryConstants.StandardContextTokens;
             return new ModelSelection(alias, ctx, false, $"Model override: {alias}.");
         }
 
-        var target = FoundryAliasResolver.Resolve(FoundryConstants.TargetModelAlias, catalog);
-        var fallback = FoundryAliasResolver.Resolve(FoundryConstants.FallbackModelAlias, catalog);
-
-        // An unreadable catalog must not demote a 24 GB box to the fallback:
-        // ask Foundry for the target alias directly and let `model load`
-        // report if it truly does not exist.
-        if (catalog.Count == 0)
+        // An unreadable catalog must not demote a 24 GB box: ask Foundry for
+        // the ladder alias directly and let `model load` validate it.
+        var selection = ModelSelector.Select(vram, view.Known ? view.Resolve : alias => alias);
+        if (selection is null)
         {
-            target = FoundryConstants.TargetModelAlias;
+            error = NothingInCatalog(vram, view);
         }
 
-        return ModelSelector.Select(vram, target, fallback);
+        return selection;
+    }
+
+    public static string NothingInCatalog(long? vram, FoundryCatalogView view)
+    {
+        var rung = ModelSelector.RungFor(vram);
+        if (ReferenceEquals(rung, FoundryModelLadder.Target))
+        {
+            return $"{FoundryConstants.TargetModelAlias} is not in the Foundry catalog ({view.Source}). A 24 GB+ card serves only "
+                + $"{FoundryConstants.TargetModelAlias}, so nothing was downloaded. Update Foundry Local "
+                + $"(winget upgrade Microsoft.FoundryLocal) and check {FoundryWebCatalogClient.ModelsPageUrl}.";
+        }
+
+        var candidates = FoundryModelLadder.Text.SkipWhile(r => !ReferenceEquals(r, rung)).Select(r => r.Alias);
+        return $"None of the models for this card ({string.Join(", ", candidates)}) are in the Foundry catalog "
+            + $"({view.Source}); nothing was downloaded. Check {FoundryWebCatalogClient.ModelsPageUrl}.";
     }
 
     private static UpResult Fail(List<string> log, string error) => new(false, null, log, error);

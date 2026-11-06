@@ -2,7 +2,7 @@ namespace OpenMono.Win.Foundry;
 
 // Maps a catalog alias onto the model id the running server actually serves.
 // Foundry's /v1/models lists full variant ids (for example
-// "qwen3.8-27b-instruct-cuda-gpu:1"), not the alias that was loaded, and
+// "qwen3.8-27b-cuda-gpu:1", "qwen3.5-9b-cuda-gpu:4"), not the alias that was loaded, and
 // chat completions want the served id. The text after the alias must be a
 // variant suffix (instruct, generic, cuda, gpu, ...) or a ":version" tag, so
 // a short alias never captures a different model ("phi-4" must not match

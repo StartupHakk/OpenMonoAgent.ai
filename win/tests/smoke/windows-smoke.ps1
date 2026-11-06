@@ -9,9 +9,11 @@
   server on 127.0.0.1:7474, then runs three scenarios under the requested
   shell:
 
-    docker-missing  `setup` with no Docker and no WSL: WSL is enabled, Docker
-                    Desktop is installed with winget and started, the engine
-                    is waited for, and the agent image is built.
+    docker-missing  `setup` with no Docker and no WSL: the model ladder is
+                    checked against the (fake) Foundry catalog API, both
+                    pages; WSL is enabled, Docker Desktop is installed with
+                    winget and started, the engine is waited for, and the
+                    agent image is built.
     docker-stopped  `setup` with Docker installed but the engine stopped:
                     nothing is installed, Docker Desktop is started and
                     waited for.
@@ -56,6 +58,9 @@ Install-Fake $desktopDir @('Docker Desktop')
 $cleanPath = (@($env:PATH -split ';') | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'docker.exe')) }) -join ';'
 $env:FAKE_DOCKER_OUT = Join-Path $work 'docker.json'
 $env:OPENMONO_DOCKER_WAIT_SECONDS = '60'
+$env:OPENMONO_FOUNDRY_CATALOG_URL = 'http://127.0.0.1:7474/api/models'
+$env:FAKE_API_LOG = Join-Path $work 'catalog-api.log'
+Remove-Item (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.openmono\win\foundry-catalog-*.json') -ErrorAction SilentlyContinue
 $exe = if ($Shell -eq 'pwsh') { 'pwsh' } else { 'powershell.exe' }
 $launcher = Join-Path $root 'win\openmono.ps1'
 $state = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.openmono\win\inference.json'
@@ -118,6 +123,10 @@ exit `$LASTEXITCODE
   Assert-Called 'docker-missing' $calls 'docker compose version*'
   Assert-Called 'docker-missing' $calls 'docker compose -f * build agent*'
   if (@($calls | Where-Object { $_ -like 'docker info*' }).Count -lt 2) { $failures.Add('[docker-missing] engine was not re-checked after starting Docker Desktop') }
+  $api = @()
+  if (Test-Path $env:FAKE_API_LOG) { $api = @(Get-Content $env:FAKE_API_LOG) }
+  if (-not ($api | Where-Object { $_ -like '*CUDAExecutionProvider*' })) { $failures.Add('[docker-missing] setup never queried the Foundry catalog API') }
+  if (-not ($api | Where-Object { $_ -like '*"continuationToken":"fake-page-2"*' })) { $failures.Add('[docker-missing] setup did not follow the catalog continuationToken') }
 
   # Docker installed, engine stopped: start and wait, never reinstall.
   $calls = Invoke-Scenario 'docker-stopped' $setupBody @{
@@ -167,7 +176,7 @@ exit 0
     for ($i = 0; $i -lt 5; $i++) {
       if ($tail[$i] -cne $expectedTail[$i]) { $failures.Add("[agent] agent arg $i was [$($tail[$i])], expected [$($expectedTail[$i])]") }
     }
-    foreach ($want in @('run', '--rm', '127.0.0.1:7475:7475', 'HOST_ACP_PORT=7475', "HOST_WORKSPACE_PATH=$project", 'OPENMONO_MODEL=qwen3.8-27b-instruct-cuda-gpu:1')) {
+    foreach ($want in @('run', '--rm', '127.0.0.1:7475:7475', 'HOST_ACP_PORT=7475', "HOST_WORKSPACE_PATH=$project", 'OPENMONO_MODEL=qwen3.8-27b-cuda-gpu:1')) {
       if ($argv -notcontains $want) { $failures.Add("[agent] docker args missing [$want]") }
     }
     if ($run.env.OPENMONO_ENDPOINT -ne 'http://host.docker.internal:7474') { $failures.Add("[agent] OPENMONO_ENDPOINT was [$($run.env.OPENMONO_ENDPOINT)]") }

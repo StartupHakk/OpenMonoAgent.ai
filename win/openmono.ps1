@@ -17,10 +17,14 @@
     status                 Inference and agent container status
     agent [args]           Run the agent in its container (TUI by default)
                              --acp-only     run as an ACP server for the VS Code extension
-                             --vision       session on a Foundry vision model (image input)
+                             --vision       image session on this machine's model (fails loudly
+                                            if it refuses images; no second model)
                              any other args are passed to the agent unchanged
     logs                   Follow the Foundry Local daemon logs
-    doctor                 Check the machine (Docker, Foundry, GPU, CUDA, routes, ACP)
+    catalog [check]        List the Foundry Local catalog (https://foundrylocal.ai/models) or
+                             check the model ladder against it and name this machine's model
+                             --device cuda|cpu|webgpu  --refresh  --strict  --json
+    doctor                 Check the machine (Docker, Foundry, GPU, CUDA, model catalog, routes, ACP)
     diag [--out FILE.zip]  Write a redacted diagnostics bundle for bug reports
     help                   This text
 
@@ -107,6 +111,9 @@ function Invoke-Setup {
   Assert-Dotnet
   Build-Launcher
   & (Join-Path (Join-Path $WinDir 'scripts') 'bootstrap.ps1')
+  Write-Info 'Checking the model ladder against the Foundry Local catalog...'
+  Invoke-Launcher catalog check | Out-Host
+  if ($LASTEXITCODE -ne 0) { throw 'No model this machine may serve is in the Foundry catalog; nothing was downloaded. Run: .\win\openmono.ps1 catalog check --refresh' }
   Assert-Docker
   Initialize-HostDirs
   Write-Info 'Building the agent image (docker compose build agent)...'
@@ -243,6 +250,7 @@ try {
     'agent' { Invoke-Agent $rest }
     'logs' { Invoke-Logs }
     'doctor' { Invoke-Launcher doctor --workdir (Get-Location).Path; exit $LASTEXITCODE }
+    'catalog' { Invoke-Launcher catalog @rest; exit $LASTEXITCODE }
     'diag' { Invoke-Launcher diag --workdir (Get-Location).Path @rest; exit $LASTEXITCODE }
     'help' { Show-Help }
     '--help' { Show-Help }

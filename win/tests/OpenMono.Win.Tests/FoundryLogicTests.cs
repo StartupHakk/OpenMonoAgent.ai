@@ -39,64 +39,85 @@ public sealed class ModelSelectorTests
     private const long GiB = 1024L * 1024 * 1024;
     private const long MiB = 1024L * 1024;
 
-    [Theory]
-    [InlineData(24564, true, 65536)]   // RTX 4090 as nvidia-smi reports it
-    [InlineData(24576, true, 65536)]   // RTX 3090 / A5000 class
-    [InlineData(32607, true, 262144)]  // RTX 5090 as nvidia-smi reports it
-    [InlineData(16376, false, 65536)]  // 16 GB class
-    public void RealCardSizesLandInTheirClass(long reportedMiB, bool target, int context)
-    {
-        var selection = ModelSelector.Select(reportedMiB * MiB, "qwen3.8-27b", "qwen3-4b");
+    private static readonly string[] Catalog =
+        ["qwen3.8-27b", "qwen3.5-9b", "qwen3.5-4b", "qwen3.5-2b", "qwen3.5-0.8b", "qwen3-8b", "qwen3-4b"];
 
-        selection.IsTargetModel.Should().Be(target);
+    private static string? InCatalog(string alias) => FoundryAliasResolver.Resolve(alias, Catalog);
+
+    private static Func<string, string?> Without(params string[] missing) =>
+        alias => missing.Contains(alias) ? null : InCatalog(alias);
+
+    [Theory]
+    [InlineData(24564, "qwen3.8-27b", 65536)]   // RTX 4090 as nvidia-smi reports it
+    [InlineData(24576, "qwen3.8-27b", 65536)]   // RTX 3090 / A5000 class
+    [InlineData(32607, "qwen3.8-27b", 262144)]  // RTX 5090 as nvidia-smi reports it
+    [InlineData(16376, "qwen3.5-9b", 65536)]    // 16 GB class
+    [InlineData(12282, "qwen3.5-9b", 65536)]    // RTX 3060 / 4070 12 GB
+    [InlineData(8188, "qwen3.5-4b", 65536)]     // 8 GB class
+    [InlineData(6144, "qwen3.5-2b", 65536)]     // 6 GB class
+    [InlineData(4096, "qwen3.5-2b", 65536)]     // 4 GB class
+    [InlineData(2048, "qwen3.5-0.8b", 65536)]   // last resort
+    public void RealCardSizesLandOnTheirRung(long reportedMiB, string alias, int context)
+    {
+        var selection = ModelSelector.Select(reportedMiB * MiB, InCatalog)!;
+
+        selection.ModelAlias.Should().Be(alias);
+        selection.IsTargetModel.Should().Be(alias == FoundryConstants.TargetModelAlias);
         selection.ContextTokens.Should().Be(context);
     }
 
     [Fact]
-    public void TwentyFourGbGetsTargetWithStandardContext()
+    public void LadderIsTheLockedQwenLadder()
     {
-        var selection = ModelSelector.Select(24 * GiB, "qwen3.8-27b");
-
-        selection.IsTargetModel.Should().BeTrue();
-        selection.ModelAlias.Should().Be("qwen3.8-27b");
-        selection.ContextTokens.Should().Be(FoundryConstants.StandardContextTokens);
+        FoundryModelLadder.AllAliases.Should().Equal("qwen3.8-27b", "qwen3.5-9b", "qwen3.5-4b", "qwen3.5-2b", "qwen3.5-0.8b");
+        FoundryModelLadder.AllAliases.Should().NotContain(a => a.StartsWith("qwen3-", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void ThirtyTwoGbUnlocksFullContext()
+    public void UnderFloorSaysWhy()
     {
-        var selection = ModelSelector.Select(48 * GiB, "qwen3.8-27b");
+        var selection = ModelSelector.Select(12 * GiB, InCatalog)!;
 
-        selection.IsTargetModel.Should().BeTrue();
-        selection.ContextTokens.Should().Be(FoundryConstants.MaxContextTokens);
-    }
-
-    [Fact]
-    public void UnderFloorFallsBackWithReason()
-    {
-        var selection = ModelSelector.Select(12 * GiB, "qwen3.8-27b", "qwen3-4b");
-
-        selection.IsTargetModel.Should().BeFalse();
-        selection.ModelAlias.Should().Be("qwen3-4b");
-        selection.Reason.Should().Contain("24 GB");
+        selection.Reason.Should().Contain("below the 24 GB floor").And.Contain("qwen3.5-9b").And.Contain("text and images");
     }
 
     [Fact]
     public void UnknownVramStillServesTarget()
     {
-        var selection = ModelSelector.Select(null, "qwen3.8-27b");
+        var selection = ModelSelector.Select(null, InCatalog)!;
 
-        selection.IsTargetModel.Should().BeTrue();
+        selection.ModelAlias.Should().Be("qwen3.8-27b");
         selection.ContextTokens.Should().Be(FoundryConstants.StandardContextTokens);
     }
 
     [Fact]
-    public void MissingTargetInCatalogFallsBack()
+    public void TwentyFourGbNeverStepsDown()
     {
-        var selection = ModelSelector.Select(24 * GiB, null, "qwen3-4b");
+        ModelSelector.Select(24 * GiB, Without("qwen3.8-27b")).Should().BeNull();
+        ModelSelector.Select(48 * GiB, Without("qwen3.8-27b")).Should().BeNull();
+    }
 
-        selection.IsTargetModel.Should().BeFalse();
-        selection.ModelAlias.Should().Be("qwen3-4b");
+    [Fact]
+    public void SmallerCardsStepDownTheQwen35LadderOnly()
+    {
+        var selection = ModelSelector.Select(12 * GiB, Without("qwen3.5-9b"))!;
+
+        selection.ModelAlias.Should().Be("qwen3.5-4b");
+        selection.SkippedAliases.Should().Equal("qwen3.5-9b");
+        selection.Reason.Should().Contain("Not in the Foundry catalog: qwen3.5-9b");
+    }
+
+    [Fact]
+    public void SmallerCardsNeverStepUp()
+    {
+        ModelSelector.Select(8 * GiB, Without("qwen3.5-4b", "qwen3.5-2b", "qwen3.5-0.8b")).Should().BeNull();
+    }
+
+    [Fact]
+    public void ResolvedCatalogSpellingIsServed()
+    {
+        ModelSelector.Select(8 * GiB, alias => alias == "qwen3.5-4b" ? "Qwen3.5-4B" : null)!
+            .ModelAlias.Should().Be("Qwen3.5-4B");
     }
 }
 
@@ -203,7 +224,7 @@ public sealed class HealthAndDeciderTests
     public async Task ServiceAdoptsHealthyServerWithoutSpawning()
     {
         var handler = new FakeHttpHandler();
-        handler.Respond("/v1/models", FakeHttpHandler.Json("""{"data":[{"id":"qwen3.8-27b-instruct-cuda-gpu:1"}]}"""));
+        handler.Respond("/v1/models", FakeHttpHandler.Json("""{"data":[{"id":"qwen3.8-27b-cuda-gpu:1"}]}"""));
         var runner = new FakeCliRunner();
         var service = new CliFoundryService(runner, CheckerWith(handler), NoDelay);
 
@@ -211,7 +232,7 @@ public sealed class HealthAndDeciderTests
 
         result.AdoptedExisting.Should().BeTrue();
         result.StartedByUs.Should().BeFalse();
-        result.ServedModelId.Should().Be("qwen3.8-27b-instruct-cuda-gpu:1");
+        result.ServedModelId.Should().Be("qwen3.8-27b-cuda-gpu:1");
         runner.Calls.Should().BeEmpty();
     }
 
@@ -222,7 +243,7 @@ public sealed class HealthAndDeciderTests
         var loaded = false;
         var handler = new FakeHttpHandler();
         handler.RespondJson("/v1/models", () => loaded
-            ? """{"data":[{"id":"qwen3.8-27b-instruct-cuda-gpu:1"}]}"""
+            ? """{"data":[{"id":"qwen3.8-27b-cuda-gpu:1"}]}"""
             : """{"data":[]}""");
         var gated = new GatedHandler(handler, () => serving);
         var runner = new FakeCliRunner();
@@ -239,7 +260,7 @@ public sealed class HealthAndDeciderTests
         result.AdoptedExisting.Should().BeFalse();
         result.StartedByUs.Should().BeTrue();
         result.Healthy.Should().BeTrue();
-        result.ServedModelId.Should().Be("qwen3.8-27b-instruct-cuda-gpu:1");
+        result.ServedModelId.Should().Be("qwen3.8-27b-cuda-gpu:1");
         runner.Calls.Select(c => c.Arguments).Should().ContainInOrder(
             "server start --port 7474 --idle-timeout 0",
             "model load qwen3.8-27b");
@@ -251,7 +272,7 @@ public sealed class HealthAndDeciderTests
         var handler = new FakeHttpHandler();
         handler.Respond("127.0.0.1:7474/v1/models", new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable));
         handler.Respond("127.0.0.1:7474/health", new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable));
-        handler.Respond("127.0.0.1:51234/v1/models", FakeHttpHandler.Json("""{"data":[{"id":"qwen3.8-27b-instruct-cuda-gpu:1"}]}"""));
+        handler.Respond("127.0.0.1:51234/v1/models", FakeHttpHandler.Json("""{"data":[{"id":"qwen3.8-27b-cuda-gpu:1"}]}"""));
         var runner = new FakeCliRunner();
         var exe = FoundryCliDetector.CliExecutableName;
         runner.Respond(exe, "server status", 0, "Status: Running\nLocal Endpoint: http://127.0.0.1:51234/v1\n");
@@ -316,10 +337,10 @@ public sealed class ServedModelIdTests
     [Theory]
     [InlineData("qwen3.8-27b", "qwen3.8-27b-instruct-cuda-gpu:1")]
     [InlineData("Qwen3.8_27B", "qwen3.8-27b-instruct-cuda-gpu:1")]
-    [InlineData("qwen2.5-vl-7b", "qwen2.5-vl-7b-instruct-cuda-gpu:2")]
+    [InlineData("qwen3.5-9b", "qwen3.5-9b-cuda-gpu:4")]
     public void ResolvesAliasToServedVariant(string alias, string expected)
     {
-        string[] served = ["qwen3.8-27b-instruct-cuda-gpu:1", "qwen2.5-vl-7b-instruct-cuda-gpu:2"];
+        string[] served = ["qwen3.8-27b-instruct-cuda-gpu:1", "qwen3.5-9b-cuda-gpu:4"];
 
         FoundryModelIdResolver.ResolveServedId(alias, served).Should().Be(expected);
     }

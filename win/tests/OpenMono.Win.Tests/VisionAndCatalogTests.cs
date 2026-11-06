@@ -14,11 +14,11 @@ public sealed class CatalogClientTests
         var runner = new FakeCliRunner();
         runner.Respond(
             Exe, "model list", 0,
-            "qwen3.8-27b\nqwen3-4b\nphi-4-mini\n");
+            "qwen3.8-27b\nqwen3.5-4b\nphi-4-mini\n");
 
         var models = await new FoundryCatalogClient(runner).ListModelsAsync();
 
-        models.Should().BeEquivalentTo("qwen3.8-27b", "qwen3-4b", "phi-4-mini");
+        models.Should().BeEquivalentTo("qwen3.8-27b", "qwen3.5-4b", "phi-4-mini");
     }
 
     [Fact]
@@ -27,11 +27,11 @@ public sealed class CatalogClientTests
         var runner = new FakeCliRunner();
         runner.Respond(
             Exe, "model list", 0,
-            "Available models:\n\n  qwen3.8-27b\n  qwen3-4b\n");
+            "Available models:\n\n  qwen3.8-27b\n  qwen3.5-4b\n");
 
         var models = await new FoundryCatalogClient(runner).ListModelsAsync();
 
-        models.Should().BeEquivalentTo("qwen3.8-27b", "qwen3-4b");
+        models.Should().BeEquivalentTo("qwen3.8-27b", "qwen3.5-4b");
     }
 
     [Fact]
@@ -40,19 +40,19 @@ public sealed class CatalogClientTests
         var runner = new FakeCliRunner();
         runner.Respond(
             Exe, "model list --output json", 0,
-            """[{"alias":"qwen3.8-27b","variants":[{"id":"qwen3.8-27b-instruct-cuda-gpu:1"}]},{"alias":"qwen2.5-vl-7b"}]""");
+            """[{"alias":"qwen3.8-27b","variants":[{"id":"qwen3.8-27b-instruct-cuda-gpu:1"}]},{"alias":"qwen3.5-9b"}]""");
 
         var models = await new FoundryCatalogClient(runner).ListModelsAsync();
 
-        models.Should().BeEquivalentTo("qwen3.8-27b", "qwen2.5-vl-7b");
+        models.Should().BeEquivalentTo("qwen3.8-27b", "qwen3.5-9b");
         runner.Calls.Should().NotContain(c => c.Arguments == "model list");
     }
 
     [Fact]
     public void JsonWithoutAliasFallsBackToIds()
     {
-        FoundryCatalogClient.ParseCatalogJson("""{"models":[{"id":"phi-4-mini"},{"name":"qwen3-4b"}]}""")
-            .Should().BeEquivalentTo("phi-4-mini", "qwen3-4b");
+        FoundryCatalogClient.ParseCatalogJson("""{"models":[{"id":"phi-4-mini"},{"name":"qwen3.5-4b"}]}""")
+            .Should().BeEquivalentTo("phi-4-mini", "qwen3.5-4b");
     }
 
     [Fact]
@@ -62,9 +62,9 @@ public sealed class CatalogClientTests
             "Alias                Device  Task             File Size  License     Model ID\n"
             + "-------------------------------------------------------------------------------\n"
             + "qwen3.8-27b          GPU     chat-completion  18.2 GB    apache-2.0  qwen3.8-27b-instruct-cuda-gpu:1\n"
-            + "qwen2.5-vl-7b        GPU     chat-completion  5.1 GB     apache-2.0  qwen2.5-vl-7b-instruct-cuda-gpu:2\n";
+            + "qwen3.5-9b           GPU     vision-language  7.0 GB     apache-2.0  qwen3.5-9b-cuda-gpu:4\n";
 
-        FoundryCatalogClient.ParseCatalog(table).Should().Equal("qwen3.8-27b", "qwen2.5-vl-7b");
+        FoundryCatalogClient.ParseCatalog(table).Should().Equal("qwen3.8-27b", "qwen3.5-9b");
     }
 
     [Fact]
@@ -88,10 +88,10 @@ public sealed class CatalogClientTests
     public async Task ResolveTargetPrefersTargetOverFallback()
     {
         var runner = new FakeCliRunner();
-        runner.Respond(Exe, "model list", 0, "Qwen3.8-27B\nqwen3-4b\n");
+        runner.Respond(Exe, "model list", 0, "Qwen3.8-27B\nqwen3.5-9b\n");
         var client = new FoundryCatalogClient(runner);
 
-        var resolved = await client.ResolveTargetAsync("qwen3.8-27b", "qwen3-4b");
+        var resolved = await client.ResolveTargetAsync("qwen3.8-27b", "qwen3.5-9b");
 
         resolved.Should().Be("Qwen3.8-27B");
     }
@@ -102,7 +102,7 @@ public sealed class CatalogClientTests
         var runner = new FakeCliRunner();
         var client = new FoundryCatalogClient(runner);
 
-        var resolved = await client.ResolveTargetAsync("qwen3.8-27b", "qwen3-4b");
+        var resolved = await client.ResolveTargetAsync("qwen3.8-27b", "qwen3.5-9b");
 
         resolved.Should().BeNull();
     }
@@ -164,44 +164,30 @@ public sealed class VisionRouterTests
         new(false, 400, model, "image input not supported by this model");
 
     [Fact]
-    public void TextTurnAlwaysUsesTarget()
+    public void TextTurnUsesTheServedModel()
     {
-        var route = FoundryVisionRouter.SelectModelForTurn(
-            hasImages: false, "qwen3.8-27b", "qwen2.5-vl-7b", Refused(), "qwen2.5-vl-7b");
+        var route = FoundryVisionRouter.SelectModelForTurn(hasImages: false, "qwen3.8-27b", Refused());
 
         route.ModelAlias.Should().Be("qwen3.8-27b");
         route.ImagesWillBeSent.Should().BeFalse();
     }
 
     [Fact]
-    public void ImageTurnUsesTargetWhenProbeAccepted()
+    public void ImageTurnUsesTheServedModelWhenProbeAccepted()
     {
-        var route = FoundryVisionRouter.SelectModelForTurn(
-            hasImages: true, "qwen3.8-27b", "qwen2.5-vl-7b", Accepted(), "qwen2.5-vl-7b");
+        var route = FoundryVisionRouter.SelectModelForTurn(hasImages: true, "qwen3.5-9b", Accepted("qwen3.5-9b"));
 
-        route.ModelAlias.Should().Be("qwen3.8-27b");
+        route.ModelAlias.Should().Be("qwen3.5-9b");
         route.ImagesWillBeSent.Should().BeTrue();
     }
 
     [Fact]
-    public void ImageTurnFallsBackWhenTargetRefused()
+    public void RefusedImageTurnIsExplicitAndNeverSwitchesModels()
     {
-        var route = FoundryVisionRouter.SelectModelForTurn(
-            hasImages: true, "qwen3.8-27b", "qwen2.5-vl-7b", Refused(), "qwen2.5-vl-7b");
-
-        route.ModelAlias.Should().Be("qwen2.5-vl-7b");
-        route.ImagesWillBeSent.Should().BeTrue();
-        route.Reason.Should().Contain("refused");
-    }
-
-    [Fact]
-    public void ImageTurnWithoutFallbackIsExplicitlyUnservable()
-    {
-        var route = FoundryVisionRouter.SelectModelForTurn(
-            hasImages: true, "qwen3.8-27b", "qwen2.5-vl-7b", Refused(), resolvedVisionFallback: null);
+        var route = FoundryVisionRouter.SelectModelForTurn(hasImages: true, "qwen3.8-27b", Refused());
 
         route.ModelAlias.Should().BeNull();
         route.ImagesWillBeSent.Should().BeFalse();
-        route.Reason.Should().Contain("NOT sent");
+        route.Reason.Should().Contain("NOT sent").And.Contain("does not load another");
     }
 }

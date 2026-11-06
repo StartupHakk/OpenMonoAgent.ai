@@ -10,19 +10,10 @@ public static class FoundryConstants
 
     public const int DefaultPort = 7474;
 
-    // Catalog alias from the Nov 2026 Foundry Local coding announcement.
-    // The real catalog spelling is resolved at runtime (FoundryAliasResolver);
-    // this constant is only the desired alias, never a file hash.
+    // Top of FoundryModelLadder: the coding model from the Nov 2026 Foundry
+    // Local announcement, and the only model a 24 GB+ card ever serves.
+    // Resolved against the live catalog at runtime; this is only the alias.
     public const string TargetModelAlias = "qwen3.8-27b";
-
-    // Provisional text fallback while the plan's open question is undecided.
-    // Always resolved against the live catalog first, so a wrong guess fails loudly.
-    public const string FallbackModelAlias = "qwen3-4b";
-
-    // Provisional vision fallback, used only when the target model refuses
-    // image input. Always resolved against the live catalog first, and
-    // documented in win/docs/VISION.md.
-    public const string DefaultVisionFallbackAlias = "qwen2.5-vl-7b";
 
     // Minimum Foundry Local CLI with the Qwen3.8-27B coding stack.
     public static readonly Version MinCliVersion = new(0, 13, 0);

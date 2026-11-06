@@ -13,7 +13,6 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'docker.ps1')
 
 $MinFoundry = [Version]'0.13.0'
-$TargetModel = 'qwen3.8-27b'
 
 function Test-Command($Name) {
   return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
@@ -56,5 +55,6 @@ Confirm-DockerReady -Install
 
 Write-Host ''
 Write-Host '[openmono] Prerequisites checked. Next:'
-Write-Host "  .\win\openmono.ps1 start   (serves $TargetModel on http://127.0.0.1:7474; about 18 GB download on first run)"
+Write-Host '  .\win\openmono.ps1 catalog check   (the model this machine serves, checked against the Foundry catalog)'
+Write-Host '  .\win\openmono.ps1 start   (serves it on http://127.0.0.1:7474; qwen3.8-27b on 24 GB+ is about 18 GB on first run)'
 Write-Host '  .\win\openmono.ps1 agent   (the OpenMono agent in its Linux container)'
