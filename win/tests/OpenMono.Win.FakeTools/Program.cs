@@ -30,6 +30,9 @@ switch (name)
 
         Console.WriteLine("NVIDIA GeForce RTX 4090, 24564");
         return 0;
+    case "git":
+        Console.WriteLine("git version 2.51.0.windows.1");
+        return 0;
     case "docker":
         return Docker(args);
     case "docker desktop":
@@ -110,6 +113,27 @@ static int Docker(string[] args)
         return 0;
     }
 
+    // FAKE_IMAGE_CRLF names a file that exists while the agent image was built
+    // from CRLF files; `compose build agent` rebuilds it with LF.
+    var crlf = Environment.GetEnvironmentVariable("FAKE_IMAGE_CRLF");
+    var crlfImage = !string.IsNullOrEmpty(crlf) && File.Exists(crlf);
+    if (args.Length > 1 && args[0] == "image" && args[1] == "inspect")
+    {
+        Console.WriteLine(crlfImage ? "sha256:fake-agent-crlf" : "sha256:fake-agent-lf");
+        return 0;
+    }
+
+    if (args.Length > 2 && args[0] == "run" && args.Contains("od"))
+    {
+        Console.WriteLine("   #   !   /   u   s   r   /   b   i   n   /   e   n   v       b   a   s   h" + (crlfImage ? "  \\r" : string.Empty) + "  \\n");
+        return 0;
+    }
+
+    if (crlfImage && args.Length > 0 && args[0] == "compose" && args.Contains("build"))
+    {
+        File.Delete(crlf!);
+    }
+
     // Only the agent launch is captured; status and stop also call docker
     // (ps, rm) and must not overwrite it.
     var output = Environment.GetEnvironmentVariable("FAKE_DOCKER_OUT");
@@ -142,8 +166,31 @@ static int DockerDesktop()
 
 // `winget install --id Docker.DockerDesktop` lays out the real install shape
 // under OPENMONO_DOCKER_DESKTOP_DIR: Docker Desktop.exe and resources\bin\docker.exe.
+// Git.Git stages git.exe in FAKE_GIT_DIR, and the .NET SDK points at the real
+// SDK in FAKE_DOTNET_DIR; both land only on the persisted PATH stand-in
+// (OPENMONO_PATH_REGISTRY_FILE), never on the caller's PATH, as with an installer.
 static int Winget(string[] args)
 {
+    var registry = Environment.GetEnvironmentVariable("OPENMONO_PATH_REGISTRY_FILE");
+    if (args.Length > 0 && args[0] == "install" && (args.Contains("Git.Git") || args.Contains("Microsoft.DotNet.SDK.10")))
+    {
+        var dir = Environment.GetEnvironmentVariable(args.Contains("Git.Git") ? "FAKE_GIT_DIR" : "FAKE_DOTNET_DIR");
+        if (string.IsNullOrEmpty(dir) || string.IsNullOrEmpty(registry))
+        {
+            Console.Error.WriteLine("FakeTool: FAKE_GIT_DIR / FAKE_DOTNET_DIR and OPENMONO_PATH_REGISTRY_FILE must be set.");
+            return 1;
+        }
+
+        if (args.Contains("Git.Git"))
+        {
+            StageAs(dir, "git");
+        }
+
+        File.AppendAllText(registry, dir + Environment.NewLine);
+        Console.WriteLine("Successfully installed");
+        return 0;
+    }
+
     if (args.Length > 0 && args[0] == "install" && args.Contains("Docker.DockerDesktop"))
     {
         var dir = Environment.GetEnvironmentVariable("OPENMONO_DOCKER_DESKTOP_DIR");
@@ -215,6 +262,12 @@ static async Task Server(int port)
 static async Task Respond(NetworkStream stream)
 {
     var request = await ReadRequestAsync(stream);
+    if (Download(request) is { } file)
+    {
+        await Send(stream, 200, file.ContentType, file.Body);
+        return;
+    }
+
     var (status, body) = request.StartsWith("GET /v1/models", StringComparison.Ordinal)
         ? (200, JsonSerializer.Serialize(new { data = new[] { new { id = ServedModel() } } }))
         : request.StartsWith("POST /api/models", StringComparison.Ordinal)
@@ -224,11 +277,58 @@ static async Task Respond(NetworkStream stream)
                 ? (400, """{"error":"image input not supported"}""")
                 : (200, """{"choices":[{"message":{"content":"ok"}}]}"""))
             : (404, "{}");
-    var payload = Encoding.UTF8.GetBytes(body);
+    await Send(stream, status, "application/json", Encoding.UTF8.GetBytes(body));
+}
+
+static async Task Send(NetworkStream stream, int status, string contentType, byte[] payload)
+{
     var head = Encoding.ASCII.GetBytes(
-        $"HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {payload.Length}\r\nConnection: close\r\n\r\n");
+        $"HTTP/1.1 {status} X\r\nContent-Type: {contentType}\r\nContent-Length: {payload.Length}\r\nConnection: close\r\n\r\n");
     await stream.WriteAsync(head);
     await stream.WriteAsync(payload);
+}
+
+// The no-winget installers: a Git for Windows release listing (only the
+// plain MinGit zip for the machine's architecture may be picked), the
+// FAKE_MINGIT_ZIP archive, and a dotnet-install.ps1 that links -InstallDir
+// to the real SDK in FAKE_DOTNET_DIR.
+static (string ContentType, byte[] Body)? Download(string request)
+{
+    if (request.StartsWith("GET /git-release", StringComparison.Ordinal))
+    {
+        object Asset(string name) => new { name, browser_download_url = "http://127.0.0.1:7474/mingit/" + name };
+        return ("application/json", JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            tag_name = "v2.51.0.windows.1",
+            assets = new[]
+            {
+                Asset("Git-2.51.0-64-bit.exe"),
+                Asset("MinGit-2.51.0-busybox-64-bit.zip"),
+                Asset("MinGit-2.51.0-64-bit.zip"),
+                Asset("MinGit-2.51.0-arm64.zip"),
+            },
+        }));
+    }
+
+    if (request.StartsWith("GET /mingit/MinGit-2.51.0-64-bit.zip", StringComparison.Ordinal)
+        || request.StartsWith("GET /mingit/MinGit-2.51.0-arm64.zip", StringComparison.Ordinal))
+    {
+        return ("application/zip", File.ReadAllBytes(Environment.GetEnvironmentVariable("FAKE_MINGIT_ZIP")!));
+    }
+
+    if (request.StartsWith("GET /dotnet-install.ps1", StringComparison.Ordinal))
+    {
+        return ("text/plain", Encoding.UTF8.GetBytes("""
+            param([string]$Channel, [string]$InstallDir, [switch]$NoPath)
+            Add-Content -Path $env:FAKE_LOG -Value "dotnet-install -Channel $Channel -InstallDir $InstallDir -NoPath:$NoPath"
+            if ($Channel -ne '10.0') { exit 3 }
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $InstallDir) | Out-Null
+            New-Item -ItemType Junction -Path $InstallDir -Target $env:FAKE_DOTNET_DIR | Out-Null
+            exit 0
+            """));
+    }
+
+    return null;
 }
 
 static string ServedModel()

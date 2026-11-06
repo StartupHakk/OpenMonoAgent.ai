@@ -9,15 +9,29 @@ host control, in PowerShell.
 
 ## Quick start
 
-Prerequisites: Windows 11, .NET SDK 10.0.403+ (same as `install.ps1`), winget
-(`setup` uses it to install Foundry Local and, when missing, Docker Desktop
-with WSL 2), and for GPU inference an NVIDIA GPU (24 GB VRAM for
+Prerequisites: Windows 11, winget (`setup` uses it to install Git, the .NET
+SDK, Foundry Local and Docker Desktop with WSL 2 when they are missing), and
+for GPU inference an NVIDIA GPU (24 GB VRAM for
 `qwen3.8-27b`; smaller cards get the Qwen3.5 ladder below) with CUDA plus
 cuDNN on `PATH` (Foundry Local does not install them). Without an NVIDIA GPU,
 OpenMono runs `qwen3.5-2b` on the CPU.
 
+Git and the .NET SDK 10.0.403+ (the version in `win/global.json`, same as
+`install.ps1`) do not need to be installed first. `setup` (and
+`win\scripts\bootstrap.ps1`) checks for them on the host and, when one is
+missing or too old, installs it silently with winget (`Git.Git`,
+`Microsoft.DotNet.SDK.10`). Without winget it uses the official installers
+instead, per user and without administrator rights: MinGit from the latest Git
+for Windows release into `%LOCALAPPDATA%\Programs\MinGit`, and
+`dotnet-install.ps1 -Channel 10.0` into `%LOCALAPPDATA%\Microsoft\dotnet`.
+The new directories are added to the user `PATH` and to the running session,
+so setup carries on in the same window. An install that fails stops setup
+with the installer's exit code. On a machine without Git, download the `win`
+branch as a ZIP from GitHub, run `Get-ChildItem -Recurse | Unblock-File` in
+the unpacked folder, then run `setup`.
+
 ```powershell
-.\win\openmono.ps1 setup     # Foundry CLI and Docker Desktop (winget), CUDA check, agent image, start inference, doctor
+.\win\openmono.ps1 setup     # Git, .NET SDK, Foundry CLI, Docker Desktop (winget), CUDA check, agent image, start inference, doctor
 cd C:\path\to\project
 C:\path\to\OpenMonoAgent.ai\win\openmono.ps1 agent              # the agent TUI, sandboxed in its container
 C:\path\to\OpenMonoAgent.ai\win\openmono.ps1 agent --acp-only   # ACP on 127.0.0.1:7475 for the VS Code extension
@@ -25,17 +39,29 @@ C:\path\to\OpenMonoAgent.ai\win\openmono.ps1 agent --acp-only   # ACP on 127.0.0
 
 | Command | What it does |
 | --- | --- |
-| `setup` | Installs or checks prerequisites (Foundry Local; Docker Desktop and WSL 2 when missing, then starts Docker Desktop and waits for its engine), checks the model ladder against the Foundry catalog (`catalog check`), builds `openmono-win` and the agent image, starts inference, runs `doctor`. Prints numbered steps for what only you can finish (restart, first-launch agreement, sign-out) |
+| `setup` | Installs or checks prerequisites (Git and the .NET SDK; Foundry Local; Docker Desktop and WSL 2 when missing, then starts Docker Desktop and waits for its engine), checks the model ladder against the Foundry catalog (`catalog check`), builds `openmono-win` and the agent image, starts inference, runs `doctor`. Prints numbered steps for what only you can finish (restart, first-launch agreement, sign-out) |
 | `start` | Adopts a running Foundry daemon or starts one on 7474, loads the model for this GPU |
 | `stop` | Stops Foundry only if OpenMono started it (`--force` to override). `--agent` or `--all` also removes agent containers |
 | `status` | Inference endpoint, served models, and agent containers |
-| `agent [args]` | `docker compose run --rm ... agent [args]`, the same launch as bash `openmono agent`. `--vision` starts an image session on this machine's model and fails loudly if it refuses images (no second model is loaded) |
+| `agent [args]` | `docker compose run --rm ... agent [args]`, the same launch as bash `openmono agent`. Files under `docker\` are kept on LF line endings first, and an agent image built from CRLF files is rebuilt (see Line endings below). `--vision` starts an image session on this machine's model and fails loudly if it refuses images (no second model is loaded) |
 | `catalog [check]` | `catalog` lists the Foundry Local catalog from https://foundrylocal.ai/api/models (`--device cuda\|cpu\|webgpu`) and marks the ladder rungs. `catalog check` validates every ladder alias against that API and `foundry model list`, then names this machine's model. `--refresh` skips the one-hour cache, `--strict` fails if the public catalog lacks any rung, `--json` for scripts |
 | `logs` | `foundry server logs --follow` |
-| `doctor` | PowerShell, Docker, compose, agent image, Foundry CLI, GPU, model catalog, CUDA and cuDNN, server health, the container-to-host route, ACP, graph |
+| `doctor` | PowerShell, Git, .NET SDK, Docker, compose, agent image, Foundry CLI, GPU, model catalog, CUDA and cuDNN, server health, the container-to-host route, ACP, graph |
 | `diag` | Writes a zip for bug reports: GPU and VRAM, Foundry version, status and last server log, CUDA `PATH` entries, doctor output, inference state, settings with secrets and the home path redacted |
 
 Runs on PowerShell 7 (`pwsh.exe`) or Windows PowerShell 5.1 (`powershell.exe`).
+
+### Line endings
+
+Everything the Linux containers run or read (`docker\entrypoint.sh`, the
+Dockerfiles, compose files, Caddy and SearXNG configs, shell scripts) must have
+LF line endings. A CRLF entrypoint fails at container start with
+`/usr/bin/env: 'bash\r': No such file or directory`. The repository's
+`.gitattributes` pins these files to LF in every checkout, whatever
+`core.autocrlf` says. For checkouts made before that, `setup` and `agent`
+rewrite any CRLF file under `docker\` to LF before Docker uses it, and
+`agent` rebuilds an `openmono-agent` image whose entrypoint still has CR
+(checked once per image).
 
 ## Models
 

@@ -1,0 +1,25 @@
+# Text files are stored with LF; Git decides what is text.
+* text=auto
+
+# Executed or parsed inside the Linux containers, or by bash on Mac/Linux:
+# LF in every working tree, Windows included, whatever core.autocrlf says.
+# A CRLF shebang fails as "/usr/bin/env: 'bash\r': No such file or directory".
+*.sh            text eol=lf
+*.bash          text eol=lf
+*.py            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+Dockerfile      text eol=lf
+Dockerfile.*    text eol=lf
+Caddyfile       text eol=lf
+docker/**       text eol=lf
+openmono        text eol=lf
+
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.ico           binary
+*.zip           binary
+*.gguf          binary
+*.onnx          binary

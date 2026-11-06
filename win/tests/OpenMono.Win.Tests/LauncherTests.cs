@@ -572,6 +572,8 @@ public sealed class DoctorRunnerTests
     {
         using var rig = new FoundryRig(alreadyServing: true);
         rig.Preload("qwen3.8-27b");
+        rig.Runner.Respond("git", "--version", 0, "git version 2.51.0.windows.1\n");
+        rig.Runner.Respond("dotnet", "--list-sdks", 0, "10.0.403 [C:\\Program Files\\dotnet\\sdk]\n");
         rig.Runner.Respond("docker", "version --format {{.Server.Version}}", 0, "28.1.1\n");
         rig.Runner.Respond("docker", "compose version --short", 0, "2.35.1\n");
         rig.Runner.Respond("docker", "image inspect openmono-agent:latest --format {{.Id}}", 0, "sha256:abc\n");
@@ -588,8 +590,24 @@ public sealed class DoctorRunnerTests
         checks.Should().Contain(c => c.Name == "host shell" && c.Detail.Contains("powershell.exe"));
         checks.Should().Contain(c => c.Name == "container route" && c.Level == CheckLevel.Ok);
         checks.Should().Contain(c => c.Name == "acp" && c.Level == CheckLevel.Info);
+        checks.Should().Contain(c => c.Name == "git" && c.Level == CheckLevel.Ok && c.Detail == "Git 2.51.0.");
+        checks.Should().Contain(c => c.Name == "dotnet sdk" && c.Level == CheckLevel.Ok && c.Detail.StartsWith(".NET SDK 10.0.403"));
         checks.Should().Contain(c => c.Name == "model catalog" && c.Level == CheckLevel.Ok && c.Detail.StartsWith("qwen3.8-27b is in"));
         DoctorRunner.ExitCode(checks).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task MissingGitAndOldSdkPointAtSetup()
+    {
+        using var rig = new FoundryRig();
+        rig.Runner.Respond("dotnet", "--list-sdks", 0, "9.0.300 [C:\\Program Files\\dotnet\\sdk]\n");
+
+        var checks = await new DoctorRunner(rig.Deps()).RunAsync(Input());
+
+        checks.Should().Contain(c => c.Name == "git" && c.Level == CheckLevel.Warn && c.Detail == "Git not found."
+            && c.Fix!.Contains("setup: it installs Git (winget Git.Git"));
+        checks.Should().Contain(c => c.Name == "dotnet sdk" && c.Level == CheckLevel.Fail
+            && c.Detail.Contains("9.0.300") && c.Fix!.Contains("winget Microsoft.DotNet.SDK.10"));
     }
 
     [Fact]

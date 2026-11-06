@@ -77,7 +77,13 @@ otherwise unchanged in intent.
     `OpenMono.Win.Launcher` console app (`openmono-win`), which PowerShell
     calls; `agent` runs the same `docker compose run --rm ... agent` as
     `cmd_agent_sandbox`, with `OPENMONO_ENDPOINT=http://host.docker.internal:7474`.
-    Setup needs the .NET SDK 10.0.403+, the same prerequisite as `install.ps1`.
+    Setup needs Git and the .NET SDK 10.0.403+ (`win/global.json`, the same
+    as `install.ps1`) and installs them on the host when missing
+    (`win/scripts/prereqs.ps1`): winget `Git.Git` and
+    `Microsoft.DotNet.SDK.10`, or without winget MinGit from the latest Git
+    for Windows release and `dotnet-install.ps1 -Channel 10.0`, both per user.
+    The session `PATH` is then rebuilt from the machine and user `PATH`, so
+    setup continues in the same window; a failed install stops setup.
 11. Vision, one model per machine: the launcher probes the served model.
     Below 24 GB the Qwen3.5 rungs take images. On 24 GB+ `qwen3.8-27b` is
     served regardless; when it refuses images, vision stays off (the agent
@@ -88,6 +94,15 @@ otherwise unchanged in intent.
     daemon runs host commands and would need a PowerShell executor), the
     clipboard image bridge, and the optional local web gateway services
     (Caddy, SearXNG, Scrapling). The agent's built-in web fallbacks apply.
+13. Line endings: files the Linux containers execute or parse are LF in every
+    checkout (root `.gitattributes`, `eol=lf` for `docker/**`, `*.sh`,
+    Dockerfiles, YAML, `openmono`). Without it, Git for Windows
+    (`core.autocrlf=true`) checked out `docker/entrypoint.sh` with CRLF and
+    the agent image's ENTRYPOINT failed with `/usr/bin/env: 'bash\r'`.
+    For older checkouts, `openmono.ps1 setup` and `agent` rewrite CRLF under
+    `docker/` to LF (`win/scripts/line-endings.ps1`), and `agent` rebuilds an
+    agent image whose entrypoint has CR. A unit test fails if any
+    container-bound file has a CR.
 
 ## Goal
 

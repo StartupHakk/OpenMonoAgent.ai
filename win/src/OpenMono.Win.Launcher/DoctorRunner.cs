@@ -24,7 +24,8 @@ public sealed record DoctorInput(
 
 // `openmono doctor` on Windows: the host prerequisites the bash doctor checks
 // on Linux (docker, inference, agent image), plus the Windows-only pieces
-// (PowerShell host shell, Foundry CLI version, CUDA/cuDNN on PATH, and the
+// (PowerShell host shell, Git and the .NET SDK that setup installs, Foundry
+// CLI version, CUDA/cuDNN on PATH, and the
 // container-to-host route to Foundry). Read-only: it never starts anything.
 public sealed class DoctorRunner
 {
@@ -45,6 +46,9 @@ public sealed class DoctorRunner
         {
             checks.Add(ShellCheck(input));
         }
+
+        checks.Add(await GitCheckAsync(ct));
+        checks.Add(await DotnetSdkCheckAsync(ct));
 
         var dockerOk = await AddDockerChecksAsync(checks, ct);
         var imagePresent = dockerOk && await ImagePresentAsync(ct);
@@ -111,6 +115,30 @@ public sealed class DoctorRunner
         {
             return new DoctorCheck("host shell", CheckLevel.Fail, ex.Message, "winget install Microsoft.PowerShell");
         }
+    }
+
+    private async Task<DoctorCheck> GitCheckAsync(CancellationToken ct)
+    {
+        var run = await TryRunAsync("git", "--version", ct);
+        var version = run is { Succeeded: true } ? HostPrerequisites.ParseGitVersion(run.StandardOutput) : null;
+        return version is not null && version >= HostPrerequisites.MinGit
+            ? new DoctorCheck("git", CheckLevel.Ok, $"Git {version}.")
+            : new DoctorCheck("git", CheckLevel.Warn,
+                version is null ? "Git not found." : $"Git {version} is older than {HostPrerequisites.MinGit}.",
+                $"Run .\\win\\openmono.ps1 setup: it installs Git (winget {HostPrerequisites.GitWingetId}, or MinGit without winget).");
+    }
+
+    private async Task<DoctorCheck> DotnetSdkCheckAsync(CancellationToken ct)
+    {
+        var run = await TryRunAsync("dotnet", "--list-sdks", ct);
+        var sdks = run is { Succeeded: true } ? HostPrerequisites.ParseSdkList(run.StandardOutput) : [];
+        var usable = HostPrerequisites.UsableSdk(sdks);
+        var need = $"{HostPrerequisites.MinDotnetSdk.Major}.x, {HostPrerequisites.MinDotnetSdk} or newer";
+        return usable is not null
+            ? new DoctorCheck("dotnet sdk", CheckLevel.Ok, $".NET SDK {usable} (needs {need}).")
+            : new DoctorCheck("dotnet sdk", CheckLevel.Fail,
+                sdks.Count == 0 ? $"No .NET SDK found (needs {need})." : $".NET SDK {string.Join(", ", sdks)} found; needs {need}.",
+                $"Run .\\win\\openmono.ps1 setup: it installs the SDK (winget {HostPrerequisites.DotnetWingetId}, or dotnet-install.ps1 without winget).");
     }
 
     private async Task<bool> AddDockerChecksAsync(List<DoctorCheck> checks, CancellationToken ct)

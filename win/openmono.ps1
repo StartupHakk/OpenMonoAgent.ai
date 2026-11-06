@@ -10,7 +10,7 @@
   container through host.docker.internal.
 
   Commands:
-    setup                  Install prerequisites (Foundry Local, Docker Desktop), build
+    setup                  Install prerequisites (Git, .NET SDK, Foundry Local, Docker Desktop), build
                              the agent image, start inference
     start                  Start (or adopt) Foundry Local and load the model
     stop [flags]           Stop inference (default). Flags: --agent, --all, --force
@@ -41,8 +41,9 @@ $LauncherProject = Join-Path (Join-Path (Join-Path $WinDir 'src') 'OpenMono.Win.
 $LauncherDll = Join-Path (Join-Path (Join-Path (Split-Path -Parent $LauncherProject) 'bin') 'Release') 'net10.0'
 $LauncherDll = Join-Path $LauncherDll 'openmono-win.dll'
 $UserHome = [Environment]::GetFolderPath('UserProfile')
-$MinDotnet = [Version]'10.0.403'
 . (Join-Path (Join-Path $WinDir 'scripts') 'docker.ps1')
+. (Join-Path (Join-Path $WinDir 'scripts') 'prereqs.ps1')
+. (Join-Path (Join-Path $WinDir 'scripts') 'line-endings.ps1')
 
 function Write-Info([string]$Message) { Write-Host "[openmono] $Message" }
 function Write-Ok([string]$Message) { Write-Host "[openmono] $Message" -ForegroundColor Green }
@@ -64,14 +65,11 @@ function ConvertTo-NativeArgument([string]$Value) {
   return $escaped
 }
 
+# Commands other than setup only check; setup installs (Confirm-HostPrerequisites).
 function Assert-Dotnet {
-  if (-not (Test-Command 'dotnet')) {
-    throw ".NET SDK $MinDotnet or newer is required (same as install.ps1). Install .NET 10 from https://dotnet.microsoft.com/download"
-  }
-  $raw = (& dotnet --version) | Select-Object -First 1
-  $parsed = $null
-  if (-not [Version]::TryParse(($raw -replace '-.*$', ''), [ref]$parsed) -or $parsed -lt $MinDotnet) {
-    throw "OpenMono needs .NET SDK $MinDotnet or newer. Found '$raw'."
+  if (-not (Get-UsableDotnetSdk)) {
+    $required = Get-RequiredDotnetSdk
+    throw ".NET SDK $required or newer ($($required.Major).x) is required. Run: .\win\openmono.ps1 setup (installs it with winget $(Get-DotnetWingetId), or dotnet-install.ps1 without winget)"
   }
 }
 
@@ -108,14 +106,15 @@ function Initialize-HostDirs {
 
 function Invoke-Setup {
   Write-Info 'Setting up OpenMono for Windows (Foundry Local inference, Linux agent container).'
-  Assert-Dotnet
+  Confirm-HostPrerequisites
   Build-Launcher
-  & (Join-Path (Join-Path $WinDir 'scripts') 'bootstrap.ps1')
+  & (Join-Path (Join-Path $WinDir 'scripts') 'bootstrap.ps1') -SkipHostPrerequisites
   Write-Info 'Checking the model ladder against the Foundry Local catalog...'
   Invoke-Launcher catalog check | Out-Host
   if ($LASTEXITCODE -ne 0) { throw 'No model this machine may serve is in the Foundry catalog; nothing was downloaded. Run: .\win\openmono.ps1 catalog check --refresh' }
   Assert-Docker
   Initialize-HostDirs
+  $null = Repair-ContainerLineEndings $DockerDir
   Write-Info 'Building the agent image (docker compose build agent)...'
   & docker compose -f $ComposeFile build agent
   if ($LASTEXITCODE -ne 0) { throw 'Agent image build failed.' }
@@ -178,6 +177,7 @@ function Invoke-Status {
 function Invoke-Agent([string[]]$AgentArgs) {
   Assert-Docker
   Initialize-HostDirs
+  Confirm-AgentImageLineEndings $DockerDir $ComposeFile
 
   $planArgs = @('agent-plan', '--workdir', (Get-Location).Path, '--compose', $ComposeFile)
   $forward = New-Object System.Collections.Generic.List[string]

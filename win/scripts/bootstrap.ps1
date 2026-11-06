@@ -3,14 +3,21 @@
   First-run bootstrap for OpenMono on Windows (Foundry Local backend).
 
 .DESCRIPTION
-  Checks for the Foundry Local CLI (0.13.0+), installs it with winget when
-  missing, verifies NVIDIA GPU and CUDA/cuDNN visibility, then makes sure
+  Makes sure Git and the .NET SDK are installed (winget, or the official
+  installers without winget; PATH is refreshed in this session), checks for
+  the Foundry Local CLI (0.13.0+), installs it with winget when missing,
+  verifies NVIDIA GPU and CUDA/cuDNN visibility, then makes sure
   Docker Desktop is installed (winget, with WSL 2) and its engine is running,
   and prints the next steps. Idempotent: safe to re-run.
+
+  -SkipHostPrerequisites: openmono.ps1 setup has already done the Git and
+  .NET step.
 #>
+param([switch]$SkipHostPrerequisites)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'docker.ps1')
+. (Join-Path $PSScriptRoot 'prereqs.ps1')
 
 $MinFoundry = [Version]'0.13.0'
 
@@ -25,6 +32,8 @@ function Get-FoundryVersion {
   if (-not $m.Success) { return $null }
   return [Version]$m.Value
 }
+
+if (-not $SkipHostPrerequisites) { Confirm-HostPrerequisites }
 
 Write-Host '[openmono] Checking Foundry Local CLI...'
 $version = Get-FoundryVersion

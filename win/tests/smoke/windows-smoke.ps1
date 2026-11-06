@@ -6,7 +6,7 @@
   Builds FakeTool and stages it as foundry.exe, docker.exe, nvidia-smi.exe,
   winget.exe, and wsl.exe ahead of everything else on PATH (any real
   docker.exe directory is removed from PATH), starts a fake Foundry HTTP
-  server on 127.0.0.1:7474, then runs four scenarios under the requested
+  server on 127.0.0.1:7474, then runs these scenarios under the requested
   shell:
 
     docker-missing  `setup` with no Docker and no WSL: the model ladder is
@@ -16,7 +16,15 @@
                     agent image is built.
     docker-stopped  `setup` with Docker installed but the engine stopped:
                     nothing is installed, Docker Desktop is started and
-                    waited for.
+                    waited for. Git and the .NET SDK are present, so neither
+                    is installed.
+    prereqs-winget  `setup` with no git and no dotnet on PATH: winget
+                    installs Git.Git and Microsoft.DotNet.SDK.10 (they land
+                    only on the persisted PATH, as with a real installer),
+                    the session PATH is refreshed, and setup carries on to
+                    the launcher build and the agent image.
+    prereqs-fallback  The same without winget: MinGit from the (fake) Git for
+                    Windows release and dotnet-install.ps1 -Channel 10.0.
     agent           `start`, `agent`, `status`, `stop` with the engine stopped
                     at first. Asserts the docker invocation of the agent
                     launch: argument quoting (embedded quotes, a trailing
@@ -25,6 +33,11 @@
     cpu-only        `start` with no NVIDIA GPU: qwen3.5-2b is served as its
                     generic CPU variant from the (fake) CPU catalog, and no
                     larger model is ever loaded.
+    agent-crlf      `agent` when the agent image was built from CRLF files
+                    (its entrypoint has \r): the image is rebuilt with LF
+                    before the container starts.
+    line-endings    Repair-ContainerLineEndings on a CRLF copy of docker/:
+                    every text file ends up LF, binaries are left alone.
 
   No GPU, Docker engine, WSL, or Foundry install is needed.
 #>
@@ -57,14 +70,31 @@ function Install-Fake([string]$Dir, [string[]]$Names) {
 Install-Fake $toolsBin @('foundry', 'nvidia-smi', 'winget', 'wsl')
 Install-Fake $dockerBin @('docker')
 Install-Fake $desktopDir @('Docker Desktop')
+$toolsNoWinget = Join-Path $work 'tools-no-winget'
+New-Item -ItemType Directory -Force -Path $toolsNoWinget | Out-Null
+Install-Fake $toolsNoWinget @('foundry', 'nvidia-smi', 'wsl')
+
+# The (fake) MinGit release zip: cmd\git.exe, as in the real MinGit layout.
+$minGitSrc = Join-Path $work 'mingit-src'
+New-Item -ItemType Directory -Force -Path (Join-Path $minGitSrc 'cmd') | Out-Null
+Install-Fake (Join-Path $minGitSrc 'cmd') @('git')
+$env:FAKE_MINGIT_ZIP = Join-Path $work 'MinGit.zip'
+Compress-Archive -Path (Join-Path $minGitSrc '*') -DestinationPath $env:FAKE_MINGIT_ZIP -Force
+$realDotnetDir = Split-Path -Parent (Get-Command dotnet).Source
 
 $cleanPath = (@($env:PATH -split ';') | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'docker.exe')) }) -join ';'
+# A machine without Git, the .NET SDK, or winget.
+$barePath = (@($cleanPath -split ';') | Where-Object {
+    $dir = $_
+    -not (@('git.exe', 'dotnet.exe', 'winget.exe') | Where-Object { Test-Path (Join-Path $dir $_) })
+  }) -join ';'
 $env:FAKE_DOCKER_OUT = Join-Path $work 'docker.json'
 $env:OPENMONO_DOCKER_WAIT_SECONDS = '60'
 $env:OPENMONO_FOUNDRY_CATALOG_URL = 'http://127.0.0.1:7474/api/models'
 $env:FAKE_API_LOG = Join-Path $work 'catalog-api.log'
 $env:FAKE_SERVED = Join-Path $work 'served-model.txt'
 Remove-Item (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.openmono\win\foundry-catalog-*.json') -ErrorAction SilentlyContinue
+Remove-Item (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.openmono\win\agent-image-lf.txt') -ErrorAction SilentlyContinue
 $exe = if ($Shell -eq 'pwsh') { 'pwsh' } else { 'powershell.exe' }
 $launcher = Join-Path $root 'win\openmono.ps1'
 $state = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.openmono\win\inference.json'
@@ -80,7 +110,7 @@ function Invoke-Scenario([string]$Name, [string]$Body, [hashtable]$Environment) 
   Write-Host "=== scenario $Name ($Shell) ==="
   Push-Location $project
   try {
-    & $exe -NoProfile -ExecutionPolicy Bypass -File $wrapper | Out-Host
+    & $exe -NoProfile -ExecutionPolicy Bypass -File $wrapper | Tee-Object -FilePath (Join-Path $work "output-$Name.log") | Out-Host
     $code = $LASTEXITCODE
   } finally {
     Pop-Location
@@ -93,6 +123,16 @@ function Invoke-Scenario([string]$Name, [string]$Body, [hashtable]$Environment) 
 
 function Assert-Called([string]$Name, [object[]]$Calls, [string]$Pattern) {
   if (-not ($Calls | Where-Object { $_ -like $Pattern })) { $failures.Add("[$Name] expected a call like [$Pattern]") }
+}
+
+function Get-Output([string]$Name) {
+  return (Get-Content (Join-Path $work "output-$Name.log") -Raw)
+}
+
+# Index of the first call matching $Pattern, or -1.
+function Get-CallIndex([object[]]$Calls, [string]$Pattern) {
+  for ($i = 0; $i -lt $Calls.Count; $i++) { if ($Calls[$i] -like $Pattern) { return $i } }
+  return -1
 }
 
 function Assert-NotCalled([string]$Name, [object[]]$Calls, [string]$Pattern) {
@@ -143,6 +183,10 @@ exit `$LASTEXITCODE
   Assert-NotCalled 'docker-stopped' $calls 'wsl --install*'
   Assert-Called 'docker-stopped' $calls 'docker desktop*'
   Assert-Called 'docker-stopped' $calls 'docker compose -f * build agent*'
+  Assert-NotCalled 'docker-stopped' $calls 'winget install --id Git.Git*'
+  Assert-NotCalled 'docker-stopped' $calls 'winget install --id Microsoft.DotNet.SDK*'
+  if ((Get-Output 'docker-stopped') -notmatch 'Git \d+\.\d+\.\d+ found\.') { $failures.Add('[docker-stopped] setup did not report the installed Git') }
+  if ((Get-Output 'docker-stopped') -notmatch '\.NET SDK 10\.\d+\.\d+ found') { $failures.Add('[docker-stopped] setup did not report the installed .NET SDK') }
 
   # The tricky arguments live inside the wrapper so the outer shell hop
   # carries none; what is under test is openmono.ps1 -> docker.exe.
@@ -168,6 +212,8 @@ exit 0
   Assert-Called 'agent' $calls 'foundry --version*'
   Assert-NotCalled 'agent' $calls 'foundry server stop*'
   Assert-NotCalled 'agent' $calls 'winget *'
+  Assert-Called 'agent' $calls 'docker run --rm --entrypoint od openmono-agent:latest*'
+  Assert-NotCalled 'agent' $calls 'docker compose -f * build agent*'
 
   $argv = @()
   if (-not (Test-Path $env:FAKE_DOCKER_OUT)) {
@@ -211,13 +257,121 @@ exit `$LASTEXITCODE
     if ($inference.served_model_id -ne 'qwen3.5-2b-generic-cpu:3') { $failures.Add("[cpu-only] served_model_id was [$($inference.served_model_id)]") }
   }
 
+  # No Git, no .NET SDK: winget installs both, then setup carries on in the
+  # same session. git.exe is only reachable through the refreshed PATH.
+  $wingetGit = Join-Path $work 'git-winget\cmd'
+  $wingetDotnet = Join-Path $work 'dotnet-winget'
+  New-Item -ItemType Junction -Path $wingetDotnet -Target $realDotnetDir | Out-Null
+  $registry = Join-Path $work 'persisted-path-winget.txt'
+  New-Item -ItemType File -Force -Path $registry | Out-Null
+  $calls = Invoke-Scenario 'prereqs-winget' $setupBody @{
+    PATH = "$dockerBin;$toolsBin;$barePath"
+    OPENMONO_DOCKER_DESKTOP_DIR = $desktopDir
+    FAKE_DOCKER_ENGINE = $null
+    FAKE_WSL_STATE = $null
+    FAKE_NO_GPU = $null
+    OPENMONO_PATH_REGISTRY_FILE = $registry
+    FAKE_GIT_DIR = $wingetGit
+    FAKE_DOTNET_DIR = $wingetDotnet
+  }
+  $wingetFlags = '-e --source winget --silent --accept-source-agreements --accept-package-agreements'
+  Assert-Called 'prereqs-winget' $calls "winget install --id Git.Git $wingetFlags*"
+  Assert-Called 'prereqs-winget' $calls "winget install --id Microsoft.DotNet.SDK.10 $wingetFlags*"
+  if ((Get-CallIndex $calls 'git --version*') -lt (Get-CallIndex $calls 'winget install --id Git.Git*')) { $failures.Add('[prereqs-winget] git was not run from the refreshed PATH after the install') }
+  Assert-Called 'prereqs-winget' $calls 'docker compose -f * build agent*'
+  $out = Get-Output 'prereqs-winget'
+  foreach ($want in @("Refreshed PATH for this session (added: $wingetGit)", "Refreshed PATH for this session (added: $wingetDotnet)", 'Git 2.51.0 installed; available in this session', 'installed; available in this session')) {
+    if (-not $out.Contains($want)) { $failures.Add("[prereqs-winget] output missing [$want]") }
+  }
+
+  # No winget either: the official installers, user-local, no administrator.
+  $fallbackGit = Join-Path $work 'mingit'
+  $fallbackDotnet = Join-Path $work 'dotnet-user'
+  $registry = Join-Path $work 'persisted-path-fallback.txt'
+  New-Item -ItemType File -Force -Path $registry | Out-Null
+  $calls = Invoke-Scenario 'prereqs-fallback' $setupBody @{
+    PATH = "$dockerBin;$toolsNoWinget;$barePath"
+    OPENMONO_DOCKER_DESKTOP_DIR = $desktopDir
+    OPENMONO_PATH_REGISTRY_FILE = $registry
+    OPENMONO_GIT_RELEASE_API = 'http://127.0.0.1:7474/git-release'
+    OPENMONO_GIT_INSTALL_DIR = $fallbackGit
+    OPENMONO_DOTNET_INSTALL_SCRIPT_URL = 'http://127.0.0.1:7474/dotnet-install.ps1'
+    OPENMONO_DOTNET_INSTALL_DIR = $fallbackDotnet
+    FAKE_GIT_DIR = $null
+    FAKE_DOTNET_DIR = $realDotnetDir
+  }
+  Assert-NotCalled 'prereqs-fallback' $calls 'winget *'
+  Assert-Called 'prereqs-fallback' $calls "dotnet-install -Channel 10.0 -InstallDir $fallbackDotnet -NoPath:True"
+  Assert-Called 'prereqs-fallback' $calls 'git --version*'
+  Assert-Called 'prereqs-fallback' $calls 'docker compose -f * build agent*'
+  $persisted = @(Get-Content $registry)
+  foreach ($want in @((Join-Path $fallbackGit 'cmd'), $fallbackDotnet)) {
+    if ($persisted -notcontains $want) { $failures.Add("[prereqs-fallback] [$want] was not added to the persisted PATH") }
+  }
+  foreach ($key in @('OPENMONO_PATH_REGISTRY_FILE', 'OPENMONO_GIT_RELEASE_API', 'OPENMONO_GIT_INSTALL_DIR', 'OPENMONO_DOTNET_INSTALL_SCRIPT_URL', 'OPENMONO_DOTNET_INSTALL_DIR', 'FAKE_DOTNET_DIR')) {
+    [Environment]::SetEnvironmentVariable($key, $null, 'Process')
+  }
+
+  # An agent image built before .gitattributes, from CRLF files: rebuilt
+  # with LF before the container is created.
+  $crlfMarker = Join-Path $work 'image-crlf'
+  Set-Content -Path $crlfMarker -Value 'crlf'
+  Remove-Item $env:FAKE_DOCKER_OUT -ErrorAction SilentlyContinue
+  $crlfBody = @"
+& '$launcher' start
+if (`$LASTEXITCODE -ne 0) { exit 10 }
+& '$launcher' agent --acp-only
+exit `$LASTEXITCODE
+"@
+  $calls = Invoke-Scenario 'agent-crlf' $crlfBody @{
+    PATH = "$dockerBin;$toolsBin;$cleanPath"
+    OPENMONO_DOCKER_DESKTOP_DIR = $desktopDir
+    FAKE_IMAGE_CRLF = $crlfMarker
+  }
+  $rebuild = Get-CallIndex $calls 'docker compose -f * build agent*'
+  $launch = Get-CallIndex $calls 'docker compose * run *'
+  if ($rebuild -lt 0) { $failures.Add('[agent-crlf] the CRLF agent image was not rebuilt') }
+  elseif ($launch -lt $rebuild) { $failures.Add('[agent-crlf] the agent container started before the rebuild') }
+  if (@($calls | Where-Object { $_ -like 'docker run --rm --entrypoint od*' }).Count -lt 2) { $failures.Add('[agent-crlf] the rebuilt image was not re-checked') }
+  if (-not (Test-Path $env:FAKE_DOCKER_OUT)) { $failures.Add('[agent-crlf] the agent never launched after the rebuild') }
+  $env:FAKE_IMAGE_CRLF = $null
+
+  # docker/ checked out with CRLF (core.autocrlf=true, no .gitattributes):
+  # every file the containers run or parse is put back to LF.
+  $crlfDocker = Join-Path $work 'docker-crlf'
+  Copy-Item -Recurse (Join-Path $root 'docker') $crlfDocker
+  $lineEndingsScript = Join-Path $root 'win\scripts\line-endings.ps1'
+  $lineEndingsBody = @"
+`$ErrorActionPreference = 'Stop'
+. '$lineEndingsScript'
+`$text = @(Get-ChildItem -LiteralPath '$crlfDocker' -Recurse -File)
+foreach (`$f in `$text) {
+  `$lf = [IO.File]::ReadAllText(`$f.FullName)
+  [IO.File]::WriteAllText(`$f.FullName, (`$lf -replace "``r?``n", "``r``n"))
+}
+`$binary = Join-Path '$crlfDocker' 'blob.bin'
+[IO.File]::WriteAllBytes(`$binary, [byte[]](0x00, 0x0D, 0x0A, 0x41))
+`$withCr = @(`$text | Where-Object { [IO.File]::ReadAllBytes(`$_.FullName) -contains 13 })
+if (`$withCr.Count -eq 0) { Write-Host 'the CRLF copy has no CR'; exit 19 }
+`$changed = @(Repair-ContainerLineEndings '$crlfDocker')
+if (`$changed.Count -ne `$withCr.Count) { Write-Host "`$(`$changed.Count) of `$(`$withCr.Count) CRLF files converted"; exit 20 }
+foreach (`$f in `$text) {
+  if ([IO.File]::ReadAllBytes(`$f.FullName) -contains 13) { Write-Host "CR left in `$(`$f.FullName)"; exit 21 }
+}
+if ((@([IO.File]::ReadAllBytes(`$binary)) -join ',') -ne '0,13,10,65') { Write-Host 'binary file was modified'; exit 22 }
+`$first = ([IO.File]::ReadAllText((Join-Path '$crlfDocker' 'entrypoint.sh')) -split "``n")[0]
+if (`$first -cne '#!/usr/bin/env bash') { Write-Host "entrypoint shebang is [`$first]"; exit 23 }
+exit 0
+"@
+  $null = Invoke-Scenario 'line-endings' $lineEndingsBody @{}
+
   if ($failures.Count -gt 0) {
     $failures | ForEach-Object { Write-Host "FAIL: $_" }
     if ($argv.Count -gt 0) { Write-Host 'docker argv:'; $argv | ForEach-Object { Write-Host "  [$_]" } }
     Get-ChildItem $work -Filter 'calls-*.log' | ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content $_.FullName | ForEach-Object { Write-Host "  $_" } }
     exit 1
   }
-  Write-Host "Windows smoke test passed under $Shell (docker-missing, docker-stopped, agent, cpu-only)."
+  Write-Host "Windows smoke test passed under $Shell (docker-missing, docker-stopped, agent, cpu-only, prereqs-winget, prereqs-fallback, agent-crlf, line-endings)."
 } finally {
   if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
 }

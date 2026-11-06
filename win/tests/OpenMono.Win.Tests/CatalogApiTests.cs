@@ -336,18 +336,7 @@ public sealed class LadderTextTests
     private static readonly string[] RetiredAliases =
         ["qwen3-14b", "qwen3-8b", "qwen3-4b", "qwen3-1.7b", "qwen3-0.6b", "qwen3-vl", "qwen2.5-vl"];
 
-    private static string WinDir()
-    {
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-        {
-            if (File.Exists(Path.Combine(dir.FullName, "win", "scripts", "check-cuda.ps1")))
-            {
-                return Path.Combine(dir.FullName, "win");
-            }
-        }
-
-        throw new DirectoryNotFoundException("win/ not found above the test output directory.");
-    }
+    private static string WinDir() => RepoPaths.WinDir;
 
     [Theory]
     [InlineData("scripts/check-cuda.ps1")]

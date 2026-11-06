@@ -9,7 +9,7 @@ name: win
 on:
   push:
     branches: [win]
-    paths: ['win/**', '.github/workflows/win.yml']
+    paths: ['win/**', '.github/workflows/win.yml', '.gitattributes', 'docker/**']
   workflow_dispatch:
 
 jobs:
