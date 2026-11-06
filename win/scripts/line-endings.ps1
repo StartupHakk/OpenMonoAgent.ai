@@ -54,9 +54,12 @@ function Get-LineEndingCacheFile {
 # `docker image inspect` per launch once an image has passed.
 function Test-AgentImageLineEndings {
   $ErrorActionPreference = 'Continue'
-  $id = (& docker image inspect $AgentImageName --format '{{.Id}}' 2>$null | Select-Object -First 1)
-  if ($LASTEXITCODE -ne 0 -or -not $id) { return $true }
-  $id = "$id".Trim()
+  # Collect all output before picking a line: Select-Object -First in the
+  # pipeline stops docker early on Windows PowerShell 5.1 and loses its exit code.
+  $inspect = @(& docker image inspect $AgentImageName --format '{{.Id}}' 2>$null)
+  if ($LASTEXITCODE -ne 0 -or $inspect.Count -eq 0) { return $true }
+  $id = "$($inspect[0])".Trim()
+  if (-not $id) { return $true }
   $cache = Get-LineEndingCacheFile
   if ((Test-Path $cache) -and ((Get-Content $cache -Raw).Trim() -eq $id)) { return $true }
 
