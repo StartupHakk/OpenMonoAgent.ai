@@ -79,7 +79,6 @@ jobs:
     timeout-minutes: 45
     env:
       OPENMONO_MODELS_DIR: ${{ github.workspace }}\.live-models
-      OPENMONO_LLAMA_CPP_DIR: ${{ runner.temp }}\llama.cpp
     steps:
       - uses: actions/checkout@v4
         with:
