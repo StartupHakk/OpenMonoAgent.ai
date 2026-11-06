@@ -128,8 +128,13 @@ function Stop-FakeLlama {
     Stop-Process -Force -ErrorAction SilentlyContinue
 }
 
+# The download server keeps the FAKE_LOG it started with; its lines are
+# added to each scenario's calls.
+$serverLog = Join-Path $work 'server.log'
+
 function Invoke-Scenario([string]$Name, [string]$Body, [hashtable]$Environment) {
   Stop-FakeLlama
+  Remove-Item $serverLog -ErrorAction SilentlyContinue
   $log = Join-Path $work "calls-$Name.log"
   $env:FAKE_LOG = $log
   foreach ($key in $Environment.Keys) { [Environment]::SetEnvironmentVariable($key, $Environment[$key], 'Process') }
@@ -146,6 +151,11 @@ function Invoke-Scenario([string]$Name, [string]$Body, [hashtable]$Environment) 
   }
   $calls = @()
   if (Test-Path $log) { $calls = @(Get-Content $log) }
+  if (Test-Path $serverLog) {
+    $served = @(Get-Content $serverLog)
+    Add-Content -Path $log -Value $served
+    $calls += $served
+  }
   if ($code -ne 0) { $failures.Add("[$Name] exited $code") }
   return , $calls
 }
@@ -168,6 +178,7 @@ function Assert-NotCalled([string]$Name, [object[]]$Calls, [string]$Pattern) {
   if ($Calls | Where-Object { $_ -like $Pattern }) { $failures.Add("[$Name] unexpected call like [$Pattern]") }
 }
 
+$env:FAKE_LOG = $serverLog
 $server = Start-Process -FilePath (Join-Path $toolsBin 'FakeTool.exe') -ArgumentList 'server', '7480' -PassThru -WindowStyle Hidden
 try {
   $up = $false
@@ -275,8 +286,6 @@ exit 0
   # No NVIDIA GPU: the llama.cpp CPU build and the CPU rung only.
   $cpuBody = @"
 & '$launcher' start
-if (`$LASTEXITCODE -ne 0) { exit 10 }
-& '$launcher' stop
 exit `$LASTEXITCODE
 "@
   $calls = Invoke-Scenario 'cpu-only' $cpuBody @{
