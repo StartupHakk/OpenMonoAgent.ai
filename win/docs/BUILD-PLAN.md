@@ -109,11 +109,19 @@ otherwise unchanged in intent.
     other model is unloaded (`foundry model unload`). If the ladder model
     cannot be loaded while another model is served, `start` stops instead of
     letting the agent run on it. The agent keeps `OPENMONO_MODEL` when
-    `/v1/models` lists it (before, it took the first listed id), and with
-    `OPENMONO_LLM_BACKEND=foundry` it sends standard OpenAI chat fields only,
-    with tools only when the catalog says the model can call them
-    (`OPENMONO_TOOL_CALLING=0` otherwise). A 400 shows the server's reply and
-    is not retried. The llama.cpp request body on Mac/Linux is unchanged.
+    `/v1/models` lists it; Foundry lists its whole catalog there, so a set
+    model is never replaced by the first id (a loaded id from
+    `/openai/loadedmodels` wins when the set one is unknown). With
+    `OPENMONO_LLM_BACKEND=foundry` it sends standard OpenAI chat fields only
+    (no penalties). `OPENMONO_TOOL_CALLING=0` comes from the catalog entry of
+    the served variant id, not the alias. When Foundry still refuses
+    structured tools (the tool-marker error, as 400, 500 or a stream error),
+    the agent switches the session to text tool calls: no `tools` field, the
+    tool list in the system prompt in Qwen XML, calls parsed from the reply,
+    results sent back as `<tool_response>` text. Foundry 400, 500 and stream
+    errors are not resent with the same body; "not reachable" is shown only
+    for connection failures. The llama.cpp request body on Mac/Linux is
+    unchanged.
 
 ## Goal
 

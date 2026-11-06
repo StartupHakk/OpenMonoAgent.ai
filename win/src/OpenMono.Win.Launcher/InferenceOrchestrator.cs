@@ -205,7 +205,7 @@ public sealed class InferenceOrchestrator
         {
             ToolCalling = agentModel is null && settings.LlmModel is not null
                 ? null
-                : view.Describe(selection.ModelAlias)?.SupportsToolCalling,
+                : ToolCallingFor(view, served.ServedModelId),
         };
 
         if (options.Persist)
@@ -259,6 +259,24 @@ public sealed class InferenceOrchestrator
         var web = await FoundryWebCatalogClient.FromEnvironment(_deps.Http, _deps.GetEnv, _deps.HomeDir)
             .ListAsync(device, cacheOnly: local.Count > 0 && device != FoundryCatalogDevice.Cpu, ct: ct);
         return new FoundryCatalogView(local, web);
+    }
+
+    // Tool calling is read from the served variant id, not the alias: variants of
+    // one alias differ. A variant the catalog lists without supportsToolCalling=true
+    // gets false, so the agent starts with tools described in the prompt; anything
+    // else is unknown (null). Even "true" is not proof (qwen3.5-9b-cuda-gpu:4 says
+    // true and still has no tool markers), so the agent switches at runtime when
+    // Foundry refuses structured tools.
+    public static bool? ToolCallingFor(FoundryCatalogView view, string? servedModelId)
+    {
+        if (servedModelId is null)
+        {
+            return null;
+        }
+
+        var variant = view.WebModels.FirstOrDefault(m =>
+            string.Equals(m.VariantId, servedModelId, StringComparison.OrdinalIgnoreCase));
+        return variant is null ? null : variant.SupportsToolCalling == true;
     }
 
     public static string? CpuVariant(FoundryCatalogView view, string alias) =>

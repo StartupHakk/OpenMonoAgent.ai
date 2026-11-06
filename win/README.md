@@ -56,12 +56,30 @@ Runs on PowerShell 7 (`pwsh.exe`) or Windows PowerShell 5.1 (`powershell.exe`).
 The agent knows it talks to Foundry (the launcher passes
 `OPENMONO_LLM_BACKEND=foundry`) and sends standard OpenAI chat fields only:
 `model`, `messages`, `temperature`, `top_p`, `max_tokens`, `stream`, and
-`tools`/`tool_choice` unless the Foundry catalog says the model cannot call
-tools. The llama.cpp extensions it sends on Mac/Linux (`top_k`, `min_p`,
-`repetition_penalty`, `chat_template_kwargs`, `reasoning_effort`,
-`stream_options`, ...) are left out, because Foundry answers them with a 400.
-When Foundry does reject a request, the TUI shows Foundry's reply and points at
+`tools`/`tool_choice`. The llama.cpp extensions it sends on Mac/Linux (`top_k`,
+`min_p`, `presence_penalty`, `repetition_penalty`, `chat_template_kwargs`,
+`reasoning_effort`, `stream_options`, ...) are left out, because Foundry
+answers them with a 400 (a nonzero `presence_penalty` or `frequency_penalty`
+included).
+
+Some Foundry variants cannot take structured tools even when the catalog says
+"Tools: Yes" (`qwen3.5-2b-generic-gpu:4`, `qwen3.5-9b-cuda-gpu:4`). Foundry then
+fails with `structured tool calling requires model-published opening and
+closing tool markers`, as an HTTP 400, an HTTP 500, or an error in the stream.
+The agent does not resend that request. It retries the turn once without
+`tools`/`tool_choice`, describes the tools in the system prompt in Qwen XML
+form (`<tool_call><function=name><parameter=key>value</parameter></function></tool_call>`),
+and reads tool calls back from the reply text (`<function=...>`,
+`<tool_call>...</tool_call>`, `<tools>...</tools>`). Tool results go back as
+`<tool_response>` text in a user message, never as `role: tool`. That mode lasts
+for the rest of the session. When the catalog entry of the served variant id
+already says it cannot call tools, the launcher passes `OPENMONO_TOOL_CALLING=0`
+and the agent starts in that mode.
+
+When Foundry rejects a request, the TUI shows Foundry's reply and points at
 `.\win\openmono.ps1 status`, `start` and `foundry server logs` on the host.
+Other request errors are not resent with the same body either. "Foundry Local is
+not reachable" is shown only when no connection could be made.
 
 ### Line endings
 

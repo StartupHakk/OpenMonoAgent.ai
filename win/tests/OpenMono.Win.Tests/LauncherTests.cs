@@ -310,6 +310,60 @@ public sealed class InferenceOrchestratorTests
         args.Should().NotContain("OPENMONO_TOOL_CALLING=0");
     }
 
+    // The CPU catalog plus a GPU variant of the same alias that publishes no tool markers.
+    private static string CatalogWithToolLessGpuVariant()
+    {
+        var root = System.Text.Json.Nodes.JsonNode.Parse(CatalogFixtures.Cpu)!;
+        var entries = root["value"]!.AsArray();
+        var gpu = entries.First(e => (string?)e!["properties"]!["id"] == "qwen3.5-2b-generic-cpu:3")!.DeepClone();
+        gpu["properties"]!["id"] = "qwen3.5-2b-generic-gpu:4";
+        gpu["properties"]!["name"] = "qwen3.5-2b-generic-gpu";
+        gpu["properties"]!["version"] = 4;
+        gpu["annotations"]!["name"] = "qwen3.5-2b-generic-gpu";
+        gpu["annotations"]!["tags"]!["supportsToolCalling"] = "false";
+        gpu["properties"]!["variantInfo"]!["variantMetadata"]!["device"] = "gpu";
+        gpu["properties"]!["variantInfo"]!["variantMetadata"]!["executionProvider"] = "WebGpuExecutionProvider";
+        entries.Add(gpu);
+        return root.ToJsonString();
+    }
+
+    [Fact]
+    public async Task AVariantWithoutToolCallingTellsTheAgentToSkipStructuredTools()
+    {
+        var root = System.Text.Json.Nodes.JsonNode.Parse(CatalogFixtures.Cpu)!;
+        root["value"]!.AsArray().First(e => (string?)e!["properties"]!["id"] == "qwen3.5-2b-generic-cpu:3")!
+            ["annotations"]!["tags"]!["supportsToolCalling"] = "false";
+        using var rig = new FoundryRig(noGpu: true, alreadyServing: true);
+        rig.Http.RespondJson("/api/models", () => root.ToJsonString());
+
+        var result = await new InferenceOrchestrator(rig.Deps()).UpAsync(new UpOptions());
+
+        result.Ok.Should().BeTrue(result.Error);
+        result.State!.ServedModelId.Should().Be("qwen3.5-2b-generic-cpu:3");
+        result.State.ToolCalling.Should().BeFalse();
+
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+        var code = await LauncherCli.RunAsync(["agent-plan", "--workdir", "C:\\proj", "--compose", "c.yml", "--no-git-auth"], rig.Deps(), stdout, stderr);
+
+        code.Should().Be(0, stderr.ToString());
+        using var doc = JsonDocument.Parse(stdout.ToString());
+        doc.RootElement.GetProperty("docker_args").EnumerateArray().Select(e => e.GetString())
+            .Should().Contain("OPENMONO_TOOL_CALLING=0");
+    }
+
+    [Fact]
+    public void ToolCallingIsUnknownWhenTheServedVariantIsNotInTheCatalog()
+    {
+        var models = FoundryWebCatalogClient.ParsePage(CatalogWithToolLessGpuVariant()).Models;
+        var view = new FoundryCatalogView([], new WebCatalogResult(true, models, "test", null, false, null));
+
+        InferenceOrchestrator.ToolCallingFor(view, "qwen3.5-2b-generic-cpu:3").Should().BeTrue();
+        InferenceOrchestrator.ToolCallingFor(view, "QWEN3.5-2B-GENERIC-GPU:4").Should().BeFalse();
+        InferenceOrchestrator.ToolCallingFor(view, "qwen3.5-2b-generic-gpu:9").Should().BeNull();
+        InferenceOrchestrator.ToolCallingFor(view, null).Should().BeNull();
+    }
+
     private static IEnumerable<string> LoadCalls(FoundryRig rig) =>
         rig.Runner.Calls.Where(c => c.Arguments.StartsWith("model load", StringComparison.Ordinal)).Select(c => c.Arguments);
 
