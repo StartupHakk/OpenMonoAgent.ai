@@ -1,0 +1,28 @@
+# Windows-only CI for the `win` branch. Not present on `main`.
+# Builds the win/ solution and runs the GPU-free unit tests.
+# Model download and Foundry serving are never attempted in CI.
+name: win
+
+on:
+  push:
+    branches: [win]
+    paths: ['win/**', '.github/workflows/win.yml']
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: win
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build win solution
+        run: dotnet build win/OpenMono.Win.sln -c Release
+      - name: Test win solution
+        run: dotnet test win/OpenMono.Win.sln -c Release --no-build

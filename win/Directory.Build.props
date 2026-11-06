@@ -1,0 +1,8 @@
+<Project>
+  <!-- Inherit the repo-wide build settings (TFM, nullable, warnings as errors). -->
+  <Import Project="../Directory.Build.props" />
+  <PropertyGroup>
+    <!-- Windows-first code must still compile and test on Linux CI (no GPU, no Foundry). -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+</Project>

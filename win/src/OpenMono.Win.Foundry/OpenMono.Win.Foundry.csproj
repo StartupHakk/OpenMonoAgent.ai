@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>OpenMono.Win.Foundry</RootNamespace>
+    <Description>Windows-only Foundry Local wrapper: CLI/SDK detection, GPU and CUDA checks, catalog alias resolution, OpenAI-compatible server adopt-or-start on 127.0.0.1:7474.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- M1 drives the Foundry CLI and probes for the SDK assembly at runtime.
+         When the Microsoft.AI.Foundry.Local package coordinate is confirmed on
+         a Windows machine, add the PackageReference here and promote
+         SdkBackendProbe to a typed client. See win/docs/BUILD-PLAN.md. -->
+    <!-- <PackageReference Include="Microsoft.AI.Foundry.Local" Version="0.13.0" /> -->
+  </ItemGroup>
+
+</Project>

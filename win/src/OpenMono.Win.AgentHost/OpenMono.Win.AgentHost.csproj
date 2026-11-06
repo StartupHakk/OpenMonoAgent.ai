@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>OpenMono.Win.AgentHost</RootNamespace>
+    <Description>Windows agent host: runs OpenMono.Cli in process with Windows tool overrides (M2 start).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../../src/OpenMono.Cli/OpenMono.Cli.csproj" />
+    <ProjectReference Include="../OpenMono.Win.Foundry/OpenMono.Win.Foundry.csproj" />
+  </ItemGroup>
+
+</Project>
