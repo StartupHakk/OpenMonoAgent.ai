@@ -83,6 +83,23 @@ public sealed class FoundryRig : IDisposable
 
     public void Preload(string alias) => _loaded.Add(alias);
 
+    public const string DeepSeek = "DeepSeek-R1-Distill-Qwen-1.5B-openvino-gpu:2";
+
+    // A model someone else loaded into the daemon OpenMono adopts; `model unload` removes it.
+    public void PreloadForeign(string id = DeepSeek)
+    {
+        _serving = true;
+        _loaded.Add(id);
+        Runner.Respond(Exe, $"model unload {id}", 0, "unloaded\n");
+        Runner.OnCall(Exe, $"model unload {id}", () => _loaded.Remove(id));
+    }
+
+    public void FailLoad(string target)
+    {
+        Runner.Respond(Exe, $"model load {target}", 1, "", "Failed to load model: not supported on this device");
+        Runner.OnCall(Exe, $"model load {target}", () => { });
+    }
+
     public void WriteSettings(string json) =>
         File.WriteAllText(Path.Combine(Home, ".openmono", "settings.json"), json);
 
@@ -207,6 +224,90 @@ public sealed class InferenceOrchestratorTests
         result.Ok.Should().BeFalse();
         result.Error.Should().Contain("serves only qwen3.5-2b or qwen3.5-0.8b").And.Contain("nothing was downloaded");
         LoadCalls(rig).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AdoptedDaemonServingAForeignModelSwitchesToTheLadderModel()
+    {
+        using var rig = new FoundryRig(vramGiB: 24);
+        rig.PreloadForeign();
+
+        var result = await new InferenceOrchestrator(rig.Deps()).UpAsync(new UpOptions());
+
+        result.Ok.Should().BeTrue(result.Error);
+        result.State!.ServedModelId.Should().Be("qwen3.8-27b-cuda-gpu:1");
+        result.State.AgentModel.Should().Be("qwen3.8-27b-cuda-gpu:1");
+        result.State.StartedByUs.Should().BeFalse();
+        rig.Runner.Calls.Should().NotContain(c => c.Arguments.StartsWith("server start", StringComparison.Ordinal));
+        rig.Runner.Calls.Select(c => c.Arguments).Should().ContainInOrder("model load qwen3.8-27b", $"model unload {FoundryRig.DeepSeek}");
+        result.Log.Should().Contain(l => l.Contains($"Foundry is serving {FoundryRig.DeepSeek}, which is not qwen3.8-27b"));
+        result.Log.Should().Contain($"Replaced the previously served model {FoundryRig.DeepSeek} with qwen3.8-27b-cuda-gpu:1.");
+    }
+
+    [Fact]
+    public async Task CpuOnlyNeverKeepsTheOpenVinoDeepSeekModel()
+    {
+        using var rig = new FoundryRig(noGpu: true);
+        rig.Http.RespondJson("/api/models", () => CatalogFixtures.Cpu);
+        rig.PreloadForeign();
+
+        var result = await new InferenceOrchestrator(rig.Deps()).UpAsync(new UpOptions());
+
+        result.Ok.Should().BeTrue(result.Error);
+        result.State!.ModelAlias.Should().Be("qwen3.5-2b");
+        result.State.ServedModelId.Should().Be("qwen3.5-2b-generic-cpu:3");
+        result.State.AgentModel.Should().Be("qwen3.5-2b-generic-cpu:3");
+        LoadCalls(rig).Should().Equal("model load qwen3.5-2b-generic-cpu:3");
+        rig.Runner.Calls.Should().Contain(c => c.Arguments == $"model unload {FoundryRig.DeepSeek}");
+        result.State.ToString().Should().NotContain("DeepSeek");
+    }
+
+    [Fact]
+    public async Task ForeignModelWithAFailedLoadStopsInsteadOfRunningTheAgentOnIt()
+    {
+        using var rig = new FoundryRig(noGpu: true);
+        rig.Http.RespondJson("/api/models", () => CatalogFixtures.Cpu);
+        rig.PreloadForeign();
+        rig.FailLoad("qwen3.5-2b-generic-cpu:3");
+
+        var result = await new InferenceOrchestrator(rig.Deps()).UpAsync(new UpOptions());
+
+        result.Ok.Should().BeFalse();
+        result.Error.Should().Contain($"serves {FoundryRig.DeepSeek}, not qwen3.5-2b")
+            .And.Contain("foundry model load qwen3.5-2b-generic-cpu:3")
+            .And.Contain("--model or set llm.model");
+        rig.Runner.Calls.Should().NotContain(c => c.Arguments.StartsWith("model unload", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task LlmModelInSettingsKeepsThatModelLoaded()
+    {
+        using var rig = new FoundryRig(vramGiB: 24);
+        rig.PreloadForeign();
+        rig.WriteSettings($$$"""{"llm":{"model":"{{{FoundryRig.DeepSeek}}}"}}""");
+
+        var result = await new InferenceOrchestrator(rig.Deps()).UpAsync(new UpOptions());
+
+        result.Ok.Should().BeTrue(result.Error);
+        result.State!.AgentModel.Should().BeNull("the agent keeps llm.model from settings.json");
+        rig.Runner.Calls.Should().NotContain(c => c.Arguments.StartsWith("model unload", StringComparison.Ordinal));
+        result.Log.Should().NotContain(l => l.StartsWith("Replaced", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task AgentPlanTellsTheAgentItTalksToFoundry()
+    {
+        using var rig = new FoundryRig();
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+
+        var code = await LauncherCli.RunAsync(["agent-plan", "--workdir", "C:\\proj", "--compose", "c.yml", "--no-git-auth"], rig.Deps(), stdout, stderr);
+
+        code.Should().Be(0, stderr.ToString());
+        using var doc = JsonDocument.Parse(stdout.ToString());
+        var args = doc.RootElement.GetProperty("docker_args").EnumerateArray().Select(e => e.GetString()).ToList();
+        args.Should().Contain("OPENMONO_LLM_BACKEND=foundry");
+        args.Should().NotContain("OPENMONO_TOOL_CALLING=0");
     }
 
     private static IEnumerable<string> LoadCalls(FoundryRig rig) =>

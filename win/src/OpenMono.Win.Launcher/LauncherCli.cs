@@ -320,7 +320,9 @@ public static class LauncherCli
             WebGateway: settings.WebGateway,
             WebSearch: settings.WebSearch,
             WebScrape: settings.WebScrape,
-            NoGitAuth: parsed.Flag("--no-git-auth") || deps.GetEnv("OPENMONO_NO_GIT_AUTH") == "1"));
+            NoGitAuth: parsed.Flag("--no-git-auth") || deps.GetEnv("OPENMONO_NO_GIT_AUTH") == "1",
+            LlmBackend: state.Backend == InferenceState.FoundryBackend ? InferenceState.FoundryBackend : null,
+            ToolCalling: state.ToolCalling));
 
         stdout.WriteLine(JsonSerializer.Serialize(
             new
@@ -341,6 +343,7 @@ public static class LauncherCli
         line.StartsWith("Images:", StringComparison.Ordinal)
         || line.StartsWith("Vision session:", StringComparison.Ordinal)
         || line.Contains("adopting it", StringComparison.Ordinal)
+        || line.StartsWith("Replaced the previously served model", StringComparison.Ordinal)
         || line.Contains("below the 24 GB floor", StringComparison.Ordinal);
 
     private static async Task<int> DoctorAsync(LauncherDeps deps, LauncherArgs parsed, TextWriter stdout, CancellationToken ct)

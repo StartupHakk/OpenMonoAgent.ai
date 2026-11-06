@@ -33,6 +33,10 @@
     cpu-only        `start` with no NVIDIA GPU: qwen3.5-2b is served as its
                     generic CPU variant from the (fake) CPU catalog, and no
                     larger model is ever loaded.
+    foreign-model   `start` against a running Foundry that serves a
+                    DeepSeek-R1-Distill OpenVINO model: the daemon is adopted
+                    (never a second server) and the model is replaced by the
+                    ladder model.
     agent-crlf      `agent` when the agent image was built from CRLF files
                     (its entrypoint has \r): the image is rebuilt with LF
                     before the container starts.
@@ -226,7 +230,7 @@ exit 0
     for ($i = 0; $i -lt 5; $i++) {
       if ($tail[$i] -cne $expectedTail[$i]) { $failures.Add("[agent] agent arg $i was [$($tail[$i])], expected [$($expectedTail[$i])]") }
     }
-    foreach ($want in @('run', '--rm', '127.0.0.1:7475:7475', 'HOST_ACP_PORT=7475', "HOST_WORKSPACE_PATH=$project", 'OPENMONO_MODEL=qwen3.8-27b-cuda-gpu:1')) {
+    foreach ($want in @('run', '--rm', '127.0.0.1:7475:7475', 'HOST_ACP_PORT=7475', 'OPENMONO_LLM_BACKEND=foundry', "HOST_WORKSPACE_PATH=$project", 'OPENMONO_MODEL=qwen3.8-27b-cuda-gpu:1')) {
       if ($argv -notcontains $want) { $failures.Add("[agent] docker args missing [$want]") }
     }
     if ($run.env.OPENMONO_ENDPOINT -ne 'http://host.docker.internal:7474') { $failures.Add("[agent] OPENMONO_ENDPOINT was [$($run.env.OPENMONO_ENDPOINT)]") }
@@ -255,6 +259,23 @@ exit `$LASTEXITCODE
     $inference = Get-Content $state -Raw | ConvertFrom-Json
     if ($inference.model_alias -ne 'qwen3.5-2b') { $failures.Add("[cpu-only] model_alias was [$($inference.model_alias)]") }
     if ($inference.served_model_id -ne 'qwen3.5-2b-generic-cpu:3') { $failures.Add("[cpu-only] served_model_id was [$($inference.served_model_id)]") }
+  }
+
+  # Foundry already serving someone else's model: adopt the daemon, switch the model.
+  $deepSeek = 'DeepSeek-R1-Distill-Qwen-1.5B-openvino-gpu:2'
+  Set-Content -Path $env:FAKE_SERVED -Value $deepSeek
+  $calls = Invoke-Scenario 'foreign-model' $cpuBody @{
+    PATH = "$dockerBin;$toolsBin;$cleanPath"
+    OPENMONO_DOCKER_DESKTOP_DIR = $desktopDir
+    FAKE_NO_GPU = $null
+  }
+  Assert-Called 'foreign-model' $calls 'foundry model load qwen3.8-27b*'
+  Assert-NotCalled 'foreign-model' $calls 'foundry server start*'
+  if (-not (Get-Output 'foreign-model').Contains("Replaced the previously served model $deepSeek with qwen3.8-27b-cuda-gpu:1")) {
+    $failures.Add('[foreign-model] start did not report replacing the foreign model')
+  }
+  if ((Test-Path $state) -and ((Get-Content $state -Raw | ConvertFrom-Json).served_model_id -ne 'qwen3.8-27b-cuda-gpu:1')) {
+    $failures.Add('[foreign-model] the agent model is not the ladder model')
   }
 
   # No Git, no .NET SDK: winget installs both, then setup carries on in the
@@ -373,7 +394,7 @@ exit 0
     Get-ChildItem $work -Filter 'calls-*.log' | ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content $_.FullName | ForEach-Object { Write-Host "  $_" } }
     exit 1
   }
-  Write-Host "Windows smoke test passed under $Shell (docker-missing, docker-stopped, agent, cpu-only, prereqs-winget, prereqs-fallback, agent-crlf, line-endings)."
+  Write-Host "Windows smoke test passed under $Shell (docker-missing, docker-stopped, agent, cpu-only, foreign-model, prereqs-winget, prereqs-fallback, agent-crlf, line-endings)."
 } finally {
   if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
 }

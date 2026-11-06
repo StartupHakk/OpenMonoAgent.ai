@@ -263,6 +263,46 @@ public sealed class HealthAndDeciderTests
     }
 
     [Fact]
+    public async Task ServiceReplacesAForeignModelOnAnAdoptedDaemon()
+    {
+        const string deepSeek = "DeepSeek-R1-Distill-Qwen-1.5B-openvino-gpu:2";
+        var served = new List<string> { deepSeek };
+        var handler = new FakeHttpHandler();
+        handler.RespondJson("/v1/models", () => System.Text.Json.JsonSerializer.Serialize(new { data = served.Select(id => new { id }) }));
+        var runner = new FakeCliRunner();
+        var exe = FoundryCliDetector.CliExecutableName;
+        runner.Respond(exe, "model load qwen3.5-2b-generic-cpu:3", 0, "loaded\n");
+        runner.OnCall(exe, "model load qwen3.5-2b-generic-cpu:3", () => served.Add("qwen3.5-2b-generic-cpu:3"));
+        runner.Respond(exe, $"model unload {deepSeek}", 0, "unloaded\n");
+        runner.OnCall(exe, $"model unload {deepSeek}", () => served.Remove(deepSeek));
+        var service = new CliFoundryService(runner, CheckerWith(handler), NoDelay);
+
+        var result = await service.StartOrAdoptAsync("qwen3.5-2b", "http://127.0.0.1:7474", loadTarget: "qwen3.5-2b-generic-cpu:3");
+
+        result.AdoptedExisting.Should().BeTrue();
+        result.ServedModelId.Should().Be("qwen3.5-2b-generic-cpu:3");
+        result.ReplacedModels.Should().Equal(deepSeek);
+        result.ForeignModels.Should().BeEmpty();
+        runner.Calls.Select(c => c.Arguments).Should().Equal("model load qwen3.5-2b-generic-cpu:3", $"model unload {deepSeek}");
+        served.Should().Equal("qwen3.5-2b-generic-cpu:3");
+    }
+
+    [Fact]
+    public async Task ServiceLeavesOtherModelsAloneWhenTheLadderModelIsAlreadyServedWithoutThem()
+    {
+        var handler = new FakeHttpHandler();
+        handler.Respond("/v1/models", FakeHttpHandler.Json("""{"data":[{"id":"qwen3.5-2b-generic-cpu:3"}]}"""));
+        var runner = new FakeCliRunner();
+        var service = new CliFoundryService(runner, CheckerWith(handler), NoDelay);
+
+        var result = await service.StartOrAdoptAsync("qwen3.5-2b", "http://127.0.0.1:7474", loadTarget: "qwen3.5-2b-generic-cpu:3");
+
+        result.ServedModelId.Should().Be("qwen3.5-2b-generic-cpu:3");
+        result.ReplacedModels.Should().BeEmpty();
+        runner.Calls.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task ServiceStartsServerBeforeLoadingModel()
     {
         var serving = false;

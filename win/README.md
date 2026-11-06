@@ -40,7 +40,7 @@ C:\path\to\OpenMonoAgent.ai\win\openmono.ps1 agent --acp-only   # ACP on 127.0.0
 | Command | What it does |
 | --- | --- |
 | `setup` | Installs or checks prerequisites (Git and the .NET SDK; Foundry Local; Docker Desktop and WSL 2 when missing, then starts Docker Desktop and waits for its engine), checks the model ladder against the Foundry catalog (`catalog check`), builds `openmono-win` and the agent image, starts inference, runs `doctor`. Prints numbered steps for what only you can finish (restart, first-launch agreement, sign-out) |
-| `start` | Adopts a running Foundry daemon or starts one on 7474, loads the model for this GPU |
+| `start` | Adopts a running Foundry daemon or starts one on 7474, loads the model for this GPU. A model the daemon already served that is not that model (for example a DeepSeek-R1-Distill OpenVINO model on an Intel machine) is unloaded and replaced, and the log says so; `--model` and `llm.model` in `settings.json` are honored |
 | `stop` | Stops Foundry only if OpenMono started it (`--force` to override). `--agent` or `--all` also removes agent containers |
 | `status` | Inference endpoint, served models, and agent containers |
 | `agent [args]` | `docker compose run --rm ... agent [args]`, the same launch as bash `openmono agent`. Files under `docker\` are kept on LF line endings first, and an agent image built from CRLF files is rebuilt (see Line endings below). `--vision` starts an image session on this machine's model and fails loudly if it refuses images (no second model is loaded) |
@@ -50,6 +50,18 @@ C:\path\to\OpenMonoAgent.ai\win\openmono.ps1 agent --acp-only   # ACP on 127.0.0
 | `diag` | Writes a zip for bug reports: GPU and VRAM, Foundry version, status and last server log, CUDA `PATH` entries, doctor output, inference state, settings with secrets and the home path redacted |
 
 Runs on PowerShell 7 (`pwsh.exe`) or Windows PowerShell 5.1 (`powershell.exe`).
+
+### Requests to Foundry Local
+
+The agent knows it talks to Foundry (the launcher passes
+`OPENMONO_LLM_BACKEND=foundry`) and sends standard OpenAI chat fields only:
+`model`, `messages`, `temperature`, `top_p`, `max_tokens`, `stream`, and
+`tools`/`tool_choice` unless the Foundry catalog says the model cannot call
+tools. The llama.cpp extensions it sends on Mac/Linux (`top_k`, `min_p`,
+`repetition_penalty`, `chat_template_kwargs`, `reasoning_effort`,
+`stream_options`, ...) are left out, because Foundry answers them with a 400.
+When Foundry does reject a request, the TUI shows Foundry's reply and points at
+`.\win\openmono.ps1 status`, `start` and `foundry server logs` on the host.
 
 ### Line endings
 

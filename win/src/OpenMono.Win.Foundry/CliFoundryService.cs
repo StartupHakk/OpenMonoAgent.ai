@@ -11,6 +11,9 @@ public static class FoundryCliCommands
     public static (string File, string Args) ModelLoad(string alias) =>
         (FoundryCliDetector.CliExecutableName, $"model load {alias}");
 
+    public static (string File, string Args) ModelUnload(string modelId) =>
+        (FoundryCliDetector.CliExecutableName, $"model unload {modelId}");
+
     public static (string File, string Args) ServerStart(int port) =>
         (FoundryCliDetector.CliExecutableName, $"server start --port {port} --idle-timeout 0");
 
@@ -34,13 +37,24 @@ public sealed record FoundryServiceResult(
     bool AdoptedExisting,
     bool StartedByUs,
     bool Healthy,
-    IReadOnlyList<string> Log);
+    IReadOnlyList<string> Log)
+{
+    // Models the adopted daemon served that are not the selected model (for
+    // example a DeepSeek-R1-Distill OpenVINO model a user loaded earlier).
+    public IReadOnlyList<string> ForeignModels { get; init; } = [];
+
+    // Foreign models unloaded after the selected model was serving.
+    public IReadOnlyList<string> ReplacedModels { get; init; } = [];
+}
 
 // Adopt-or-start for the Foundry daemon, then make sure the model is loaded.
 // Order matters: the server is started on the pinned port before the model
 // load, because a load against a stopped daemon would auto-start it on a
 // different port. A daemon the user already runs (on 7474 or elsewhere, per
-// `foundry server status`) is adopted, never duplicated.
+// `foundry server status`) is adopted, never duplicated, but the model it
+// serves is not: anything other than the selected model (or a model the user
+// pinned with llm.model) is replaced by the selected model, so the agent never
+// runs on whatever Foundry happened to have loaded.
 public sealed class CliFoundryService
 {
     private readonly ICliRunner _runner;
@@ -63,12 +77,14 @@ public sealed class CliFoundryService
     }
 
     // loadTarget: what `model load` gets when it differs from the alias (a
-    // catalog variant id such as qwen3.5-2b-generic-cpu:3).
+    // catalog variant id such as qwen3.5-2b-generic-cpu:3). keepModel: a model
+    // the user chose (settings.json llm.model) that is never unloaded.
     public async Task<FoundryServiceResult> StartOrAdoptAsync(
         string modelAlias,
         string endpoint,
         CancellationToken ct = default,
-        string? loadTarget = null)
+        string? loadTarget = null,
+        string? keepModel = null)
     {
         var log = new List<string>();
         var adopted = false;
@@ -116,7 +132,20 @@ public sealed class CliFoundryService
             }
         }
 
-        var servedId = FoundryModelIdResolver.ResolveServedId(modelAlias, current.Models);
+        bool Wanted(string id) =>
+            FoundryModelIdResolver.ResolveServedId(modelAlias, [id]) is not null
+            || (loadTarget is not null && FoundryModelIdResolver.ResolveServedId(loadTarget, [id]) is not null)
+            || (keepModel is not null && FoundryModelIdResolver.ResolveServedId(keepModel, [id]) is not null);
+
+        var foreign = current.Models.Where(id => !Wanted(id)).ToList();
+        if (foreign.Count > 0)
+        {
+            log.Add($"Foundry is serving {string.Join(", ", foreign)}, which is not {modelAlias} (the OpenMono model for this machine); "
+                + $"switching to {modelAlias}.");
+        }
+
+        var servedId = FoundryModelIdResolver.ResolveServedId(modelAlias, current.Models)
+            ?? (loadTarget is null ? null : FoundryModelIdResolver.ResolveServedId(loadTarget, current.Models));
         if (servedId is null && current.Reachable)
         {
             var (loadFile, loadArgs) = FoundryCliCommands.ModelLoad(loadTarget ?? modelAlias);
@@ -129,11 +158,47 @@ public sealed class CliFoundryService
                 ?? (loadTarget is null ? null : FoundryModelIdResolver.ResolveServedId(loadTarget, current.Models));
         }
 
+        var replaced = new List<string>();
+        if (servedId is not null && foreign.Count > 0)
+        {
+            foreach (var id in current.Models.Where(id => !Wanted(id)))
+            {
+                var (unloadFile, unloadArgs) = FoundryCliCommands.ModelUnload(id);
+                log.Add($"Running: {unloadFile} {unloadArgs}");
+                var unload = await TryRunAsync(unloadFile, unloadArgs, ct);
+                if (unload is not { Succeeded: true })
+                {
+                    log.Add($"Could not unload {id}: {(unload is null ? "command failed" : Combined(unload))}. "
+                        + $"The agent still uses {servedId}.");
+                }
+            }
+
+            current = await _health.CheckAsync(endpoint, ct);
+            replaced.AddRange(foreign);
+            log.Add($"Replaced the previously served model {string.Join(", ", foreign)} with {servedId}.");
+        }
+
         log.Add(servedId is not null
             ? $"Serving {modelAlias} as model id {servedId}."
             : $"{modelAlias} is not listed by {endpoint}/v1/models yet; the agent will auto-detect the served model.");
 
-        return new FoundryServiceResult(endpoint, modelAlias, servedId, adopted, startedByUs, current.Reachable, log);
+        return new FoundryServiceResult(endpoint, modelAlias, servedId, adopted, startedByUs, current.Reachable, log)
+        {
+            ForeignModels = servedId is null ? current.Models.Where(id => !Wanted(id)).ToList() : [],
+            ReplacedModels = replaced,
+        };
+    }
+
+    private async Task<CliResult?> TryRunAsync(string file, string args, CancellationToken ct)
+    {
+        try
+        {
+            return await _runner.RunAsync(file, args, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
     }
 
     public async Task<CliResult> StopAsync(CancellationToken ct = default)

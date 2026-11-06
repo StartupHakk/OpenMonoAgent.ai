@@ -112,13 +112,24 @@ public sealed class InferenceOrchestrator
                     + "and Foundry picks the variant this machine can run.");
         }
 
-        var served = await service.StartOrAdoptAsync(selection.ModelAlias, endpoint, ct, loadTarget);
+        var keepModel = options.ModelOverride is null ? settings.LlmModel : null;
+        var served = await service.StartOrAdoptAsync(selection.ModelAlias, endpoint, ct, loadTarget, keepModel);
         log.AddRange(served.Log);
 
         if (!served.Healthy)
         {
             return Fail(log, $"Foundry Local is not serving on {served.Endpoint}. "
                 + "Check `foundry server status` and `foundry server logs`, then run `openmono doctor`.");
+        }
+
+        if (served.ServedModelId is null && served.ForeignModels.Count > 0)
+        {
+            var target = loadTarget ?? selection.ModelAlias;
+            return Fail(log, $"Foundry Local on {served.Endpoint} serves {string.Join(", ", served.ForeignModels)}, not "
+                + $"{selection.ModelAlias}, and `foundry model load {target}` did not make {selection.ModelAlias} available. "
+                + "The agent does not run on a model outside the OpenMono ladder. Run `foundry model load " + target
+                + "`, check `foundry server logs`, then run .\\win\\openmono.ps1 start again. To use another model on purpose, "
+                + "pass --model or set llm.model in settings.json.");
         }
 
         var previous = _store.Load();
@@ -190,7 +201,12 @@ public sealed class InferenceOrchestrator
             vision.VisionEnabled,
             probeAccepted,
             startedByUs,
-            Now());
+            Now())
+        {
+            ToolCalling = agentModel is null && settings.LlmModel is not null
+                ? null
+                : view.Describe(selection.ModelAlias)?.SupportsToolCalling,
+        };
 
         if (options.Persist)
         {

@@ -18,6 +18,10 @@ public sealed record InferenceState(
     bool StartedByUs,
     string UpdatedUtc)
 {
+    // From the Foundry catalog (supportsToolCalling); null when unknown. false
+    // makes the agent leave tools out of its requests, which such a model rejects.
+    public bool? ToolCalling { get; init; }
+
     public const string FoundryBackend = "foundry";
     public const string RemoteBackend = "remote";
 }

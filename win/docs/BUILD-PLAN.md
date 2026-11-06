@@ -103,6 +103,17 @@ otherwise unchanged in intent.
     `docker/` to LF (`win/scripts/line-endings.ps1`), and `agent` rebuilds an
     agent image whose entrypoint has CR. A unit test fails if any
     container-bound file has a CR.
+14. Foundry model and request shape: `start` adopts a running Foundry daemon
+    but not its model. Anything it serves other than the selected ladder
+    model (or `llm.model`) is replaced: the ladder model is loaded, then the
+    other model is unloaded (`foundry model unload`). If the ladder model
+    cannot be loaded while another model is served, `start` stops instead of
+    letting the agent run on it. The agent keeps `OPENMONO_MODEL` when
+    `/v1/models` lists it (before, it took the first listed id), and with
+    `OPENMONO_LLM_BACKEND=foundry` it sends standard OpenAI chat fields only,
+    with tools only when the catalog says the model can call them
+    (`OPENMONO_TOOL_CALLING=0` otherwise). A 400 shows the server's reply and
+    is not retried. The llama.cpp request body on Mac/Linux is unchanged.
 
 ## Goal
 
