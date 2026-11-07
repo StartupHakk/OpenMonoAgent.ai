@@ -42,7 +42,12 @@ public sealed record PairResponse(
 public sealed record ExecRequest(
     [property: JsonPropertyName("token")] string Token,
     [property: JsonPropertyName("session_id")] string SessionId,
-    [property: JsonPropertyName("request")] HostExecRequest Request);
+    [property: JsonPropertyName("request")] HostExecRequest Request,
+    // Per-exec sudo password from the client consent card. One-shot: the
+    // daemon wipes it after the run (and after a failed attempt) — it is
+    // never logged, cached, or persisted. Absent on old clients ⇒ the
+    // daemon's fail-closed sudo path.
+    [property: JsonPropertyName("password")] string? Password = null);
 
 public sealed record ExecResponse(
     [property: JsonPropertyName("ok")] bool Ok,

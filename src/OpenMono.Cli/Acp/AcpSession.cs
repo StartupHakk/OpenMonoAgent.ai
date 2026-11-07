@@ -91,16 +91,60 @@ public sealed class AcpSession
         string id, PendingResponseKind kind, string contextKey)
     {
         var tcs = new TaskCompletionSource<AcpPauseResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!_pending.TryAdd(id, new PendingPause(kind, contextKey, tcs)))
+        var pp = new PendingPause(kind, contextKey, tcs);
+        if (!_pending.TryAdd(id, pp))
             throw new InvalidOperationException($"Duplicate pause id: {id}");
         return tcs;
+    }
+
+    /// <summary>
+    /// Long-lived sudo-password pause state: the attempt counter and the
+    /// first envelope's consent label persist across re-POSTs against the
+    /// SAME still-pending pause (no re-register, no card churn). Cleared when
+    /// the pause resolves. Never holds the password.
+    /// </summary>
+    public (int SudoAttempt, string? Consent)? LookupSudoAttemptState(string id)
+        => _pending.TryGetValue(id, out var pp) ? (pp.SudoAttempt, pp.SudoConsent) : null;
+
+    public void RecordSudoAttempt(string id, int attempt, string? consentLabel)
+    {
+        if (_pending.TryGetValue(id, out var pp))
+        {
+            pp.SudoAttempt = attempt;
+            pp.SudoConsent = consentLabel ?? pp.SudoConsent;
+        }
     }
 
     public bool TryResolvePause(string id, AcpPauseResponse response)
         => _pending.TryRemove(id, out var pp) && pp.Tcs.TrySetResult(response);
 
+    /// <summary>
+    /// Attach the host-exec envelope to an already-registered permission pause
+    /// so the resumer's password-attempt loop can rebuild and run the daemon
+    /// request against THIS pause. Only the ACP forwarder calls this, for
+    /// HostExec consent cards.
+    /// </summary>
+    public void AttachHostExecEnvelope(string id, OpenMono.HostBridge.HostExecRequest request)
+    {
+        if (_pending.TryGetValue(id, out var pp)) pp.HostExec = request;
+    }
+
+    public OpenMono.HostBridge.HostExecRequest? LookupHostExecEnvelope(string id)
+        => _pending.TryGetValue(id, out var pp) ? pp.HostExec : null;
+
     public (PendingResponseKind Kind, string ContextKey)? LookupPauseContext(string id)
         => _pending.TryGetValue(id, out var pp) ? (pp.Kind, pp.ContextKey) : null;
+
+    /// <summary>
+    /// The pending-timeout (session GC) deadline for this pause. Each in-place
+    /// sudo-password attempt refreshes it so an actively-typed modal is never
+    /// swept; an abandoned modal still expires as before.
+    /// </summary>
+    public void TouchPauseActivity(string id)
+    {
+        if (_pending.ContainsKey(id))
+            LastActivityAt = DateTime.UtcNow;
+    }
 
     public IReadOnlyCollection<string> PendingIds => _pending.Keys.ToArray();
 
@@ -141,10 +185,28 @@ public sealed class AcpSession
         return null;
     }
 
-    private sealed record PendingPause(
-        PendingResponseKind Kind,
-        string ContextKey,
-        TaskCompletionSource<AcpPauseResponse> Tcs);
+    private sealed class PendingPause
+    {
+        public PendingPause(PendingResponseKind kind, string contextKey, TaskCompletionSource<AcpPauseResponse> tcs)
+        {
+            Kind = kind;
+            ContextKey = contextKey;
+            Tcs = tcs;
+        }
+
+        public PendingResponseKind Kind;
+        public string ContextKey;
+        public TaskCompletionSource<AcpPauseResponse> Tcs;
+        // Long-lived sudo-password pause: attempt count + first consent label
+        // accumulate across re-POSTs while this pause stays unresolved.
+        public int SudoAttempt;
+        public string? SudoConsent;
+        // The host-exec envelope behind this permission pause, when the card
+        // is a HostExec consent (needs_password modal). The resumer rebuilds
+        // the daemon request from this so a password attempt runs the real
+        // command — no second pause, no tool re-execution.
+        public OpenMono.HostBridge.HostExecRequest? HostExec;
+    }
 }
 
 public abstract record AcpPauseResponse;

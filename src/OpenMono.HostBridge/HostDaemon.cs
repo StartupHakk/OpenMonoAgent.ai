@@ -565,22 +565,58 @@ public sealed class HostDaemon : IAsyncDisposable
             return;
         }
 
-        // Sudo: there is no human at the daemon to answer an "ask", so any
-        // escalation needs an explicit allow_sudo=allow. Ask/Deny → fail closed.
-        if (_executor.RequiresElevation(req.Request) && _identity.Sudo != SudoPolicy.Allow)
+        // Sudo: there is no human at the daemon to answer an "ask", so an
+        // escalation needs either an explicit allow_sudo=allow or a per-exec
+        // password carried by THIS request from the client consent card (the
+        // operator consented to exactly this command and typed a password
+        // there). Neither → fail closed.
+        var elevation = _executor.RequiresElevation(req.Request);
+        var perExecPassword = elevation && !_identity.HasPassword
+            && !string.IsNullOrWhiteSpace(req.Password);
+        if (elevation && _identity.Sudo != SudoPolicy.Allow && !perExecPassword)
         {
             AuditLog.WriteCommand(_identity.RunAsUser, req.Request.AsRoot, req.Request.Command,
-                -1, 0, false, "sudo refused by daemon (no human at daemon; allow_sudo not allow)");
+                -1, 0, false, "sudo refused by daemon (no human at daemon; allow_sudo not allow and no per-exec password)");
             WriteJson(ctx, 200, new ExecResponse(false,
-                Output: "Host execution denied by host-bridge policy (sudo needs allow_sudo=allow for unattended host mode).",
+                Output: "Host execution denied by host-bridge policy (sudo needs a per-exec password from the client consent card, or allow_sudo=allow for unattended host mode).",
                 Denied: true));
             return;
         }
 
+        if (perExecPassword)
+            AuditLog.WriteNote("exec used a per-exec sudo password (value never logged)");
+
         // No prompter: a command that blocks on a stdin secret cannot be served
         // unattended; the executor's prompt loop fails fast with guidance.
-        var output = await _executor.ExecuteAsync(req.Request, _config.TimeoutMs, _cts.Token, prompter: null);
+        // The per-exec password rides the identity for this exec ONLY and is
+        // wiped on every return path — never cached, logged, or persisted.
+        if (perExecPassword)
+            _identity.SetPassword(req.Password!.ToCharArray());
+        string output;
+        try
+        {
+            output = await _executor.ExecuteAsync(req.Request, _config.TimeoutMs, _cts.Token, prompter: null);
+        }
+        finally
+        {
+            if (perExecPassword)
+                _identity.ForgetPassword();
+        }
         var denied = output.StartsWith("ERROR:", StringComparison.Ordinal);
+        if (perExecPassword && HostExecutor.IsPasswordFailure(output))
+        {
+            // Wrong password: the executor already wiped the cached timestamp
+            // probe; tell the client it may re-prompt (long-lived consent
+            // modal) instead of surfacing this as a policy denial. The
+            // operator's in-memory secret (password file) is untouched.
+            HostExecutor.NoteAuthenticationFailure(req.Request.AsRoot ? "root" : _identity.RunAsUser);
+            AuditLog.WriteCommand(_identity.RunAsUser, req.Request.AsRoot, req.Request.Command,
+                -1, 0, false, "sudo authentication failed; per-exec password wiped, client may retry");
+            WriteJson(ctx, 200, new ExecResponse(false,
+                Output: "sudo authentication failed — the password was wiped; the user may retry.",
+                Denied: true, Error: "password_failure"));
+            return;
+        }
         WriteJson(ctx, 200, new ExecResponse(!denied, output, denied));
     }
 

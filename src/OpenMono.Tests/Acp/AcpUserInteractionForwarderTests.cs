@@ -2,9 +2,11 @@ using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using OpenMono.Acp;
+using OpenMono.HostBridge;
 using OpenMono.Permissions;
 using OpenMono.Session;
 using OpenMono.Playbooks;
+using OpenMono.Tests.HostBridge;
 using Xunit;
 
 namespace OpenMono.Tests.Acp;
@@ -156,6 +158,101 @@ public sealed class AcpUserInteractionForwarderTests
 
         allow.Should().BeFalse();
         session.PendingIds.Should().BeEmpty();
+    }
+
+    // ── needs_password on host_exec user_input_request events ─────────
+    // The client renders the full-screen sudo-password modal (long-lived
+    // pause) only when the command needs root AND the paired daemon will not
+    // run it unattended (allow_sudo != allow). Every other shape degrades to
+    // the plain consent row.
+
+    [Fact]
+    public async Task host_exec_as_root_with_ask_daemon_sets_needs_password()
+    {
+        await using var gw = new PairedTestGateway("sess_np_1", "ask");
+        var (forwarder, session, body) = BuildForwarder();
+        session.State.Id = "sess_np_1";
+
+        try { await forwarder.RequestUserInputAsync(SudoEnvelope(), CancellationToken.None); }
+        catch (PendingUserResponseException) { }
+
+        var ev = ParseSingleEvent(body);
+        ev.EventName.Should().Be("user_input_request");
+        ev.Data.GetProperty("kind").GetString().Should().Be("host_exec");
+        ev.Data.GetProperty("as_root").GetBoolean().Should().BeTrue();
+        ev.Data.GetProperty("needs_password").GetBoolean().Should().BeTrue(
+            "root escalation + daemon allow_sudo=ask ⇒ the modal must open");
+    }
+
+    [Fact]
+    public async Task host_exec_as_root_with_allow_daemon_needs_no_password()
+    {
+        await using var gw = new PairedTestGateway("sess_np_2", "allow");
+        var (forwarder, session, body) = BuildForwarder();
+        session.State.Id = "sess_np_2";
+
+        try { await forwarder.RequestUserInputAsync(SudoEnvelope(), CancellationToken.None); }
+        catch (PendingUserResponseException) { }
+
+        ParseSingleEvent(body).Data.GetProperty("needs_password").GetBoolean().Should().BeFalse(
+            "allow_sudo=allow runs unattended — no password modal");
+    }
+
+    [Fact]
+    public async Task host_exec_non_root_needs_no_password_even_with_ask_daemon()
+    {
+        await using var gw = new PairedTestGateway("sess_np_3", "ask");
+        var (forwarder, session, body) = BuildForwarder();
+        session.State.Id = "sess_np_3";
+
+        var plain = "HOST_EXEC: {\"command\": \"ls -la\", \"background\": false, \"as_root\": false}";
+        try { await forwarder.RequestUserInputAsync(plain, CancellationToken.None); }
+        catch (PendingUserResponseException) { }
+
+        var ev = ParseSingleEvent(body);
+        ev.Data.GetProperty("as_root").GetBoolean().Should().BeFalse();
+        ev.Data.GetProperty("needs_password").GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task host_exec_as_root_unpaired_session_needs_no_password()
+    {
+        var (forwarder, session, body) = BuildForwarder(); // no gateway registered
+
+        try { await forwarder.RequestUserInputAsync(SudoEnvelope(), CancellationToken.None); }
+        catch (PendingUserResponseException) { }
+
+        ParseSingleEvent(body).Data.GetProperty("needs_password").GetBoolean().Should().BeFalse(
+            "unpaired ⇒ no gateway ⇒ plain consent row; the daemon fails closed as before");
+    }
+
+    private static string SudoEnvelope() =>
+        "HOST_EXEC: {\"command\": \"echo as-root-ok\", \"timeout_ms\": 5000, \"background\": false, \"as_root\": true}";
+
+    /// <summary>Paired gateway against a canned daemon, registered under the
+    /// session id and unregistered on dispose (the registry is static).</summary>
+    private sealed class PairedTestGateway : IAsyncDisposable
+    {
+        private readonly HostGateway _gw;
+        private readonly FakeHostDaemon _daemon;
+        private readonly string _sessionId;
+
+        public PairedTestGateway(string sessionId, string sudoPolicy)
+        {
+            _sessionId = sessionId;
+            _daemon = new FakeHostDaemon("correct-horse", sudoPolicy);
+            _gw = new HostGateway(_daemon.BaseUrl, sessionId, "/tmp", _daemon.Secret);
+            _gw.PairAsync().GetAwaiter().GetResult();
+            HostGatewayRegistry.Register(sessionId, _gw);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            HostGatewayRegistry.Unregister(_sessionId);
+            await _gw.UnpairAsync();
+            _gw.Dispose();
+            _daemon.Dispose();
+        }
     }
 
     private static (AcpUserInteractionForwarder forwarder, AcpSession session, MemoryStream body) BuildForwarder()

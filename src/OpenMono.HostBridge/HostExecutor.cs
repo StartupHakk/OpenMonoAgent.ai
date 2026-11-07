@@ -237,7 +237,8 @@ public sealed class HostExecutor
         }
 
         // Sudo password first (when needed), then the prompt loop for any
-        // further input the command itself requests. Stdin stays open.
+        // further input the command itself requests. Stdin stays open ONLY
+        // when a prompter can actually answer sudo's second prompt.
         if (usePassword)
         {
             try
@@ -253,6 +254,19 @@ public sealed class HostExecutor
             catch (IOException)
             {
                 return "ERROR: failed to provide sudo password (process exited early).";
+            }
+            // No prompter (daemon per-exec password path): close stdin right
+            // after the password. Left open, sudo re-prompts on a wrong
+            // password and blocks until the interactive-input watchdog kills
+            // it with "needs interactive input ('Password:')" — text that is
+            // NOT classifiable as a password failure, so the client's retry
+            // loop never engages. Closed, sudo hits EOF on the retry read and
+            // exits fast with "Sorry, try again" / "incorrect password
+            // attempt" — the exact text IsPasswordFailure matches.
+            if (prompter is null || !prompter.CanPrompt)
+            {
+                try { process.StandardInput.Close(); }
+                catch (IOException) { /* process already gone */ }
             }
         }
 
@@ -423,6 +437,7 @@ public sealed class HostExecutor
     internal static bool IsPasswordFailure(string result) =>
         result.Contains("a password is required", StringComparison.OrdinalIgnoreCase) ||
         result.Contains("no tty present", StringComparison.OrdinalIgnoreCase) ||
+        result.Contains("no password was provided", StringComparison.OrdinalIgnoreCase) ||
         result.Contains("incorrect password", StringComparison.OrdinalIgnoreCase) ||
         result.Contains("sorry, try again", StringComparison.OrdinalIgnoreCase) ||
         result.Contains("authentication failure", StringComparison.OrdinalIgnoreCase) ||

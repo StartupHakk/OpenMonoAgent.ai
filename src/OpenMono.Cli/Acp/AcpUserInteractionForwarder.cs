@@ -149,6 +149,13 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
         if (HostExecRequest.LooksLikeHostExec(question) &&
             HostExecRequest.TryParse(question, out var hostExec) && hostExec is not null)
         {
+            // needs_password: a root escalation the daemon will NOT run
+            // unattended (allow_sudo != allow) requires the client's
+            // full-screen password modal (long-lived pause). Unpaired
+            // sessions have no gateway ⇒ false (the card degrades to the
+            // plain consent row; the daemon fails closed as before).
+            var needsPassword = hostExec.AsRoot &&
+                HostGatewayRegistry.Get(_session.Id) is { } gw && gw.Sudo != SudoPolicy.Allow;
             await _writer.WriteEventAsync("user_input_request", new
             {
                 id,
@@ -159,6 +166,7 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
                 as_root = hostExec.AsRoot,
                 timeout_ms = hostExec.TimeoutMs,
                 background = hostExec.Background,
+                needs_password = needsPassword,
             });
         }
         else

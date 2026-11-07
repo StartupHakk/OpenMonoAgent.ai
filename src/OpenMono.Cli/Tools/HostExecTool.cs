@@ -56,6 +56,29 @@ public sealed class HostExecTool : ToolBase
 
         var request = FromInput(input);
 
+        // Root escalation on the ACP surface (VS Code / extension): the
+        // permission card above carries no password channel, so the daemon
+        // would fail closed. Route the command through the HOST_EXEC envelope
+        // pause instead — the client renders it as a consent card plus the
+        // full-screen sudo password modal (needs_password), and the long-lived
+        // resume loop runs each typed password against the daemon, attaching
+        // the terminal exec output to this tool call. The turn unwinds here
+        // via PendingUserResponseException; reaching the line below means an
+        // inline resolution we did not expect, so fall through to honest
+        // direct execution rather than running twice.
+        if (request.AsRoot && context.Interaction is not null &&
+            gateway.Sudo != SudoPolicy.Allow)
+        {
+            var envelope = JsonSerializer.Serialize(new
+            {
+                command = request.Command,
+                timeout_ms = request.TimeoutMs,
+                background = request.Background,
+                as_root = true,
+            });
+            await context.AskUser($"{HostExecRequest.Prefix} {envelope}", ct);
+        }
+
         // Command consent was already captured by this tool's permission gate:
         // the card shows the command (and a "sudo" tag + dangerous styling when
         // as_root is set), so the gateway must not re-prompt on top of that
@@ -81,6 +104,13 @@ public sealed class HostExecTool : ToolBase
         {
             null => ToolResult.Success(outcome.Answer),
             HostExecOutcome.ErrUserDenied => ToolResult.PermissionDenied(outcome.Answer),
+            // Defensive: this surface has no password modal; a password
+            // failure here means the escalation ran without the client's
+            // consent card. Tell the model to route the user back to the
+            // host-execution consent flow rather than retrying.
+            HostExecOutcome.ErrPasswordFailure => ToolResult.Failure(
+                outcome.Answer, HostExecOutcome.ErrPasswordFailure,
+                "The sudo password was not accepted. Do NOT retry this call — ask the user to approve the command again via the host-execution consent card so they can enter their sudo password."),
             HostExecOutcome.ErrStale => ToolResult.Failure(
                 outcome.Answer, HostExecOutcome.ErrStale,
                 "Do NOT retry. Ask the user to re-pair (the Host toggle, or /host on), then call HostExec again."),

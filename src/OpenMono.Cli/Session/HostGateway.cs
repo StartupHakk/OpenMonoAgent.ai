@@ -25,6 +25,9 @@ public sealed record HostExecOutcome(
     public const string ErrUnreachable = "daemon_unreachable";
     public const string ErrUserDenied = "user_denied";
     public const string ErrExecFailed = "host_execution_failed";
+    // The daemon rejected the per-exec sudo password; the client may re-prompt
+    // (long-lived consent modal) rather than surface this to the model yet.
+    public const string ErrPasswordFailure = "sudo_password_failure";
 }
 
 /// <summary>
@@ -259,10 +262,16 @@ public sealed class HostGateway : IDisposable
     /// operator bridge produces, so callers can render an honest failure.
     /// <paramref name="consent"/> is the surface-specific human prompt.
     /// </summary>
+    /// <param name="sudoPassword">
+    /// One-shot sudo password from the client consent card (extension path).
+    /// Carried to the daemon for THIS exec only, wiped on every return path —
+    /// never cached, logged, or persisted.
+    /// </param>
     public async Task<HostExecOutcome> RunAsync(
         HostExecRequest request,
         Func<string, bool, CancellationToken, Task<HostConsentDecision>> consent,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? sudoPassword = null)
     {
         if (_token is null)
             return new HostExecOutcome(false, false, HostExecOutcome.ErrStale,
@@ -300,44 +309,74 @@ public sealed class HostGateway : IDisposable
         }
 
         var token = _token;
-        var resp = await _client.ExecAsync(new ExecRequest(token!, _sessionId, request), ct);
-
-        // Stale pairing self-heal: the refused exec never ran, so retrying
-        // after a silent re-pair is safe. One flight at a time so parallel
-        // execs cannot race token rotations against each other.
-        if (resp.Denied && resp.Error == "unpaired_or_bad_token")
+        try
         {
-            resp = await RepairAndRetryAsync(token!, request, ct);
-        }
+            var resp = await _client.ExecAsync(new ExecRequest(token!, _sessionId, request, sudoPassword), ct);
 
-        if (resp.Denied && resp.Error is not null)
+            // Stale pairing self-heal: the refused exec never ran, so retrying
+            // after a silent re-pair is safe. One flight at a time so parallel
+            // execs cannot race token rotations against each other.
+            if (resp.Denied && resp.Error == "unpaired_or_bad_token")
+            {
+                resp = await RepairAndRetryAsync(token!, request, ct, sudoPassword);
+            }
+
+            if (resp.Denied && resp.Error is not null)
+            {
+                if (resp.Error == "unpaired_or_bad_token")
+                    return new HostExecOutcome(false, false, HostExecOutcome.ErrStale,
+                        "HOST EXECUTION refused by the host daemon: the session pairing is stale (token rotated or revoked). Re-pair with /host on.");
+                if (resp.Error == "daemon unreachable")
+                    return new HostExecOutcome(false, false, HostExecOutcome.ErrUnreachable,
+                        $"HOST EXECUTION refused: the host daemon at {BaseUrl} is unreachable (is it still running?). No host command ran.");
+                if (resp.Error == "password_failure")
+                {
+                    var target = request.AsRoot ? "root" : "the target user";
+                    return new HostExecOutcome(false, true, HostExecOutcome.ErrPasswordFailure,
+                        $"sudo authentication failed for {target}: the password was wiped on the host. The user may retry from the consent card: {request.Command}");
+                }
+                return new HostExecOutcome(false, true, HostExecOutcome.ErrPolicy,
+                    $"Host execution denied by host-bridge policy: {request.Command}");
+            }
+
+            if (resp.Denied)
+            {
+                // Denied without an error code = the daemon ran the policy gate
+                // (deny-list / sudo refusal) or the executor itself refused
+                // (timeout, sudo password missing, launch failure). The message
+                // text already says which; split by shape so tool results can
+                // carry a precise error code.
+                var policyDenied = resp.Output.StartsWith("Host execution denied by host-bridge policy", StringComparison.Ordinal);
+                return new HostExecOutcome(false, policyDenied,
+                    policyDenied ? HostExecOutcome.ErrPolicy : HostExecOutcome.ErrExecFailed,
+                    resp.Output);
+            }
+
+            var targetUser = request.AsRoot ? "root" : RunAs ?? "host user";
+            var head = $"[host-exec on {WorkDir} as {targetUser}]";
+            return new HostExecOutcome(true, false, null, $"{head}\n$ {request.Command}\n{resp.Output}");
+        }
+        finally
         {
-            if (resp.Error == "unpaired_or_bad_token")
-                return new HostExecOutcome(false, false, HostExecOutcome.ErrStale,
-                    "HOST EXECUTION refused by the host daemon: the session pairing is stale (token rotated or revoked). Re-pair with /host on.");
-            if (resp.Error == "daemon unreachable")
-                return new HostExecOutcome(false, false, HostExecOutcome.ErrUnreachable,
-                    $"HOST EXECUTION refused: the host daemon at {BaseUrl} is unreachable (is it still running?). No host command ran.");
-            return new HostExecOutcome(false, true, HostExecOutcome.ErrPolicy,
-                $"Host execution denied by host-bridge policy: {request.Command}");
+            ZeroPassword(sudoPassword);
         }
+    }
 
-        if (resp.Denied)
+    /// <summary>Zero the char copy of a per-exec password. The string itself
+    /// escapes our control once handed to the serializer; the copy is what we
+    /// can guarantee is wiped on every return path.</summary>
+    private static void ZeroPassword(string? password)
+    {
+        if (string.IsNullOrEmpty(password)) return;
+        var bytes = System.Text.Encoding.UTF8.GetBytes(password);
+        try
         {
-            // Denied without an error code = the daemon ran the policy gate
-            // (deny-list / sudo refusal) or the executor itself refused
-            // (timeout, sudo password missing, launch failure). The message
-            // text already says which; split by shape so tool results can
-            // carry a precise error code.
-            var policyDenied = resp.Output.StartsWith("Host execution denied by host-bridge policy", StringComparison.Ordinal);
-            return new HostExecOutcome(false, policyDenied,
-                policyDenied ? HostExecOutcome.ErrPolicy : HostExecOutcome.ErrExecFailed,
-                resp.Output);
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(bytes);
         }
-
-        var targetUser = request.AsRoot ? "root" : RunAs ?? "host user";
-        var head = $"[host-exec on {WorkDir} as {targetUser}]";
-        return new HostExecOutcome(true, false, null, $"{head}\n$ {request.Command}\n{resp.Output}");
+        catch
+        {
+            // Zeroing a copy is best-effort hygiene, never a failure path.
+        }
     }
 
     /// <summary>
@@ -350,7 +389,7 @@ public sealed class HostGateway : IDisposable
     /// exec comes back with the original fail-closed answer.
     /// Safe to retry because a refused exec never ran.
     /// </summary>
-    private async Task<ExecResponse> RepairAndRetryAsync(string deadToken, HostExecRequest request, CancellationToken ct)
+    private async Task<ExecResponse> RepairAndRetryAsync(string deadToken, HostExecRequest request, CancellationToken ct, string? sudoPassword = null)
     {
         await _repairGate.WaitAsync(ct);
         try
@@ -365,7 +404,7 @@ public sealed class HostGateway : IDisposable
             }
             if (_token is null)
                 return new ExecResponse(false, Denied: true, Error: "unpaired_or_bad_token");
-            return await _client.ExecAsync(new ExecRequest(_token, _sessionId, request), ct);
+            return await _client.ExecAsync(new ExecRequest(_token, _sessionId, request, sudoPassword), ct);
         }
         finally
         {
