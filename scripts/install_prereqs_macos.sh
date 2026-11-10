@@ -153,7 +153,13 @@ install_pkg curl curl
 install_pkg jq jq
 install_pkg cmake cmake
 install_pkg ripgrep rg
-install_pkg openblas
+# openblas is only needed for native Metal llama builds — skip for agent role
+# (avoids compiling gcc from source on Intel Macs during agent-only setup)
+if [ "$OPENMONO_ROLE" = "agent" ]; then
+    ok "openblas not required for agent role — skipping"
+else
+    install_pkg openblas
+fi
 install_pkg pkg-config pkg-config
 
 # Xcode Command Line Tools (replaces Linux's build-essential)

@@ -1,0 +1,739 @@
+#!/usr/bin/env bash
+# screen-skills — record / replay / distill macOS screen activity into Cursor skill candidates
+set -euo pipefail
+
+VERSION="1.0.0"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKILL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+DATA_ROOT="${SCREEN_SKILLS_HOME:-$HOME/Library/Application Support/screen-skills}"
+SESSIONS_DIR="$DATA_ROOT/sessions"
+DISTILL_DIR="$DATA_ROOT/distill"
+CANDIDATES_DIR="$DATA_ROOT/candidates"
+STATE_FILE="$DATA_ROOT/state.json"
+CONFIG_FILE="$DATA_ROOT/config.env"
+PID_FILE="$DATA_ROOT/recorder.pid"
+LOG_FILE="$DATA_ROOT/recorder.log"
+
+# Defaults (overridable via config.env or env)
+MODE="${SCREEN_SKILLS_MODE:-keyframe}"          # keyframe | video
+FRAME_INTERVAL="${SCREEN_SKILLS_INTERVAL:-30}" # seconds between keyframes
+DISPLAY="${SCREEN_SKILLS_DISPLAY:-1}"
+MAX_FRAMES_PER_SESSION="${SCREEN_SKILLS_MAX_FRAMES:-240}"
+SAMPLE_EVERY_N="${SCREEN_SKILLS_SAMPLE_EVERY:-2}" # distill: keep every Nth frame
+DISTILL_MINUTES="${SCREEN_SKILLS_DISTILL_MINUTES:-30}"
+VIDEO_FPS="${SCREEN_SKILLS_VIDEO_FPS:-2}"
+
+usage() {
+  cat <<'EOF'
+screen-skills — macOS screen capture → replay → 30m skill distillation
+
+Usage:
+  screen-skills doctor              Check tools + Screen Recording guidance
+  screen-skills record [--mode keyframe|video] [--interval SEC] [--display N]
+  screen-skills stop                Stop background recording
+  screen-skills status              Show recorder / latest session
+  screen-skills capture-now         Take one keyframe into the active session
+  screen-skills rotate              End current session segment; start a new one
+  screen-skills replay [SESSION|latest] [--reveal]
+  screen-skills list                List sessions
+  screen-skills distill [--minutes N] [--dry-run] [--ocr]
+  screen-skills loop-help           How to run every 30m (/loop or launchd)
+  screen-skills install-launchd     Install LaunchAgent for 30m distill ticks
+  screen-skills uninstall-launchd   Remove LaunchAgent
+  screen-skills help                This help
+
+Data directory:
+  ~/Library/Application Support/screen-skills/
+
+Personal meta-skill:
+  ~/.cursor/skills/screen-workflow-capture/
+
+Typical flow:
+  1. screen-skills doctor
+  2. Grant Screen Recording to Terminal (and Cursor if used)
+  3. screen-skills record
+  4. Work normally; keyframes land every --interval seconds
+  5. Every 30m: screen-skills distill   (or /loop 30m … / install-launchd)
+  6. In Cursor: open the distill prompt + bundle and accept/reject skills
+  7. screen-skills replay latest
+
+Modes:
+  keyframe  Default. Uses /usr/sbin/screencapture (no ffmpeg required).
+  video     Uses ffmpeg avfoundation when available; else falls back to keyframe.
+
+Environment / config.env:
+  SCREEN_SKILLS_HOME, SCREEN_SKILLS_MODE, SCREEN_SKILLS_INTERVAL,
+  SCREEN_SKILLS_DISPLAY, SCREEN_SKILLS_DISTILL_MINUTES
+EOF
+}
+
+log() { printf '[screen-skills] %s\n' "$*"; }
+err() { printf '[screen-skills] ERROR: %s\n' "$*" >&2; }
+
+ensure_dirs() {
+  mkdir -p "$SESSIONS_DIR" "$DISTILL_DIR" "$CANDIDATES_DIR"
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    cat >"$CONFIG_FILE" <<EOF
+# screen-skills local config
+SCREEN_SKILLS_MODE=$MODE
+SCREEN_SKILLS_INTERVAL=$FRAME_INTERVAL
+SCREEN_SKILLS_DISPLAY=$DISPLAY
+SCREEN_SKILLS_DISTILL_MINUTES=$DISTILL_MINUTES
+EOF
+  fi
+  # shellcheck disable=SC1090
+  [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE" || true
+  MODE="${SCREEN_SKILLS_MODE:-$MODE}"
+  FRAME_INTERVAL="${SCREEN_SKILLS_INTERVAL:-$FRAME_INTERVAL}"
+  DISPLAY="${SCREEN_SKILLS_DISPLAY:-$DISPLAY}"
+  DISTILL_MINUTES="${SCREEN_SKILLS_DISTILL_MINUTES:-$DISTILL_MINUTES}"
+}
+
+write_state() {
+  local session="$1" status="$2" pid="${3:-}"
+  python3 - "$STATE_FILE" "$session" "$status" "$pid" "$MODE" "$FRAME_INTERVAL" <<'PY'
+import json, sys, time
+path, session, status, pid, mode, interval = sys.argv[1:7]
+data = {
+  "session": session,
+  "status": status,
+  "pid": int(pid) if pid.isdigit() else None,
+  "mode": mode,
+  "interval": int(interval),
+  "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+}
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
+}
+
+read_state_field() {
+  local field="$1"
+  python3 - "$STATE_FILE" "$field" <<'PY'
+import json, sys
+path, field = sys.argv[1:3]
+try:
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    v = data.get(field, "")
+    print("" if v is None else v)
+except Exception:
+    print("")
+PY
+}
+
+session_id_now() {
+  date +"%Y-%m-%dT%H-%M-%S"
+}
+
+active_session_dir() {
+  local sid
+  sid="$(read_state_field session)"
+  if [[ -n "$sid" && -d "$SESSIONS_DIR/$sid" ]]; then
+    echo "$SESSIONS_DIR/$sid"
+  else
+    echo ""
+  fi
+}
+
+cmd_doctor() {
+  ensure_dirs
+  log "version $VERSION"
+  log "data: $DATA_ROOT"
+  log "skill: $SKILL_ROOT"
+  echo
+  echo "Tools:"
+  printf '  screencapture: %s\n' "$(command -v screencapture || echo MISSING)"
+  printf '  ffmpeg:        %s\n' "$(command -v ffmpeg || echo 'not found (optional; brew install ffmpeg)')"
+  printf '  tesseract:     %s\n' "$(command -v tesseract || echo 'not found (optional; brew install tesseract)')"
+  printf '  python3:       %s\n' "$(command -v python3 || echo MISSING)"
+  printf '  open:          %s\n' "$(command -v open || echo MISSING)"
+  echo
+  echo "Permissions (required for capture):"
+  cat <<'PERM'
+  System Settings → Privacy & Security → Screen Recording
+    → enable for: Terminal (or iTerm), and Cursor if the agent runs capture
+  On older macOS: System Preferences → Security & Privacy → Privacy → Screen Recording
+
+  After granting, quit and relaunch the app. Test with:
+    screencapture -x -C /tmp/screen-skills-test.png && open /tmp/screen-skills-test.png
+PERM
+  echo
+  if command -v ffmpeg >/dev/null 2>&1; then
+    log "Listing avfoundation devices (ffmpeg)…"
+    ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | sed -n '/AVFoundation/,$p' | head -40 || true
+  fi
+  echo
+  local test_png="$DATA_ROOT/doctor-test.png"
+  if screencapture -x -C -D "$DISPLAY" "$test_png" 2>/dev/null && [[ -s "$test_png" ]]; then
+    log "Capture test OK → $test_png"
+  else
+    err "Capture test FAILED. Grant Screen Recording, then re-run: screen-skills doctor"
+    return 1
+  fi
+}
+
+create_session() {
+  local sid="$1"
+  local dir="$SESSIONS_DIR/$sid"
+  mkdir -p "$dir/frames" "$dir/ocr" "$dir/video"
+  cat >"$dir/meta.json" <<EOF
+{
+  "id": "$sid",
+  "mode": "$MODE",
+  "interval": $FRAME_INTERVAL,
+  "display": $DISPLAY,
+  "started_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "hostname": "$(hostname -s 2>/dev/null || hostname)"
+}
+EOF
+  : >"$dir/notes.md"
+  echo "$dir"
+}
+
+recorder_loop_keyframe() {
+  local dir="$1"
+  local n=0
+  while true; do
+    n=$((n + 1))
+    local stamp
+    stamp="$(date +"%Y%m%d-%H%M%S")"
+    local out="$dir/frames/frame-${stamp}-${n}.png"
+    if ! capture_frame "$out" 2>>"$LOG_FILE"; then
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) screencapture failed for $out" >>"$LOG_FILE"
+    fi
+    if [[ "$n" -ge "$MAX_FRAMES_PER_SESSION" ]]; then
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) max frames reached; rotating" >>"$LOG_FILE"
+      # soft rotate: create new session while keeping recorder alive
+      local newsid
+      newsid="$(session_id_now)"
+      dir="$(create_session "$newsid")"
+      write_state "$newsid" "recording" "$$"
+      n=0
+    fi
+    sleep "$FRAME_INTERVAL"
+  done
+}
+
+recorder_loop_video() {
+  local dir="$1"
+  if ! command -v ffmpeg >/dev/null 2>&1; then
+    err "ffmpeg not found; falling back to keyframe mode"
+    MODE=keyframe
+    recorder_loop_keyframe "$dir"
+    return
+  fi
+  # Capture screen device index 1 is often the main display on macOS avfoundation;
+  # "Capture screen 0" naming varies — use :none for no audio.
+  # Also grab keyframes in parallel at a lower rate for distill.
+  (
+    while true; do
+      local stamp
+      stamp="$(date +"%Y%m%d-%H%M%S")"
+      capture_frame "$dir/frames/frame-${stamp}.png" 2>>"$LOG_FILE" || true
+      sleep $((FRAME_INTERVAL > 15 ? FRAME_INTERVAL : 60))
+    done
+  ) &
+  local kf_pid=$!
+  echo "$kf_pid" >"$DATA_ROOT/keyframe-helper.pid"
+  local vid="$dir/video/segment-$(date +%Y%m%d-%H%M%S).mkv"
+  # Prefer screen capture input; device index may need adjustment via doctor output.
+  ffmpeg -y -f avfoundation -framerate "$VIDEO_FPS" -i "${SCREEN_SKILLS_AVFOUNDATION_INPUT:-1:none}" \
+    -c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p \
+    "$vid" >>"$LOG_FILE" 2>&1 || {
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ffmpeg video failed; keyframe-only continues" >>"$LOG_FILE"
+      wait "$kf_pid" || true
+      return
+    }
+}
+
+start_recorder_bg() {
+  local dir="$1"
+  if [[ -f "$PID_FILE" ]]; then
+    local old
+    old="$(cat "$PID_FILE" 2>/dev/null || true)"
+    if [[ -n "$old" ]] && kill -0 "$old" 2>/dev/null; then
+      err "Already recording (pid $old). Run: screen-skills stop"
+      return 1
+    fi
+  fi
+  : >"$LOG_FILE"
+  (
+    if [[ "$MODE" == "video" ]]; then
+      recorder_loop_video "$dir"
+    else
+      recorder_loop_keyframe "$dir"
+    fi
+  ) >>"$LOG_FILE" 2>&1 &
+  local pid=$!
+  echo "$pid" >"$PID_FILE"
+  disown "$pid" 2>/dev/null || true
+  write_state "$(basename "$dir")" "recording" "$pid"
+  log "Recording started (pid $pid, mode=$MODE, interval=${FRAME_INTERVAL}s)"
+  log "Session: $dir"
+}
+
+capture_frame() {
+  # Write one PNG to $1. Tries display-specific then full screen.
+  local out="$1"
+  local errf
+  errf="$(mktemp)"
+  if screencapture -x -C -D "$DISPLAY" "$out" 2>"$errf" && [[ -s "$out" ]]; then
+    rm -f "$errf"
+    return 0
+  fi
+  if screencapture -x -C "$out" 2>"$errf" && [[ -s "$out" ]]; then
+    rm -f "$errf"
+    return 0
+  fi
+  if [[ -s "$errf" ]]; then
+    err "screencapture: $(tr '\n' ' ' <"$errf")"
+  fi
+  rm -f "$errf"
+  return 1
+}
+
+cmd_record() {
+  ensure_dirs
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --mode) MODE="$2"; shift 2 ;;
+      --interval) FRAME_INTERVAL="$2"; shift 2 ;;
+      --display) DISPLAY="$2"; shift 2 ;;
+      *) err "Unknown arg: $1"; usage; return 2 ;;
+    esac
+  done
+  local existing_pid=""
+  if [[ -f "$PID_FILE" ]]; then
+    existing_pid="$(tr -d '[:space:]' <"$PID_FILE" || true)"
+  fi
+  if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
+    err "Already recording. Stop first."
+    return 1
+  fi
+  # screencapture refuses hidden (dotfile) destinations on some macOS versions
+  local probe="$DATA_ROOT/probe-capture.png"
+  rm -f "$probe"
+  if ! capture_frame "$probe"; then
+    err "Screen capture failed. Run: screen-skills doctor"
+    return 1
+  fi
+  rm -f "$probe"
+  local sid dir
+  sid="$(session_id_now)"
+  dir="$(create_session "$sid")"
+  start_recorder_bg "$dir"
+}
+
+cmd_stop() {
+  ensure_dirs
+  local stopped=0
+  if [[ -f "$PID_FILE" ]]; then
+    local pid
+    pid="$(cat "$PID_FILE")"
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      sleep 0.3
+      kill -9 "$pid" 2>/dev/null || true
+      stopped=1
+      log "Stopped recorder pid $pid"
+    fi
+    rm -f "$PID_FILE"
+  fi
+  if [[ -f "$DATA_ROOT/keyframe-helper.pid" ]]; then
+    local kpid
+    kpid="$(cat "$DATA_ROOT/keyframe-helper.pid")"
+    kill "$kpid" 2>/dev/null || true
+    rm -f "$DATA_ROOT/keyframe-helper.pid"
+  fi
+  # stop any ffmpeg children writing into our data root
+  pkill -f "$DATA_ROOT/sessions/.*/video/" 2>/dev/null || true
+  local sid
+  sid="$(read_state_field session)"
+  if [[ -n "$sid" ]]; then
+    write_state "$sid" "stopped" ""
+    local meta="$SESSIONS_DIR/$sid/meta.json"
+    if [[ -f "$meta" ]]; then
+      python3 - "$meta" <<'PY'
+import json, sys, time
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+data["stopped_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
+    fi
+  fi
+  if [[ "$stopped" -eq 0 ]]; then
+    log "No active recorder (state cleaned)."
+  fi
+}
+
+cmd_status() {
+  ensure_dirs
+  local sid status pid
+  sid="$(read_state_field session)"
+  status="$(read_state_field status)"
+  pid="$(read_state_field pid)"
+  echo "Data:     $DATA_ROOT"
+  echo "Session:  ${sid:-none}"
+  echo "Status:   ${status:-unknown}"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    echo "Recorder: running (pid $pid)"
+  else
+    echo "Recorder: not running"
+  fi
+  if [[ -n "$sid" && -d "$SESSIONS_DIR/$sid/frames" ]]; then
+    local count
+    count="$(find "$SESSIONS_DIR/$sid/frames" -type f -name '*.png' 2>/dev/null | wc -l | tr -d ' ')"
+    echo "Frames:   $count"
+    echo "Path:     $SESSIONS_DIR/$sid"
+  fi
+  if [[ -f "$LOG_FILE" ]]; then
+    echo "Log:      $LOG_FILE (tail)"
+    tail -n 5 "$LOG_FILE" 2>/dev/null || true
+  fi
+}
+
+cmd_capture_now() {
+  ensure_dirs
+  local dir
+  dir="$(active_session_dir)"
+  if [[ -z "$dir" ]]; then
+    local sid
+    sid="$(session_id_now)"
+    dir="$(create_session "$sid")"
+    write_state "$sid" "manual" ""
+    log "Created session $sid"
+  fi
+  local out="$dir/frames/frame-$(date +%Y%m%d-%H%M%S)-manual.png"
+  if ! capture_frame "$out"; then
+    err "Capture failed. Run: screen-skills doctor"
+    return 1
+  fi
+  log "Captured $out"
+}
+
+cmd_rotate() {
+  ensure_dirs
+  local was_running=0
+  if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    was_running=1
+    cmd_stop
+  fi
+  local sid dir
+  sid="$(session_id_now)"
+  dir="$(create_session "$sid")"
+  write_state "$sid" "rotated" ""
+  log "Rotated to session $sid"
+  if [[ "$was_running" -eq 1 ]]; then
+    start_recorder_bg "$dir"
+  fi
+}
+
+latest_session_id() {
+  ls -1 "$SESSIONS_DIR" 2>/dev/null | sort | tail -n 1
+}
+
+resolve_session() {
+  local arg="${1:-latest}"
+  if [[ "$arg" == "latest" ]]; then
+    latest_session_id
+  else
+    echo "$arg"
+  fi
+}
+
+cmd_list() {
+  ensure_dirs
+  if [[ ! -d "$SESSIONS_DIR" ]] || [[ -z "$(ls -A "$SESSIONS_DIR" 2>/dev/null || true)" ]]; then
+    log "No sessions yet."
+    return 0
+  fi
+  for s in $(ls -1 "$SESSIONS_DIR" | sort); do
+    local n
+    n="$(find "$SESSIONS_DIR/$s/frames" -type f -name '*.png' 2>/dev/null | wc -l | tr -d ' ')"
+    printf '%s  frames=%s\n' "$s" "$n"
+  done
+}
+
+cmd_replay() {
+  ensure_dirs
+  local reveal=0
+  local arg="latest"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --reveal) reveal=1; shift ;;
+      *) arg="$1"; shift ;;
+    esac
+  done
+  local sid
+  sid="$(resolve_session "$arg")"
+  if [[ -z "$sid" || ! -d "$SESSIONS_DIR/$sid" ]]; then
+    err "No session found."
+    return 1
+  fi
+  local dir="$SESSIONS_DIR/$sid"
+  log "Session: $dir"
+  if [[ "$reveal" -eq 1 ]]; then
+    open "$dir"
+    return 0
+  fi
+  # Prefer video segment if present
+  local vid
+  vid="$(find "$dir/video" -type f \( -name '*.mkv' -o -name '*.mp4' -o -name '*.mov' \) 2>/dev/null | sort | tail -n 1 || true)"
+  if [[ -n "$vid" ]]; then
+    log "Opening video: $vid"
+    open "$vid"
+    return 0
+  fi
+  # Slideshow via Quick Look / Preview on frames
+  local frames=()
+  while IFS= read -r f; do
+    frames+=("$f")
+  done < <(find "$dir/frames" -type f -name '*.png' | sort)
+  if [[ ${#frames[@]} -eq 0 ]]; then
+    err "No frames or video in session."
+    open "$dir"
+    return 1
+  fi
+  log "Opening ${#frames[@]} keyframes in Preview (flip through to replay)."
+  open -a Preview "${frames[@]}"
+}
+
+cmd_distill() {
+  ensure_dirs
+  local minutes="$DISTILL_MINUTES"
+  local dry=0
+  local use_ocr=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --minutes) minutes="$2"; shift 2 ;;
+      --dry-run) dry=1; shift ;;
+      --ocr) use_ocr=1; shift ;;
+      *) err "Unknown arg: $1"; return 2 ;;
+    esac
+  done
+
+  local stamp out
+  stamp="$(session_id_now)"
+  out="$DISTILL_DIR/$stamp"
+  mkdir -p "$out/frames"
+
+  local collected
+  collected="$(
+    python3 "$SCRIPT_DIR/collect_distill.py" \
+      --sessions "$SESSIONS_DIR" \
+      --out "$out" \
+      --minutes "$minutes" \
+      --sample-every "$SAMPLE_EVERY_N"
+  )"
+
+  local ocr_file="$out/ocr.txt"
+  if [[ "$use_ocr" -eq 1 ]]; then
+    if command -v tesseract >/dev/null 2>&1; then
+      : >"$ocr_file"
+      local img
+      for img in "$out/frames"/*.png; do
+        [[ -f "$img" ]] || continue
+        {
+          echo "===== $(basename "$img") ====="
+          tesseract "$img" stdout 2>/dev/null || true
+          echo
+        } >>"$ocr_file"
+      done
+    else
+      echo "(tesseract not installed; skipped OCR)" >"$ocr_file"
+    fi
+  else
+    echo "(OCR not requested; pass --ocr to enable when tesseract is installed)" >"$ocr_file"
+  fi
+
+  local notes_blob="$out/notes_combined.md"
+  python3 "$SCRIPT_DIR/secret_scan.py" --write --report "$out/secret_scan_report.txt" \
+    "$ocr_file" "$notes_blob" >/dev/null || true
+
+  local secret_report index_body notes_body ocr_body
+  secret_report="$(cat "$out/secret_scan_report.txt" 2>/dev/null || echo "n/a")"
+  index_body="$(cat "$out/frame_index.txt" 2>/dev/null || echo "no frames")"
+  notes_body="$(cat "$notes_blob" 2>/dev/null || echo "_none_")"
+  ocr_body="$(cat "$ocr_file" 2>/dev/null || echo "_none_")"
+
+  cat >"$out/bundle.md" <<EOF
+# Screen-skills distill bundle
+
+- Created: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+- Window: last ${minutes} minutes
+- Sampled frames: ${collected}
+- Mode hint: review frames/ + OCR/notes; apply decision rubric
+- Candidates dir: $CANDIDATES_DIR
+- Install skills to: ~/.cursor/skills/ (personal) or .cursor/skills/ (project)
+
+## Secret scan
+
+\`\`\`
+${secret_report}
+\`\`\`
+
+## Frame index
+
+\`\`\`
+${index_body}
+\`\`\`
+
+## Notes (redacted)
+
+${notes_body}
+
+## OCR (redacted)
+
+\`\`\`
+${ocr_body}
+\`\`\`
+
+## Next step
+
+Open Cursor and run the distillation prompt:
+
+  $SCRIPT_DIR/distill_prompt.md
+
+Attach or @-mention:
+
+  $out/bundle.md
+  $out/frames/   (sample a few images)
+EOF
+
+  cp "$SCRIPT_DIR/distill_prompt.md" "$out/distill_prompt.md"
+  : >"$out/decision_log.md"
+  cat >"$out/AGENT_LOOP_HINT.txt" <<EOF
+AGENT_LOOP_TICK_screen_skills_distill {"prompt":"Run screen-skills distill for the last 30 minutes, then apply ~/.cursor/skills/screen-workflow-capture/SKILL.md rubric using $out/distill_prompt.md and $out/bundle.md. Accept or reject skill candidates; never store secrets."}
+EOF
+
+  log "Distill bundle ready: $out"
+  log "Prompt: $out/distill_prompt.md"
+  if [[ "$dry" -eq 1 ]]; then
+    log "Dry-run: not opening files."
+  else
+    open "$out" 2>/dev/null || true
+  fi
+  printf '%s\n' "$out"
+}
+
+cmd_loop_help() {
+  cat <<'EOF'
+# 30-minute distillation loop
+
+## Option A — Cursor /loop (agent-attended)
+
+In a Cursor agent chat:
+
+  /loop 30m Distill screen capture into skills: run `screen-skills distill --minutes 30`,
+  then follow ~/.cursor/skills/screen-workflow-capture/SKILL.md and the distill_prompt.md
+  in the new bundle under ~/Library/Application Support/screen-skills/distill/.
+  Apply the rubric; write ACCEPT skills to ~/.cursor/skills/; reject noise/secrets.
+
+The loop skill arms a background sleeper that wakes the agent every 30 minutes.
+
+## Option B — LaunchAgent (background tick file)
+
+  screen-skills install-launchd
+
+Every 30 minutes this runs `screen-skills distill --minutes 30 --dry-run` and writes a
+bundle. You (or a Cursor /loop watching the distill folder) open the bundle and decide.
+
+Unload:
+
+  screen-skills uninstall-launchd
+
+## Option C — shell while-loop (monitored)
+
+  while true; do
+    sleep 1800
+    screen-skills distill --minutes 30
+    echo 'AGENT_LOOP_TICK_screen_skills_distill {"prompt":"distill screen skills"}'
+  done
+
+Use notify_on_output with pattern ^AGENT_LOOP_TICK_screen_skills_distill
+EOF
+}
+
+PLIST_LABEL="com.cursor.screen-skills-distill"
+PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
+
+cmd_install_launchd() {
+  ensure_dirs
+  local bin="$SCRIPT_DIR/screen-skills"
+  cat >"$PLIST_PATH" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${PLIST_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>${bin}</string>
+    <string>distill</string>
+    <string>--minutes</string>
+    <string>30</string>
+    <string>--dry-run</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>1800</integer>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>${DATA_ROOT}/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>${DATA_ROOT}/launchd.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>
+EOF
+  launchctl unload "$PLIST_PATH" 2>/dev/null || true
+  launchctl load "$PLIST_PATH"
+  log "Installed LaunchAgent: $PLIST_PATH"
+  log "It will run distill every 1800s. Logs: $DATA_ROOT/launchd.*.log"
+}
+
+cmd_uninstall_launchd() {
+  if [[ -f "$PLIST_PATH" ]]; then
+    launchctl unload "$PLIST_PATH" 2>/dev/null || true
+    rm -f "$PLIST_PATH"
+    log "Removed $PLIST_PATH"
+  else
+    log "No LaunchAgent installed."
+  fi
+}
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+  case "$cmd" in
+    help|-h|--help) usage ;;
+    doctor) cmd_doctor "$@" ;;
+    record) cmd_record "$@" ;;
+    stop) cmd_stop "$@" ;;
+    status) cmd_status "$@" ;;
+    capture-now) cmd_capture_now "$@" ;;
+    rotate) cmd_rotate "$@" ;;
+    replay) cmd_replay "$@" ;;
+    list) cmd_list "$@" ;;
+    distill) cmd_distill "$@" ;;
+    loop-help) cmd_loop_help "$@" ;;
+    install-launchd) cmd_install_launchd "$@" ;;
+    uninstall-launchd) cmd_uninstall_launchd "$@" ;;
+    *) err "Unknown command: $cmd"; usage; return 2 ;;
+  esac
+}
+
+main "$@"
