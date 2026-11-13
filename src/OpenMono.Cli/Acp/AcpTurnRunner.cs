@@ -523,14 +523,19 @@ public sealed class AcpTurnRunner : IAcpEventSink
                 // Register the next permission pause
                 var nextTcs = _acpSession.RegisterPause(next.Id, PendingResponseKind.Permission,
                     AcpUserInteractionForwarder.PermissionContextKey(next.ToolName, next.Summary));
+                if (next.Elevated) _acpSession.MarkPauseElevated(next.Id);
 
-                // Emit the next permission_request
+                // Emit the next permission_request (elevated fields included so a
+                // queued root-execution card keeps its password channel).
                 await _writer.WriteEventAsync("permission_request", new
                 {
                     id = next.Id,
                     tool = next.ToolName,
                     summary = next.Summary,
                     dangerous = next.Dangerous,
+                    elevated = next.Elevated,
+                    needs_password = next.Elevated,
+                    command = next.Command,
                 });
 
                 // Alert the user in case they've switched away from this agent's tab.
