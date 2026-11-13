@@ -2,7 +2,7 @@ services:
   llama-server:
     # Base fallback ref; install.sh generates docker-compose.override.yml with
     # the pinned image from versions.json (${LLAMA_IMAGE:-...}).
-    image: ghcr.io/ggml-org/llama.cpp:server
+    image: ghcr.io/ggml-org/llama.cpp:server-b12110
     container_name: llama-server
     profiles: ["full", "server"]
     # Upstream ghcr.io/ggml-org/llama.cpp:server* images ship llama-server and

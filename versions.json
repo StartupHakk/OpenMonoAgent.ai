@@ -1,9 +1,9 @@
 {
   "frp": "0.71.1",
   "images": {
-    "llama_cpu": "ghcr.io/ggml-org/llama.cpp:server",
-    "llama_cuda": "ghcr.io/ggml-org/llama.cpp:server-cuda",
-    "llama_vulkan": "ghcr.io/ggml-org/llama.cpp:server-vulkan-b9070",
+    "llama_cpu": "ghcr.io/ggml-org/llama.cpp:server-b12110",
+    "llama_cuda": "ghcr.io/ggml-org/llama.cpp:server-cuda-b12110",
+    "llama_vulkan": "ghcr.io/ggml-org/llama.cpp:server-vulkan-b12110",
     "prism_cuda": "startuphakk/prism-llama.cpp_cuda:latest",
     "prism_vulkan": "startuphakk/prism-llama.cpp_vulkan:latest",
     "caddy": "caddy:2-alpine",

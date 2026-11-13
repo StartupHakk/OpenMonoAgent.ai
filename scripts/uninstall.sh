@@ -456,6 +456,10 @@ if [ -n "$INSTALL_DIR" ] && [ -d "$INSTALL_DIR/docker" ] && command -v docker &>
             ghcr.io/ggml-org/llama.cpp:server \
             ghcr.io/ggml-org/llama.cpp:server-cuda \
             ghcr.io/ggml-org/llama.cpp:server-vulkan \
+            ghcr.io/ggml-org/llama.cpp:server-b12110 \
+            ghcr.io/ggml-org/llama.cpp:server-cuda-b12110 \
+            ghcr.io/ggml-org/llama.cpp:server-vulkan-b12110 \
+            ghcr.io/ggml-org/llama.cpp:server-vulkan-b9070 \
             caddy:2-alpine \
             searxng/searxng:latest
         do
