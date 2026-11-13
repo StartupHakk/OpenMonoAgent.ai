@@ -6,6 +6,11 @@ namespace OpenMono.HostBridge;
 
 public enum HostPolicyDecision { Allow, Deny, Ask }
 
+/// <summary>Outcome of a password-only sudo verification (no payload run).</summary>
+public enum SudoVerifyOutcome { Success, AuthFailure, Unavailable }
+
+public sealed record SudoVerifyResult(SudoVerifyOutcome Outcome, string Reason = "");
+
 /// <summary>
 /// Executes approved commands on bare metal: the bridge's half of the deal.
 /// The model loop stays in the container; this is the only piece that touches
@@ -279,6 +284,90 @@ public sealed class HostExecutor
         if (read.TimedOut)
             return TimeoutMessage(timeoutMs, command, SafePid(process), confirmedTerminated: true);
         return FormatResult(process.ExitCode, read.Stdout, read.Stderr);
+    }
+
+    /// <summary>
+    /// Verify a client-typed sudo password WITHOUT running any payload:
+    /// <c>sudo -S -v -u target</c> validates/refreshes the credential only.
+    /// The password is used for this one probe (never stored on the identity,
+    /// never logged) and its byte copy is wiped on every return path. An
+    /// empty password short-circuits to AuthFailure so a sudo/PAM attempt is
+    /// never burned on it. A success refreshes sudo's timestamp, so the real
+    /// exec that follows takes the passwordless fast path.
+    /// </summary>
+    public async Task<SudoVerifyResult> VerifySudoPasswordAsync(string targetUser, string? password, CancellationToken ct)
+    {
+        if (!HostIdentity.IsValidUsername(targetUser))
+            return new SudoVerifyResult(SudoVerifyOutcome.Unavailable, $"refusing to verify as invalid username '{targetUser}'.");
+        if (!SudoPresent())
+            return new SudoVerifyResult(SudoVerifyOutcome.Unavailable, "sudo is not installed on this host.");
+        if (string.IsNullOrEmpty(password))
+            return new SudoVerifyResult(SudoVerifyOutcome.AuthFailure, "empty password submitted (no sudo attempt was made).");
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = "/bin/bash",
+            ArgumentList = { "-c", $"sudo -S -v -u {targetUser}" },
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = _workDir,
+        };
+        using var process = new Process { StartInfo = psi };
+        try
+        {
+            if (!process.Start())
+                return new SudoVerifyResult(SudoVerifyOutcome.Unavailable, "failed to start sudo.");
+        }
+        catch (Exception ex)
+        {
+            return new SudoVerifyResult(SudoVerifyOutcome.Unavailable, $"failed to start sudo: {ex.Message}");
+        }
+
+        var bytes = System.Text.Encoding.UTF8.GetBytes(password);
+        try
+        {
+            try
+            {
+                process.StandardInput.BaseStream.Write(bytes, 0, bytes.Length);
+                process.StandardInput.BaseStream.WriteByte((byte)'\n');
+                process.StandardInput.BaseStream.Flush();
+            }
+            catch (IOException)
+            {
+                return new SudoVerifyResult(SudoVerifyOutcome.AuthFailure, "sudo exited before reading the password.");
+            }
+            // Close stdin so a wrong password hits EOF instead of re-prompting
+            // (same rule as the exec path — "Sorry, try again" then exit).
+            try { process.StandardInput.Close(); } catch (IOException) { /* process already gone */ }
+
+            // Read both streams with a generous but bounded wait: -v is a
+            // tiny operation, anything past this is a hung sudo/PAM module.
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
+            var stderrTask = process.StandardError.ReadToEndAsync(ct);
+            if (!process.WaitForExit(30_000))
+            {
+                try { process.Kill(entireProcessTree: true); } catch (Exception) { }
+                return new SudoVerifyResult(SudoVerifyOutcome.Unavailable, "sudo credential verification timed out.");
+            }
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+            if (process.ExitCode == 0)
+                return new SudoVerifyResult(SudoVerifyOutcome.Success);
+            var text = stdout + "\n" + stderr;
+            if (IsPasswordFailure(text))
+                return new SudoVerifyResult(SudoVerifyOutcome.AuthFailure, "sudo rejected the password.");
+            // Not an auth failure: user cannot sudo at all, target missing,
+            // sudo policy refuse. Never a client retry — surface the reason.
+            var reason = stderr.Trim().Length > 0 ? stderr.Trim() : $"sudo exited with code {process.ExitCode}.";
+            return new SudoVerifyResult(SudoVerifyOutcome.Unavailable, reason);
+        }
+        finally
+        {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(bytes);
+        }
     }
 
     private string RunBackgroundDirect(string command)

@@ -228,6 +228,11 @@ public sealed class GitCommand : ICommand
                     ct.ThrowIfCancellationRequested();
                     var secret = await renderer.AskSecretAsync(
                         "Paste the personal access token (masked)", ct);
+                    if (secret is null)
+                    {
+                        renderer.WriteInfo("Cancelled.");
+                        return;
+                    }
                     var token = new string(secret).Trim();
                     for (var i = 0; i < secret.Length; i++) secret[i] = '\0';
                     if (token.Length == 0)

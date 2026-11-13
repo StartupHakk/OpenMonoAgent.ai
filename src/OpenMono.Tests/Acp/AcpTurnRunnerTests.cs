@@ -429,127 +429,173 @@ public sealed class AcpTurnRunnerTests
 
 
 
-    // ── Sudo elevation: long-lived consent loop on resume ─────────────
+    // ── Sudo elevation: ELEVATED permission pause ──────────────────────
     //
-    // A host_exec UserInput pause whose command needs root (daemon allow_sudo
-    // != allow) stays UNRESOLVED across in-place password attempts from the
-    // client's full-screen modal. The pause re-enters ResumeWithUserInputAsync
-    // with a {"consent","password"} body against the SAME id; only success,
-    // the 3rd failure, or a denial resolves it. The daemon is a fake HTTP
-    // server: real sudo+password is not deterministically testable in CI.
+    // A root HostExec permission pause carries the password channel: an allow
+    // response includes the user's sudo password, which the resume branch
+    // verifies against the host daemon BEFORE the pause resolves. A wrong
+    // password re-enters the SAME pause (permission_attempt event, pause stays
+    // pending, conversation loop stays suspended); only success, the 3rd
+    // failure, or a denial resolves it. The daemon is a fake HTTP server: real
+    // sudo+password is not deterministically testable in CI.
+
+    private const string ElevatedHostExecArgs = "{\"command\":\"echo as-root-ok\",\"as_root\":true}";
+
+    private static ToolRegistry HostExecTools()
+    {
+        var tools = new ToolRegistry();
+        tools.Register(new OpenMono.Tools.HostExecTool());
+        return tools;
+    }
+
+    private static void SeedElevatedHostExecCall(AcpSession session)
+    {
+        // The HostExec tool is only offered while the session is paired with a
+        // host daemon — same gate the real /host on flow sets.
+        session.State.Meta.HostEnabled = true;
+        session.Messages.Add(new Message { Role = MessageRole.User, Content = "run it as root" });
+        session.Messages.Add(new Message
+        {
+            Role = MessageRole.Assistant,
+            ToolCalls = new() { new ToolCall { Id = "call_host", Name = "HostExec", Arguments = ElevatedHostExecArgs } },
+        });
+    }
+
+    private static void RegisterElevatedPause(AcpSession session, string id)
+    {
+        session.RegisterPause(id, PendingResponseKind.Permission, "HostExec");
+        session.MarkPauseElevated(id);
+    }
+
+    private static JsonDocument PermissionPayload(
+        string id, string decision, string? password = null, string scope = "once")
+        => JsonDocument.Parse(JsonSerializer.Serialize(new { id, decision, scope, password }));
 
     [Fact]
-    public async Task Resume_sudoAttempt_wrongPassword_keepsPausePending_and_retries_with_password()
+    public async Task Resume_elevated_correctPassword_verifies_then_runs_the_real_command()
     {
         using var daemon = new FakeHostDaemon("correct-horse");
-        var (runner, session, body) = BuildHarnessWithGateway("sess_sudo_1", daemon);
-        var envelope = SudoEnvelope();
-        session.RegisterPause("ask_sudo", PendingResponseKind.UserInput, envelope);
+        var (runner, session, body) = BuildHarnessWithGateway("sess_sudo_1", daemon, HostExecTools());
+        SeedElevatedHostExecCall(session);
+        RegisterElevatedPause(session, "perm_sudo");
+
+        using var payload = PermissionPayload("perm_sudo", "allow", "correct-horse");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        try { await runner.ResumeWithPermissionAsync(payload.RootElement, cts.Token); }
+        catch (OperationCanceledException) { throw new Exception("HANG-REPRO: " + System.Environment.StackTrace); }
+
+        session.PendingIds.Should().BeEmpty();
+        daemon.VerifyPasswords.Should().Equal(new[] { "correct-horse" },
+            "the password is verified with the benign sudo probe BEFORE the real exec");
+        daemon.ExecCount.Should().Be(1, "the real command runs once, with the verified password");
+        daemon.LastExecPassword.Should().Be("correct-horse");
+        var toolMsg = session.Messages.Last(m => m.Role == MessageRole.Tool);
+        toolMsg.Content.Should().Contain("root-output");
+        var events = ParseSseEvents(body);
+        events.Should().NotContain(e => e.name == "permission_attempt");
+        events.Last().name.Should().Be("done");
+    }
+
+    [Fact]
+    public async Task Resume_elevated_wrongPassword_keepsPausePending_and_emits_attempt()
+    {
+        using var daemon = new FakeHostDaemon("correct-horse");
+        var (runner, session, body) = BuildHarnessWithGateway("sess_sudo_2", daemon, HostExecTools());
+        SeedElevatedHostExecCall(session);
+        RegisterElevatedPause(session, "perm_sudo");
 
         var activityBefore = session.LastActivityAt;
-        var payload = SudoPayload("ask_sudo", consent: "yes", password: "wrong-one");
-        await runner.ResumeWithUserInputAsync(payload.RootElement, CancellationToken.None);
+        using var payload = PermissionPayload("perm_sudo", "allow", "wrong-one");
+        await runner.ResumeWithPermissionAsync(payload.RootElement, CancellationToken.None);
 
-        // The pause must still be pending: the modal stays open, no card churn.
-        session.PendingIds.Should().ContainSingle().Which.Should().Be("ask_sudo");
-        session.LookupSudoAttemptState("ask_sudo")!.Value.SudoAttempt.Should().Be(1);
-        session.LookupSudoAttemptState("ask_sudo")!.Value.Consent.Should().Be("yes");
+        // Pause stays pending: the modal/card stays up, no card churn, and the
+        // conversation loop was never resumed.
+        session.PendingIds.Should().ContainSingle().Which.Should().Be("perm_sudo");
+        session.LookupSudoAttemptState("perm_sudo")!.Value.SudoAttempt.Should().Be(1);
+        daemon.VerifyPasswords.Should().Equal(new[] { "wrong-one" });
+        daemon.ExecCount.Should().Be(0, "a wrong password must never run the command");
 
-        // The daemon must have seen the typed password on the wire, and the
-        // client must have been told to keep the modal open.
-        daemon.LastExecPassword.Should().Be("wrong-one", "the consent card's password rides the /exec request");
         var events = ParseSseEvents(body);
-        var attempt = events.Single(e => e.name == "user_input_attempt");
-        attempt.data.GetProperty("id").GetString().Should().Be("ask_sudo");
+        var attempt = events.Single(e => e.name == "permission_attempt");
+        attempt.data.GetProperty("id").GetString().Should().Be("perm_sudo");
         attempt.data.GetProperty("ok").GetBoolean().Should().BeFalse();
         attempt.data.GetProperty("attempt").GetInt32().Should().Be(1);
         attempt.data.GetProperty("max").GetInt32().Should().Be(3);
         events.Should().NotContain(e => e.name == "done");
 
-        // The in-flight attempt refreshed the pending-timeout clock so the
+        // The in-flight attempt refreshed the pending-timeout clock so an
         // actively-typed modal is never GC-swept.
         session.LastActivityAt.Should().BeAfter(activityBefore);
     }
 
     [Fact]
-    public async Task Resume_sudoAttempt_thirdWrongPassword_resolves_pause_with_failure()
+    public async Task Resume_elevated_emptyPassword_countsAsAttempt()
     {
         using var daemon = new FakeHostDaemon("correct-horse");
-        var (runner, session, body) = BuildHarnessWithGateway("sess_sudo_2", daemon);
-        session.RegisterPause("ask_sudo", PendingResponseKind.UserInput, SudoEnvelope());
+        var (runner, session, body) = BuildHarnessWithGateway("sess_sudo_3", daemon, HostExecTools());
+        SeedElevatedHostExecCall(session);
+        RegisterElevatedPause(session, "perm_sudo");
 
-        using (var p1 = SudoPayload("ask_sudo", "yes", "wrong-one"))
-            await runner.ResumeWithUserInputAsync(p1.RootElement, CancellationToken.None);
-        session.PendingIds.Should().ContainSingle().Which.Should().Be("ask_sudo");
+        using var payload = PermissionPayload("perm_sudo", "allow", password: "");
+        await runner.ResumeWithPermissionAsync(payload.RootElement, CancellationToken.None);
 
-        using (var p2 = SudoPayload("ask_sudo", "yes", "wrong-two"))
-            await runner.ResumeWithUserInputAsync(p2.RootElement, CancellationToken.None);
-        session.PendingIds.Should().ContainSingle().Which.Should().Be("ask_sudo");
+        session.PendingIds.Should().ContainSingle().Which.Should().Be("perm_sudo");
+        session.LookupSudoAttemptState("perm_sudo")!.Value.SudoAttempt.Should().Be(1,
+            "an empty submit still consumes an attempt");
+        daemon.VerifyPasswords.Should().Equal(new[] { "" });
+        daemon.ExecCount.Should().Be(0);
+        ParseSseEvents(body).Single(e => e.name == "permission_attempt")
+            .data.GetProperty("attempt").GetInt32().Should().Be(1);
+    }
 
-        using (var p3 = SudoPayload("ask_sudo", "yes", "wrong-three"))
-            await runner.ResumeWithUserInputAsync(p3.RootElement, CancellationToken.None);
+    [Fact]
+    public async Task Resume_elevated_thirdWrongPassword_resolves_with_failure_outcome()
+    {
+        using var daemon = new FakeHostDaemon("correct-horse");
+        var (runner, session, body) = BuildHarnessWithGateway("sess_sudo_4", daemon, HostExecTools());
+        SeedElevatedHostExecCall(session);
+        RegisterElevatedPause(session, "perm_sudo");
+
+        using (var p1 = PermissionPayload("perm_sudo", "allow", "wrong-one"))
+            await runner.ResumeWithPermissionAsync(p1.RootElement, CancellationToken.None);
+        session.PendingIds.Should().ContainSingle().Which.Should().Be("perm_sudo");
+
+        using (var p2 = PermissionPayload("perm_sudo", "allow", "wrong-two"))
+            await runner.ResumeWithPermissionAsync(p2.RootElement, CancellationToken.None);
+        session.PendingIds.Should().ContainSingle().Which.Should().Be("perm_sudo");
+
+        using (var p3 = PermissionPayload("perm_sudo", "allow", "wrong-three"))
+            await runner.ResumeWithPermissionAsync(p3.RootElement, CancellationToken.None);
 
         session.PendingIds.Should().BeEmpty("the 3rd failed attempt is terminal");
         var toolMsg = session.Messages.Last(m => m.Role == MessageRole.Tool);
         toolMsg.Content.Should().Contain("3 attempts", "the model sees the failure so it can handle it");
-        toolMsg.Content.Should().Contain("did not run");
-        ParseSseEvents(body).Last().name.Should().Be("done");
-        daemon.ExecCount.Should().Be(3, "each attempt is one /exec flight");
-    }
-
-    [Fact]
-    public async Task Resume_sudoAttempt_correctPassword_resolves_with_execution_output()
-    {
-        using var daemon = new FakeHostDaemon("correct-horse");
-        var (runner, session, body) = BuildHarnessWithGateway("sess_sudo_3", daemon);
-        session.RegisterPause("ask_sudo", PendingResponseKind.UserInput, SudoEnvelope());
-
-        using var payload = SudoPayload("ask_sudo", "yes", "correct-horse");
-        await runner.ResumeWithUserInputAsync(payload.RootElement, CancellationToken.None);
-
-        session.PendingIds.Should().BeEmpty();
-        var toolMsg = session.Messages.Last(m => m.Role == MessageRole.Tool);
-        toolMsg.Content.Should().Contain("root-output");
-        toolMsg.Content.Should().Contain("$ echo as-root-ok");
-        daemon.LastExecPassword.Should().Be("correct-horse");
-        ParseSseEvents(body).Should().NotContain(e => e.name == "user_input_attempt");
+        toolMsg.Content.Should().Contain("NOT run");
+        daemon.ExecCount.Should().Be(0, "the command never runs without a verified password");
+        daemon.VerifyPasswords.Should().HaveCount(3);
         ParseSseEvents(body).Last().name.Should().Be("done");
     }
 
     [Fact]
-    public async Task Resume_sudoAttempt_denial_resolves_immediately_without_retry()
+    public async Task Resume_elevated_denial_resolves_immediately_without_password()
     {
         using var daemon = new FakeHostDaemon("correct-horse");
-        var (runner, session, body) = BuildHarnessWithGateway("sess_sudo_4", daemon);
-        session.RegisterPause("ask_sudo", PendingResponseKind.UserInput, SudoEnvelope());
+        var (runner, session, body) = BuildHarnessWithGateway("sess_sudo_5", daemon, HostExecTools());
+        SeedElevatedHostExecCall(session);
+        RegisterElevatedPause(session, "perm_sudo");
 
-        using var payload = SudoPayload("ask_sudo", "no", "whatever");
-        await runner.ResumeWithUserInputAsync(payload.RootElement, CancellationToken.None);
+        using var payload = PermissionPayload("perm_sudo", "deny");
+        await runner.ResumeWithPermissionAsync(payload.RootElement, CancellationToken.None);
 
         session.PendingIds.Should().BeEmpty("a denial is one-shot, never retried with a password");
-        session.Messages.Last(m => m.Role == MessageRole.Tool).Content.Should().Contain("denied by user");
-        ParseSseEvents(body).Last().name.Should().Be("done");
-    }
-
-    [Fact]
-    public async Task Resume_sudoPause_oldClientPlainLabel_runs_without_password_on_wire()
-    {
-        using var daemon = new FakeHostDaemon("correct-horse");
-        var (runner, session, body) = BuildHarnessWithGateway("sess_sudo_5", daemon);
-        session.RegisterPause("ask_sudo", PendingResponseKind.UserInput, SudoEnvelope());
-
-        // Old clients send the bare consent label, not the {"consent","password"}
-        // JSON: the plain-label path runs once, and the password field is absent.
-        using var payload = JsonDocument.Parse("{\"id\":\"ask_sudo\",\"value\":\"yes\"}");
-        await runner.ResumeWithUserInputAsync(payload.RootElement, CancellationToken.None);
-
-        session.PendingIds.Should().BeEmpty();
-        daemon.LastExecPassword.Should().BeNull("the plain-label path never carries a password");
+        session.Messages.Last(m => m.Role == MessageRole.Tool).Content.Should().Contain("DENIED");
+        daemon.VerifyCount.Should().Be(0, "a denial never verifies a password");
+        daemon.ExecCount.Should().Be(0);
         ParseSseEvents(body).Last().name.Should().Be("done");
     }
 
     private static (AcpTurnRunner runner, AcpSession session, MemoryStream body) BuildHarnessWithGateway(
-        string sessionId, FakeHostDaemon daemon)
+        string sessionId, FakeHostDaemon daemon, ToolRegistry? tools = null)
     {
         var session = NewSession();
         session.State.Id = sessionId;
@@ -557,23 +603,13 @@ public sealed class AcpTurnRunnerTests
         HostGatewayRegistry.Register(sessionId, gw);
         gw.PairAsync().GetAwaiter().GetResult().Should().BeNull("pairing with the fake daemon must succeed");
         gw.Sudo.Should().Be(SudoPolicy.Ask, "the fake daemon advertises allow_sudo=ask");
-        var (runner, s, body) = BuildHarness(session, new ToolRegistry(),
+        var (runner, s, body) = BuildHarness(session, tools ?? new ToolRegistry(),
             new List<List<StreamChunk>>
             {
                 new() { new() { TextDelta = "ok.", IsComplete = false }, new() { IsComplete = true } },
             });
         return (runner, s, body);
     }
-
-    private static string SudoEnvelope() =>
-        "HOST_EXEC: {\"command\": \"echo as-root-ok\", \"timeout_ms\": 5000, \"background\": false, \"as_root\": true}";
-
-    private static JsonDocument SudoPayload(string id, string consent, string password) =>
-        JsonDocument.Parse(JsonSerializer.Serialize(new
-        {
-            id,
-            value = JsonSerializer.Serialize(new { consent, password }),
-        }));
 
     private static (AcpTurnRunner runner, AcpSession session, MemoryStream body) BuildHarness(
         ToolRegistry tools,

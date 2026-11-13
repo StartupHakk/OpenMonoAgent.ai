@@ -160,74 +160,77 @@ public sealed class AcpUserInteractionForwarderTests
         session.PendingIds.Should().BeEmpty();
     }
 
-    // ── needs_password on host_exec user_input_request events ─────────
-    // The client renders the full-screen sudo-password modal (long-lived
-    // pause) only when the command needs root AND the paired daemon will not
-    // run it unattended (allow_sudo != allow). Every other shape degrades to
-    // the plain consent row.
+    // ── ELEVATED permission_request fields ────────────────────────────
+    // A root HostExec consent is the SAME permission pause as every other
+    // tool, but carries the elevation channel: elevated + needs_password +
+    // the command, and the pause is marked so the resume branch requires a
+    // sudo password on the response. No second card, no second pause.
 
     [Fact]
-    public async Task host_exec_as_root_with_ask_daemon_sets_needs_password()
+    public async Task elevated_permission_request_emits_fields_and_marks_the_pause()
     {
-        await using var gw = new PairedTestGateway("sess_np_1", "ask");
         var (forwarder, session, body) = BuildForwarder();
-        session.State.Id = "sess_np_1";
 
-        try { await forwarder.RequestUserInputAsync(SudoEnvelope(), CancellationToken.None); }
+        try
+        {
+            await forwarder.RequestPermissionAsync(
+                "HostExec", "[host] sudo echo as-root-ok", dangerous: true,
+                CancellationToken.None,
+                new PermissionRequestContext(Elevated: true, Command: "echo as-root-ok"));
+        }
         catch (PendingUserResponseException) { }
 
         var ev = ParseSingleEvent(body);
-        ev.EventName.Should().Be("user_input_request");
-        ev.Data.GetProperty("kind").GetString().Should().Be("host_exec");
-        ev.Data.GetProperty("as_root").GetBoolean().Should().BeTrue();
+        ev.EventName.Should().Be("permission_request");
+        ev.Data.GetProperty("elevated").GetBoolean().Should().BeTrue();
         ev.Data.GetProperty("needs_password").GetBoolean().Should().BeTrue(
-            "root escalation + daemon allow_sudo=ask ⇒ the modal must open");
+            "an elevated allow must carry the sudo password");
+        ev.Data.GetProperty("command").GetString().Should().Be("echo as-root-ok");
+        ev.Data.GetProperty("tool").GetString().Should().Be("HostExec");
+
+        var id = ev.Data.GetProperty("id").GetString()!;
+        session.PendingIds.Should().ContainSingle().Which.Should().Be(id);
+        session.IsPauseElevated(id).Should().BeTrue();
     }
 
     [Fact]
-    public async Task host_exec_as_root_with_allow_daemon_needs_no_password()
+    public async Task elevated_permission_request_ignores_remembered_session_grant()
     {
-        await using var gw = new PairedTestGateway("sess_np_2", "allow");
         var (forwarder, session, body) = BuildForwarder();
-        session.State.Id = "sess_np_2";
+        // A session-wide allow-all for HostExec must never cover sudo.
+        session.Store.Remember("HostExec", allow: true, GrantScope.Session);
 
-        try { await forwarder.RequestUserInputAsync(SudoEnvelope(), CancellationToken.None); }
+        try
+        {
+            await forwarder.RequestPermissionAsync(
+                "HostExec", "[host] sudo echo as-root-ok", dangerous: true,
+                CancellationToken.None,
+                new PermissionRequestContext(Elevated: true, Command: "echo as-root-ok"));
+        }
         catch (PendingUserResponseException) { }
 
-        ParseSingleEvent(body).Data.GetProperty("needs_password").GetBoolean().Should().BeFalse(
-            "allow_sudo=allow runs unattended — no password modal");
+        ParseSingleEvent(body).EventName.Should().Be("permission_request",
+            "the elevated card is shown even under a session allow-all");
     }
 
     [Fact]
-    public async Task host_exec_non_root_needs_no_password_even_with_ask_daemon()
+    public async Task plain_permission_request_is_not_elevated()
     {
-        await using var gw = new PairedTestGateway("sess_np_3", "ask");
         var (forwarder, session, body) = BuildForwarder();
-        session.State.Id = "sess_np_3";
 
-        var plain = "HOST_EXEC: {\"command\": \"ls -la\", \"background\": false, \"as_root\": false}";
-        try { await forwarder.RequestUserInputAsync(plain, CancellationToken.None); }
+        try
+        {
+            await forwarder.RequestPermissionAsync(
+                "Bash", "rm -rf node_modules", dangerous: true, CancellationToken.None);
+        }
         catch (PendingUserResponseException) { }
 
         var ev = ParseSingleEvent(body);
-        ev.Data.GetProperty("as_root").GetBoolean().Should().BeFalse();
+        ev.Data.GetProperty("elevated").GetBoolean().Should().BeFalse();
         ev.Data.GetProperty("needs_password").GetBoolean().Should().BeFalse();
+        var id = ev.Data.GetProperty("id").GetString()!;
+        session.IsPauseElevated(id).Should().BeFalse();
     }
-
-    [Fact]
-    public async Task host_exec_as_root_unpaired_session_needs_no_password()
-    {
-        var (forwarder, session, body) = BuildForwarder(); // no gateway registered
-
-        try { await forwarder.RequestUserInputAsync(SudoEnvelope(), CancellationToken.None); }
-        catch (PendingUserResponseException) { }
-
-        ParseSingleEvent(body).Data.GetProperty("needs_password").GetBoolean().Should().BeFalse(
-            "unpaired ⇒ no gateway ⇒ plain consent row; the daemon fails closed as before");
-    }
-
-    private static string SudoEnvelope() =>
-        "HOST_EXEC: {\"command\": \"echo as-root-ok\", \"timeout_ms\": 5000, \"background\": false, \"as_root\": true}";
 
     /// <summary>Paired gateway against a canned daemon, registered under the
     /// session id and unregistered on dispose (the registry is static).</summary>
@@ -286,7 +289,9 @@ public sealed class AcpUserInteractionForwarderTests
         public List<string> ToggleModeCalls { get; } = new();
         public List<string> UserInputCalls { get; } = new();
 
-        public Task<(bool Allow, string Scope)> RequestPermissionAsync(string toolName, string summary, bool dangerous, CancellationToken ct)
+        public Task<(bool Allow, string Scope)> RequestPermissionAsync(
+            string toolName, string summary, bool dangerous, CancellationToken ct,
+            OpenMono.Acp.PermissionRequestContext? context = null)
         {
             PermissionCalls.Add((toolName, summary, dangerous));
             return Task.FromResult((PermissionResult, "once"));

@@ -394,6 +394,87 @@ public sealed class AcpTurnRunner : IAcpEventSink
         // Default: "once" if not specified by extension
         var scope = (payload.TryGetProperty("scope", out var sEl) ? sEl.GetString() : null) ?? "once";
 
+        // ELEVATED (root) permission pause: an allow must carry the user's
+        // sudo password. It is verified against the host daemon BEFORE the
+        // pause resolves; a wrong password re-enters this SAME pause (attempt
+        // event, pause stays pending, conversation loop stays suspended) so
+        // the model never continues mid-prompt. A verified password is handed
+        // to the HostExec tool through a one-shot registry entry; a terminal
+        // failure is handed over as a refusal reason so the tool reports the
+        // precise outcome instead of a generic "user denied".
+        var password = payload.TryGetProperty("password", out var pwEl) && pwEl.ValueKind == JsonValueKind.String
+            ? pwEl.GetString()
+            : null;
+        var elevated = _acpSession.IsPauseElevated(id);
+        if (elevated)
+        {
+            if (!allow)
+            {
+                HostElevationRegistry.Clear(_acpSession.Id);
+            }
+            else
+            {
+                string? elevationFailure = null;
+                var gateway = HostGatewayRegistry.Get(_acpSession.Id);
+                if (gateway is null)
+                {
+                    elevationFailure =
+                        "Host pairing disappeared before the sudo password could be verified, so the command " +
+                        "did NOT run. Do NOT retry — ask the user to re-pair (Host toggle / /host on).";
+                }
+                else
+                {
+                    var verdict = await gateway.VerifySudoPasswordAsync(asRoot: true, password ?? "", ct);
+                    if (verdict.Ok && !string.IsNullOrEmpty(password))
+                    {
+                        HostElevationRegistry.Attach(_acpSession.Id, ElevationGrant.Verified(password));
+                    }
+                    else if (verdict.Error == "password_failure")
+                    {
+                        _acpSession.TouchPauseActivity(id);
+                        var priorAttempt = _acpSession.LookupSudoAttemptState(id);
+                        var nextAttempt = (priorAttempt?.SudoAttempt ?? 0) + 1;
+                        _acpSession.RecordSudoAttempt(id, nextAttempt, null);
+
+                        if (nextAttempt < SudoAttemptFlow.MaxAttempts)
+                        {
+                            await _writer.WriteEventAsync("permission_attempt", new
+                            {
+                                id,
+                                ok = false,
+                                attempt = nextAttempt,
+                                max = SudoAttemptFlow.MaxAttempts,
+                            });
+                            Utils.Log.Info(
+                                $"[OMA_SUDO] permission pause {id}: attempt {nextAttempt}/{SudoAttemptFlow.MaxAttempts} " +
+                                "failed; pause remains pending");
+                            return; // pause stays pending — no loop resume, no card churn
+                        }
+
+                        elevationFailure =
+                            $"sudo authentication failed after {SudoAttemptFlow.MaxAttempts} attempts " +
+                            "(any password material was wiped): the command did NOT run. Do NOT retry this call. " +
+                            "Ask the user to check their sudo setup, or re-send without \"as_root\": true.";
+                    }
+                    else
+                    {
+                        elevationFailure =
+                            $"Sudo elevation is unavailable on this host: {verdict.Output} The command did NOT run. " +
+                            "Do NOT retry — tell the user, or re-send without \"as_root\": true.";
+                    }
+                }
+
+                if (elevationFailure is not null)
+                {
+                    // Never run the command, but let the tool itself refuse so
+                    // the model receives this exact reason (not "user denied").
+                    allow = true;
+                    scope = "once";
+                    HostElevationRegistry.Attach(_acpSession.Id, ElevationGrant.Failed(elevationFailure));
+                }
+            }
+        }
+
         var ctx = _acpSession.LookupPauseContext(id)
             ?? throw new InvalidOperationException($"permission_response for unknown or already-resolved pause id: {id}");
         if (ctx.Kind != PendingResponseKind.Permission)
@@ -489,214 +570,15 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
         var resolvedValue = value ?? "";
 
-        // Host mode on the ACP surface: the pause's question WAS a HOST_EXEC
-        // envelope (the client UI showed it as the consent card). The answer is
-        // the user's consent; on approval the command runs on bare metal via
-        // the daemon and the model is fed the execution result, not the answer.
-        //
-        // SUDO ELEVATION (as_root with the daemon's allow_sudo != allow) is the
-        // one LONG-LIVED consent loop: the pause stays unresolved across up to
-        // 3 in-place password attempts from the full-screen modal. Each attempt
-        // POST re-enters this same branch against the still-pending pause; only
-        // success, the 3rd failure, or a denial resolves it. See
-        // TryHostExecSudoAttemptAsync.
-        if (HostExecRequest.LooksLikeHostExec(ctx.ContextKey))
-        {
-            var gateway = HostGatewayRegistry.Get(_acpSession.Id);
-            if (gateway is not null)
-            {
-                // Long-lived sudo attempt path (new clients): {"consent","password"}.
-                if (gateway.Sudo != OpenMono.HostBridge.SudoPolicy.Allow &&
-                    TryParseSudoAttemptBody(value, out var attempt))
-                {
-                    await TryHostExecSudoAttemptAsync(id, ctx.ContextKey, attempt, gateway, ct);
-                    return; // terminal ⇒ loop already driven; in-flight ⇒ still pending
-                }
-
-                // Plain-label path (old clients + all non-sudo host exec):
-                // resolve the pause with the consent answer, run once.
-                if (!_acpSession.TryResolvePause(id, new AcpUserInputResponse(resolvedValue)))
-                    throw new InvalidOperationException($"failed to resolve pause id: {id}");
-                var answer = await RunHostExecOnResumeAsync(ctx.ContextKey, resolvedValue, gateway, ct);
-                AppendSyntheticToolMessages(answer);
-                _acpSession.State.Meta.AwaitingEscalationAck = false;
-                await DriveLoopAsync(ct);
-                return;
-            }
-        }
-
         if (!_acpSession.TryResolvePause(id, new AcpUserInputResponse(resolvedValue)))
             throw new InvalidOperationException($"failed to resolve pause id: {id}");
 
         // No general user-input caching: each free-form question prompts fresh.
-        // (HOST_EXEC authorization is grant-cached bridge-side, never as answers.)
         AppendSyntheticToolMessages(resolvedValue);
 
         // A user_input answer is genuine user direction.
         _acpSession.State.Meta.AwaitingEscalationAck = false;
         await DriveLoopAsync(ct);
-    }
-
-    /// <summary>
-    /// Execute a HOST_EXEC envelope on resume, after the ACP client answered
-    /// the envelope (the consent card). The answer maps through the shared
-    /// consent vocabulary; on approval the command runs on bare metal via the
-    /// daemon and the execution output is the tool answer to the model.
-    /// </summary>
-    private async Task<string> RunHostExecOnResumeAsync(
-        string question,
-        string answer,
-        HostGateway gateway,
-        CancellationToken ct)
-    {
-        if (!HostExecRequest.TryParse(question, out var request) || request is null)
-            return HostExecRequest.MalformedEnvelopeAnswer(question);
-
-        var decision = HostConsent.Map(answer);
-
-        // The client already gave its consent (the envelope question IS the
-        // consent card); hand the mapped decision to the gateway so it records
-        // the session grant the same way the TUI card does. Always route
-        // through RunAsync — a DenyAll must set the gateway's deny-all flag so
-        // later commands never re-prompt, exactly like the TUI surface.
-        // No tool card on this path (synthetic messages only), so the text
-        // answer is fed to the model verbatim, exactly as before.
-        return (await gateway.RunAsync(request,
-            (_, _, _) => Task.FromResult(decision), ct)).Answer;
-    }
-
-    /// <summary>
-    /// Parse the long-lived sudo attempt body {"consent":"...","password":"..."}
-    /// sent by the full-screen password modal. Absent/invalid JSON ⇒ null, so
-    /// old clients keep the plain-label behavior unchanged. An empty password
-    /// is still a valid (failing) attempt — the user may have pressed Confirm
-    /// with the field empty; we surface that as an authentication failure.
-    /// </summary>
-    private static bool TryParseSudoAttemptBody(string? raw, out (string Consent, string Password) attempt)
-    {
-        attempt = default;
-        if (string.IsNullOrWhiteSpace(raw))
-            return false;
-        try
-        {
-            using var doc = JsonDocument.Parse(raw);
-            if (doc.RootElement.ValueKind != JsonValueKind.Object)
-                return false;
-            var consent = doc.RootElement.TryGetProperty("consent", out var c) ? c.GetString() : null;
-            var password = doc.RootElement.TryGetProperty("password", out var p) ? p.GetString() : null;
-            if (string.IsNullOrWhiteSpace(consent) || password is null)
-                return false;
-            attempt = (consent!, password);
-            return true;
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// One in-place sudo-password attempt against a still-pending host_exec
-    /// UserInput pause (long-lived consent loop — no card churn, no blip).
-    ///
-    ///   denial label  → resolve with the denial answer, drive the loop.
-    ///   exec succeeds → resolve with the exec output, drive the loop.
-    ///   auth failure  → if attempts remain, write a user_input_attempt status
-    ///                   event and RETURN without resolving (the modal stays
-    ///                   open); on the 3rd failure, resolve with the failure
-    ///                   answer and drive the loop so the model can handle it.
-    ///
-    /// The password never touches the session or is logged; it rides the
-    /// gateway run and is wiped on every return path inside the gateway.
-    /// </summary>
-    private async Task TryHostExecSudoAttemptAsync(
-        string id,
-        string question,
-        (string Consent, string Password) attempt,
-        HostGateway gateway,
-        CancellationToken ct)
-    {
-        const int maxAttempts = 3;
-
-        _acpSession.TouchPauseActivity(id);
-
-        if (!HostExecRequest.TryParse(question, out var request) || request is null)
-        {
-            // Envelope stopped parsing between registration and resume — treat
-            // as a denial so the turn is never stranded.
-            if (_acpSession.TryResolvePause(id, new AcpUserInputResponse(HostExecRequest.MalformedEnvelopeAnswer(question))))
-            {
-                _acpSession.State.Meta.AwaitingEscalationAck = false;
-                await DriveLoopAsync(ct);
-            }
-            return;
-        }
-
-        var decision = HostConsent.Map(attempt.Consent);
-        if (decision == HostConsentDecision.DenyOnce || decision == HostConsentDecision.DenyAll)
-        {
-            // Denial (Back / deny): one-shot, never retried with a password.
-            // Run through the gateway so deny-all sets its flag exactly as
-            // today; its refusal answer is what the model sees.
-            var denial = await RunHostExecOnResumeAsync(question, attempt.Consent, gateway, ct);
-            if (_acpSession.TryResolvePause(id, new AcpUserInputResponse(denial)))
-            {
-                AppendSyntheticToolMessages(denial);
-                _acpSession.State.Meta.AwaitingEscalationAck = false;
-                await DriveLoopAsync(ct);
-            }
-            return;
-        }
-
-        // Approve: apply the grant the same way the TUI card does (allow all
-        // sets the session grant; escalations never ride it) and run this
-        // attempt with the typed password.
-        var prior = _acpSession.LookupSudoAttemptState(id);
-        var nextAttempt = (prior?.SudoAttempt ?? 0) + 1;
-        _acpSession.RecordSudoAttempt(id, nextAttempt, attempt.Consent);
-
-        var outcome = await gateway.RunAsync(request,
-            (_, _, _) => Task.FromResult(decision), ct,
-            sudoPassword: attempt.Password);
-
-        if (outcome.ErrorCode != HostExecOutcome.ErrPasswordFailure)
-        {
-            // Success (or any non-auth failure: unreachable, stale, policy,
-            // execution error). Terminal: the model must see exactly ONE
-            // outcome for this command.
-            if (_acpSession.TryResolvePause(id, new AcpUserInputResponse(outcome.Answer)))
-            {
-                AppendSyntheticToolMessages(outcome.Answer);
-                _acpSession.State.Meta.AwaitingEscalationAck = false;
-                await DriveLoopAsync(ct);
-            }
-            return;
-        }
-
-        // Wrong password.
-        if (nextAttempt >= maxAttempts)
-        {
-            var failure = "sudo authentication failed after 3 attempts (password wiped): " +
-                          $"the command did not run: {request.Command}. The user should correct the sudo password or turn off root for this step.";
-            if (_acpSession.TryResolvePause(id, new AcpUserInputResponse(failure)))
-            {
-                AppendSyntheticToolMessages(failure);
-                _acpSession.State.Meta.AwaitingEscalationAck = false;
-                await DriveLoopAsync(ct);
-            }
-            return;
-        }
-
-        // Not terminal: tell the modal to stay open. The pause stays UNRESOLVED
-        // — the next Confirm POST re-enters this branch against the same pause.
-        await _writer.WriteEventAsync("user_input_attempt", new
-        {
-            id,
-            ok = false,
-            attempt = nextAttempt,
-            max = maxAttempts,
-        });
-        Utils.Log.Info($"[OMA_SUDO] attempt {nextAttempt}/{maxAttempts} failed for host_exec pause {id}; pause remains pending");
     }
 
     public async Task ResumeWithPlanDecisionAsync(string decision, CancellationToken ct)

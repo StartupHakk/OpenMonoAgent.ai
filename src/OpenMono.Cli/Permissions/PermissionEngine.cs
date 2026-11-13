@@ -149,6 +149,25 @@ public sealed class PermissionEngine
             return new(true);
         }
 
+        // "allow-all never covers sudo": an elevated HostExec (as_root) skips
+        // every remembered/AutoAllow/rules shortcut. The user must see the
+        // ELEVATED card for THIS command every time; the password attempt
+        // loop then runs inside the tool body (TUI) or the permission-resume
+        // branch (ACP), never as a second card or pause.
+        if (IsElevatedHostExec(toolName, input))
+        {
+            // The only grant that may cover an elevated call is the ONE-SHOT
+            // grant the permission-resume path seeds right after the sudo
+            // password was verified for this very execution. Session/allow-all
+            // grants never cover sudo.
+            if (_store.TryResolve(toolName) is { Allow: true, Scope: GrantScope.Once })
+                return new(true);
+
+            var promptedElevated = await PromptUserAsync(toolName, input, ct);
+            if (promptedElevated.Allowed) TrackAllow(); else TrackDenial();
+            return promptedElevated;
+        }
+
         if (_store.TryResolve(toolName) is { Allow: true })
         {
             TrackAllow();
@@ -370,7 +389,18 @@ public sealed class PermissionEngine
                 "Allow this tool in the main session first, then re-run the sub-agent.");
 
         var summary = BuildToolSummary(toolName, input);
-        var response = await _input.AskPermissionAsync(toolName, summary, ct);
+        PermissionResponse response;
+        if (IsElevatedHostExec(toolName, input))
+        {
+            var command = input.TryGetProperty("command", out var cmdEl)
+                ? cmdEl.GetString() ?? summary
+                : summary;
+            response = await _input.AskElevatedPermissionAsync(toolName, summary, command, ct);
+        }
+        else
+        {
+            response = await _input.AskPermissionAsync(toolName, summary, ct);
+        }
 
         return response switch
         {
@@ -413,6 +443,17 @@ public sealed class PermissionEngine
     }
 
     private void TrackAllow() => _consecutiveDenials = 0;
+
+    /// <summary>
+    /// A HostExec call that asks for root (sudo). The elevated consent flow
+    /// (distinct card + verified password) applies to these regardless of any
+    /// remembered session grant — "allow-all never covers sudo".
+    /// </summary>
+    private static bool IsElevatedHostExec(string toolName, JsonElement input) =>
+        string.Equals(toolName, "HostExec", StringComparison.OrdinalIgnoreCase) &&
+        input.ValueKind == JsonValueKind.Object &&
+        input.TryGetProperty("as_root", out var ar) &&
+        ar.ValueKind == JsonValueKind.True;
 
     private static string BuildToolSummary(string toolName, JsonElement input)
     {

@@ -256,6 +256,23 @@ public sealed class HostGateway : IDisposable
     }
 
     /// <summary>
+    /// Verify a candidate sudo password on the host without running anything
+    /// (daemon route /sudo/verify). Part of the elevation consent flow: the
+    /// surface collects the password in its card, verifies it here, retries
+    /// on auth failure, and only hands the VERIFIED password to the
+    /// subsequent <see cref="RunAsync"/> for the real command. The password
+    /// rides this one request and is wiped on every return path — never
+    /// logged, cached, or persisted.
+    /// </summary>
+    public async Task<SudoVerifyResponse> VerifySudoPasswordAsync(bool asRoot, string? password, CancellationToken ct)
+    {
+        if (_token is null)
+            return new SudoVerifyResponse(false, Denied: true, Error: "unpaired_or_bad_token",
+                Output: "HOST EXECUTION refused: this session is not paired with a host daemon (/host on).");
+        return await _client.SudoVerifyAsync(new SudoVerifyRequest(_token, _sessionId, asRoot, password ?? ""), ct);
+    }
+
+    /// <summary>
     /// Run one HOST_EXEC request through consent + daemon relay. Never throws
     /// on policy/denial — every refusal comes back as a typed
     /// <see cref="HostExecOutcome"/> carrying the same textual answers the

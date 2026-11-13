@@ -373,12 +373,12 @@ public sealed class TerminalRenderer : IRenderer
         return Task.FromResult(answer);
     }
 
-    public Task<char[]> AskSecretAsync(string question, CancellationToken ct)
+    public Task<char[]?> AskSecretAsync(string question, CancellationToken ct)
     {
         if (IsNonInteractive)
         {
             _console.MarkupLine($"  [yellow]⚠ Cannot prompt (non-interactive session): {Markup.Escape(question)}[/]");
-            return Task.FromResult(Array.Empty<char>());
+            return Task.FromResult<char[]?>(null);
         }
 
         _console.WriteLine();
@@ -388,7 +388,7 @@ public sealed class TerminalRenderer : IRenderer
             IsSecret = true,
         };
         var secret = _console.Prompt(prompt);
-        return Task.FromResult(secret.ToCharArray());
+        return Task.FromResult<char[]?>(secret.ToCharArray());
     }
 
     /// <summary>
@@ -442,6 +442,43 @@ public sealed class TerminalRenderer : IRenderer
             "!" => PermissionResponse.DenyAll,
             _ => PermissionResponse.Deny,
         });
+    }
+
+    /// <summary>
+    /// Elevated (sudo) host-execution consent: deliberately louder than the
+    /// normal card (red border, explicit root warning) so it can never be
+    /// mistaken for an ordinary tool approval. The password prompt follows
+    /// only after an allow.
+    /// </summary>
+    public Task<PermissionResponse> AskElevatedPermissionAsync(
+        string toolName, string summary, string command, CancellationToken ct)
+    {
+        if (IsNonInteractive)
+        {
+            _console.MarkupLine(
+                $"  [yellow]⚠ {Markup.Escape(toolName)} needs a sudo password but this session is non-interactive. Denying.[/]");
+            return Task.FromResult(PermissionResponse.Deny);
+        }
+
+        _console.WriteLine();
+        var panel = new Panel(
+            $"[bold red]⚠ ELEVATED PERMISSION — runs as root (sudo)[/]\n\n{Markup.Escape(command)}")
+        {
+            Header = new PanelHeader($" SUDO · {toolName} "),
+            Border = BoxBorder.Double,
+            BorderStyle = new Style(Color.Red),
+            Padding = new Padding(2, 1),
+        };
+        _console.Write(panel);
+        _console.MarkupLine($"  [dim]{Markup.Escape(summary)}[/]");
+        _console.MarkupLine("  [dim]Approving asks for your sudo password; the command does not run without it.[/]");
+        _console.MarkupLine("  [dim][[y]] Allow (enter password)  [[n]] Deny[/]");
+        var key = _console.Prompt(
+            new TextPrompt<string>("  [red]ELEVATED permission?[/] ")
+                .DefaultValue("n")
+                .AddChoice("y").AddChoice("n"));
+
+        return Task.FromResult(key == "y" ? PermissionResponse.Allow : PermissionResponse.Deny);
     }
 
     public Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct)

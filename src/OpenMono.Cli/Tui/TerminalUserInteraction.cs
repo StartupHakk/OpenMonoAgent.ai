@@ -22,9 +22,13 @@ public sealed class TerminalUserInteraction : IAcpUserInteraction
         _input = input;
     }
 
-    public async Task<(bool Allow, string Scope)> RequestPermissionAsync(string toolName, string summary, bool dangerous, CancellationToken ct)
+    public async Task<(bool Allow, string Scope)> RequestPermissionAsync(
+        string toolName, string summary, bool dangerous, CancellationToken ct,
+        OpenMono.Acp.PermissionRequestContext? context = null)
     {
-        var response = await _input.AskPermissionAsync(toolName, summary, ct);
+        var response = context?.Elevated == true
+            ? await _input.AskElevatedPermissionAsync(toolName, summary, context.Command ?? summary, ct)
+            : await _input.AskPermissionAsync(toolName, summary, ct);
 
         // Map PermissionResponse to (allow, scope)
         var (allow, scope) = response switch

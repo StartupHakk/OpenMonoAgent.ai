@@ -226,6 +226,13 @@ public sealed class HostDaemon : IAsyncDisposable
             return;
         }
 
+        if (method == "POST" && path == "/sudo/verify")
+        {
+            var req = await ReadJsonAsync<SudoVerifyRequest>(ctx);
+            await HandleSudoVerifyAsync(ctx, req);
+            return;
+        }
+
         if (method == "POST" && path == "/revoke")
         {
             var req = await ReadJsonAsync<RevokeRequest>(ctx);
@@ -618,6 +625,67 @@ public sealed class HostDaemon : IAsyncDisposable
             return;
         }
         WriteJson(ctx, 200, new ExecResponse(!denied, output, denied));
+    }
+
+    /// <summary>
+    /// Verify a client-typed sudo password for THIS session only: the consent
+    /// card (TUI elevation card / ACP permission card) runs it before the
+    /// real as_root exec so wrong passwords re-prompt in the card. Nothing
+    /// runs on the host here — sudo -v validates the credential only. The
+    /// password never touches the daemon identity (the operator's in-memory
+    /// secret is never replaced or wiped by client attempts), is never
+    /// logged, and its copy is wiped inside the executor.
+    /// </summary>
+    private async Task HandleSudoVerifyAsync(HttpListenerContext ctx, SudoVerifyRequest? req)
+    {
+        if (req is null || string.IsNullOrWhiteSpace(req.SessionId))
+        {
+            WriteJson(ctx, 400, new SudoVerifyResponse(false, Denied: true, Error: "invalid_json"));
+            return;
+        }
+
+        // Same session lock as exec: no token, expired token, wrong session =
+        // refuse. A stranger cannot use verify as a sudo-password oracle.
+        if (!ValidateToken(req.SessionId, req.Token, out _))
+        {
+            AuditLog.WriteNote("sudo verify refused: no live session token (fail closed)");
+            WriteJson(ctx, 403, new SudoVerifyResponse(false, Denied: true, Error: "unpaired_or_bad_token"));
+            return;
+        }
+
+        if (_identity.Sudo == SudoPolicy.Deny)
+        {
+            AuditLog.WriteNote("sudo verify refused: allow_sudo=deny");
+            WriteJson(ctx, 200, new SudoVerifyResponse(false, Denied: true,
+                Error: "sudo_denied", Output: "sudo is denied on this host (allow_sudo=deny)."));
+            return;
+        }
+
+        var targetUser = req.AsRoot ? "root" : _identity.RunAsUser;
+        var result = await _executor.VerifySudoPasswordAsync(targetUser, req.Password, _cts.Token);
+        switch (result.Outcome)
+        {
+            case SudoVerifyOutcome.Success:
+                AuditLog.WriteNote($"sudo verify ok for '{targetUser}' (per-exec password, value never logged)");
+                WriteJson(ctx, 200, new SudoVerifyResponse(true));
+                break;
+            case SudoVerifyOutcome.AuthFailure:
+                // Wrong (or empty) password: drop any stale passwordless-probe
+                // entry so the next NeedsPassword check re-probes, and tell the
+                // client it may re-prompt (the attempt loop owns the count).
+                HostExecutor.NoteAuthenticationFailure(targetUser);
+                AuditLog.WriteNote($"sudo verify auth failure for '{targetUser}' ({result.Reason}); client may retry");
+                WriteJson(ctx, 200, new SudoVerifyResponse(false, Denied: true,
+                    Error: "password_failure", Output: $"sudo authentication failed: {result.Reason}"));
+                break;
+            default:
+                // No sudo binary / user cannot sudo / sudo itself failed.
+                // Terminal for the attempt loop — re-typing cannot fix it.
+                AuditLog.WriteNote($"sudo verify unavailable for '{targetUser}': {result.Reason}");
+                WriteJson(ctx, 200, new SudoVerifyResponse(false, Denied: true,
+                    Error: "sudo_unavailable", Output: result.Reason));
+                break;
+        }
     }
 
     private async Task HandleRevokeAsync(HttpListenerContext ctx, RevokeRequest? req)

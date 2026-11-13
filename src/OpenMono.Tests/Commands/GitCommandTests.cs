@@ -227,11 +227,11 @@ public sealed class GitAddWizardTests : IDisposable
             "2",                        // type https
             "",                         // host → github.com
             "2",                        // token source: paste
-            "ghp_supersecretpat123",    // the (masked) token
             "Jane",                     // user.name
             "jane@example.com",         // email
             "y",                        // confirm
             "n");                       // do not activate
+        renderer.EnqueueSecret("ghp_supersecretpat123"); // the (masked) token
         var ctx = Wctx(cfg, renderer, out var session);
 
         await new GitCommand().ExecuteAsync(["add", "work"], ctx, CancellationToken.None);

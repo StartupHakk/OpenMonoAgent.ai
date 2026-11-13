@@ -277,7 +277,7 @@ public sealed class ModelsCommand : ICommand
         if (context.Renderer is AnsiTuiRenderer tui)
         {
             var secret = await tui.AskSecretAsync($"API key for backend '{name}':", ct);
-            return new string(secret);
+            return secret is null ? "" : new string(secret);
         }
 
         context.Renderer.WriteWarning("Terminal mode: API key will be visible in the terminal. " +

@@ -151,11 +151,16 @@ public sealed class AnsiTuiRenderer : IRenderer
         => _inputReader.SelectOptionAsync(title, options, initial, ct);
 
     /// <summary>Masked secret prompt inside the TUI chat lane (no echo, no transcript).</summary>
-    public Task<char[]> AskSecretAsync(string question, CancellationToken ct)
+    public Task<char[]?> AskSecretAsync(string question, CancellationToken ct)
         => _inputReader.AskSecretAsync(question, ct);
 
     public Task<PermissionResponse> AskPermissionAsync(string toolName, string summary, CancellationToken ct)
         => _inputReader.AskPermissionAsync(toolName, summary, ct);
+
+    /// <summary>Distinct ELEVATED (sudo) consent card — red header, explicit warning.</summary>
+    public Task<PermissionResponse> AskElevatedPermissionAsync(
+        string toolName, string summary, string command, CancellationToken ct)
+        => _inputReader.AskElevatedPermissionAsync(toolName, summary, command, ct);
 
     public Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct)
         => _inputReader.RequestPlaybookApprovalAsync(plan, ct);

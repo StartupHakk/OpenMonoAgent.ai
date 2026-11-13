@@ -14,6 +14,7 @@ namespace OpenMono.HostBridge;
 /// Shapes (one record each, so client and server can never drift):
 ///   POST /pair    { secret, session_id, workdir }      -> PairResponse
 ///   POST /exec    { token, session_id, request }       -> ExecResponse
+///   POST /sudo/verify { token, session_id, as_root, password } -> SudoVerifyResponse
 ///   POST /revoke  { token, session_id }                -> StatusResponse
 ///   POST /verify  { token, session_id }                -> VerifyResponse
 ///   POST /keepalive { token, session_id }              -> StatusResponse (refreshes idle clock)
@@ -54,6 +55,27 @@ public sealed record ExecResponse(
     [property: JsonPropertyName("output")] string Output = "",
     [property: JsonPropertyName("denied")] bool Denied = false,
     [property: JsonPropertyName("error")] string? Error = null);
+
+public sealed record SudoVerifyRequest(
+    [property: JsonPropertyName("token")] string Token,
+    [property: JsonPropertyName("session_id")] string SessionId,
+    // true = verify for the root target, false = verify for the run-as user
+    // (same target resolution as an as_root / non-as_root exec).
+    [property: JsonPropertyName("as_root")] bool AsRoot,
+    // One-shot candidate password from the client elevation card. The daemon
+    // verifies it with `sudo -v -S` (no payload runs), never logs it, and
+    // wipes its copy on every return path.
+    [property: JsonPropertyName("password")] string Password);
+
+public sealed record SudoVerifyResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("denied")] bool Denied = false,
+    // null/absent + Ok = auth verified. "password_failure" = wrong (or empty)
+    // password — the client may re-prompt. Other codes are terminal:
+    // "unpaired_or_bad_token", "daemon unreachable", "sudo_denied",
+    // "sudo_unavailable" (no sudo binary / user not in sudoers / sudo error).
+    [property: JsonPropertyName("error")] string? Error = null,
+    [property: JsonPropertyName("output")] string Output = "");
 
 public sealed record RevokeRequest(
     [property: JsonPropertyName("token")] string Token,
@@ -210,6 +232,15 @@ public sealed class HostDaemonClient : IDisposable
     public Task<ExecResponse> ExecAsync(ExecRequest request, CancellationToken ct) =>
         PostJsonAsync<ExecRequest, ExecResponse>("/exec", request, ct,
             new ExecResponse(false, Output: "", Denied: true, Error: "daemon unreachable"));
+
+    /// <summary>Verify a candidate sudo password on the host WITHOUT running
+    /// any payload (sudo -v -S). The consent flow runs this before the real
+    /// as_root exec so a wrong password re-prompts in the card instead of
+    /// burning an execution. A success refreshes sudo's cached timestamp, so
+    /// the exec that follows typically needs no password at all.</summary>
+    public Task<SudoVerifyResponse> SudoVerifyAsync(SudoVerifyRequest request, CancellationToken ct) =>
+        PostJsonAsync<SudoVerifyRequest, SudoVerifyResponse>("/sudo/verify", request, ct,
+            new SudoVerifyResponse(false, Denied: true, Error: "daemon unreachable"));
 
     public Task<StatusResponse> RevokeAsync(RevokeRequest request, CancellationToken ct) =>
         PostJsonAsync<RevokeRequest, StatusResponse>("/revoke", request, ct,

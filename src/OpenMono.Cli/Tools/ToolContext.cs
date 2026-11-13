@@ -17,6 +17,15 @@ public sealed class ToolContext
     public required Action<string> WriteOutput { get; init; }
     public required Func<string, CancellationToken, Task<string>> AskUser { get; init; }
     public Func<string, IReadOnlyList<string>, CancellationToken, Task<string>>? AskUserWithOptions { get; init; }
+
+    /// <summary>
+    /// In-place masked secret prompt for the sudo elevation flow (TUI). Null
+    /// chars = the user cancelled (Esc); empty = an empty submit, which still
+    /// counts as an attempt. Null property = this surface has no password
+    /// channel (the elevation flow then fails honestly instead of looping
+    /// prompts a non-interactive terminal would answer with placeholders).
+    /// </summary>
+    public Func<string, CancellationToken, Task<char[]?>>? AskSecret { get; init; }
     public FileHistory? FileHistory { get; init; }
     public SessionDiffStager? DiffStager { get; init; }
     public CursorStore? Cursors { get; init; }
@@ -42,6 +51,7 @@ public sealed class ToolContext
         WriteOutput      = this.WriteOutput,
         AskUser          = this.AskUser,
         AskUserWithOptions = this.AskUserWithOptions,
+        AskSecret        = this.AskSecret,
         FileHistory      = this.FileHistory,
         DiffStager       = this.DiffStager,
         Cursors          = this.Cursors,

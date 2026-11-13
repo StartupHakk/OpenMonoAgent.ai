@@ -84,7 +84,7 @@ public sealed class AcpSession
 
     // Permission queue: max 1 permission in flight per session
     // Additional permissions queued until current one resolves
-    private readonly Queue<(string Id, string ToolName, string Summary, bool Dangerous)> _permissionQueue = new();
+    private readonly Queue<(string Id, string ToolName, string Summary, bool Dangerous, bool Elevated, string? Command)> _permissionQueue = new();
     private string? _currentPermissionId;
 
     public TaskCompletionSource<AcpPauseResponse> RegisterPause(
@@ -119,18 +119,18 @@ public sealed class AcpSession
         => _pending.TryRemove(id, out var pp) && pp.Tcs.TrySetResult(response);
 
     /// <summary>
-    /// Attach the host-exec envelope to an already-registered permission pause
-    /// so the resumer's password-attempt loop can rebuild and run the daemon
-    /// request against THIS pause. Only the ACP forwarder calls this, for
-    /// HostExec consent cards.
+    /// Mark a permission pause as ELEVATED (root host execution). The resume
+    /// branch then requires a password on the permission response, verifies it
+    /// against the daemon, and re-enters the same pause on a wrong password
+    /// (the pause stays pending across attempts — one card, one pause).
     /// </summary>
-    public void AttachHostExecEnvelope(string id, OpenMono.HostBridge.HostExecRequest request)
+    public void MarkPauseElevated(string id)
     {
-        if (_pending.TryGetValue(id, out var pp)) pp.HostExec = request;
+        if (_pending.TryGetValue(id, out var pp)) pp.Elevated = true;
     }
 
-    public OpenMono.HostBridge.HostExecRequest? LookupHostExecEnvelope(string id)
-        => _pending.TryGetValue(id, out var pp) ? pp.HostExec : null;
+    public bool IsPauseElevated(string id)
+        => _pending.TryGetValue(id, out var pp) && pp.Elevated;
 
     public (PendingResponseKind Kind, string ContextKey)? LookupPauseContext(string id)
         => _pending.TryGetValue(id, out var pp) ? (pp.Kind, pp.ContextKey) : null;
@@ -157,7 +157,8 @@ public sealed class AcpSession
     }
 
     // Permission queue management (Phase 2 feature)
-    public bool TryEnqueuePermission(string id, string toolName, string summary, bool dangerous)
+    public bool TryEnqueuePermission(string id, string toolName, string summary, bool dangerous,
+        bool elevated = false, string? command = null)
     {
         // If no permission currently in flight, process immediately
         if (_currentPermissionId == null)
@@ -167,11 +168,11 @@ public sealed class AcpSession
         }
 
         // Otherwise queue it
-        _permissionQueue.Enqueue((id, toolName, summary, dangerous));
+        _permissionQueue.Enqueue((id, toolName, summary, dangerous, elevated, command));
         return false; // Queued, don't process yet
     }
 
-    public (string Id, string ToolName, string Summary, bool Dangerous)? DequeueNextPermission()
+    public (string Id, string ToolName, string Summary, bool Dangerous, bool Elevated, string? Command)? DequeueNextPermission()
     {
         _currentPermissionId = null;
 
@@ -201,11 +202,9 @@ public sealed class AcpSession
         // accumulate across re-POSTs while this pause stays unresolved.
         public int SudoAttempt;
         public string? SudoConsent;
-        // The host-exec envelope behind this permission pause, when the card
-        // is a HostExec consent (needs_password modal). The resumer rebuilds
-        // the daemon request from this so a password attempt runs the real
-        // command — no second pause, no tool re-execution.
-        public OpenMono.HostBridge.HostExecRequest? HostExec;
+        // Elevated (root) permission pause: the permission response must carry
+        // a sudo password, verified by the resumer before the pause resolves.
+        public bool Elevated;
     }
 }
 

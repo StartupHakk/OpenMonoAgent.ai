@@ -56,27 +56,43 @@ public sealed class HostExecTool : ToolBase
 
         var request = FromInput(input);
 
-        // Root escalation on the ACP surface (VS Code / extension): the
-        // permission card above carries no password channel, so the daemon
-        // would fail closed. Route the command through the HOST_EXEC envelope
-        // pause instead — the client renders it as a consent card plus the
-        // full-screen sudo password modal (needs_password), and the long-lived
-        // resume loop runs each typed password against the daemon, attaching
-        // the terminal exec output to this tool call. The turn unwinds here
-        // via PendingUserResponseException; reaching the line below means an
-        // inline resolution we did not expect, so fall through to honest
-        // direct execution rather than running twice.
-        if (request.AsRoot && context.Interaction is not null &&
-            gateway.Sudo != SudoPolicy.Allow)
+        // Root escalation when the host policy is not "allow": consent alone
+        // is not enough — the user must also prove they hold the sudo
+        // credential. The password loop runs INSIDE this tool call (after
+        // the permission card above), so the conversation loop cannot resume
+        // between attempts; it resumes only with the terminal outcome. Each
+        // submit is verified on the host with `sudo -v` (no payload runs);
+        // wrong/empty passwords re-prompt in place up to MaxAttempts total;
+        // a cancel ends the flow immediately. On success the VERIFIED
+        // password rides the single following real exec, one-shot.
+        string? verifiedPassword = null;
+        if (request.AsRoot && gateway.Sudo != SudoPolicy.Allow)
         {
-            var envelope = JsonSerializer.Serialize(new
+            if (context.Interaction is not null)
             {
-                command = request.Command,
-                timeout_ms = request.TimeoutMs,
-                background = request.Background,
-                as_root = true,
-            });
-            await context.AskUser($"{HostExecRequest.Prefix} {envelope}", ct);
+                // ACP surface (VS Code / extension): the permission pause
+                // carried the password channel — the resume loop already
+                // verified each attempt against the daemon (/sudo/verify) and
+                // attached the terminal outcome here before re-driving us.
+                var grant = HostElevationRegistry.Take(context.Session.Id);
+                if (grant is null)
+                    return ToolResult.PermissionDenied(
+                        "Host escalation (sudo) needs the user's password, and the client supplied none on the " +
+                        "permission response. The command did NOT run. Do NOT retry this call unchanged — re-send " +
+                        "it so the user can approve the elevated card and enter the password, or ask them.");
+                if (grant.Failure is not null)
+                    return ToolResult.PermissionDenied(grant.Failure);
+                verifiedPassword = grant.Password;
+            }
+            else
+            {
+                // TUI / operator bridge: card consent already happened; run the
+                // attempt loop in place against the same gateway.
+                var flow = await SudoAttemptFlow.RunAsync(context.AskSecret, gateway, ct);
+                if (!flow.Verified)
+                    return ToolResult.PermissionDenied(flow.ModelMessage!);
+                verifiedPassword = flow.Password;
+            }
         }
 
         // Command consent was already captured by this tool's permission gate:
@@ -92,7 +108,7 @@ public sealed class HostExecTool : ToolBase
             if (isRoot && gateway.SessionAllowsAll)
                 return Task.FromResult(HostConsentDecision.DenyOnce);
             return Task.FromResult(HostConsentDecision.AllowOnce);
-        }, ct);
+        }, ct, verifiedPassword);
 
         if (request.AsRoot && gateway.SessionAllowsAll && outcome.ErrorCode == HostExecOutcome.ErrUserDenied)
             return ToolResult.PermissionDenied(

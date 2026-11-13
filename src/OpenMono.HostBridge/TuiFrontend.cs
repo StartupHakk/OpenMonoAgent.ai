@@ -264,18 +264,20 @@ internal sealed class TuiFrontend
     /// Falls back to the console prompt when stdin is redirected.
     /// Nothing typed here is logged.
     /// </summary>
-    public Task<char[]> PasswordAsync(string prompt, CancellationToken ct)
+    public async Task<char[]> PasswordAsync(string prompt, CancellationToken ct)
     {
         FlushResponse();
         if (Console.IsInputRedirected)
-            return Task.FromResult(HostIdentity.PromptPassword(prompt, Console.Error));
+            return HostIdentity.PromptPassword(prompt, Console.Error);
         try
         {
-            return _tui.AskSecretAsync(prompt, ct);
+            // The operator bridge has no elevation attempt loop — Esc maps to
+            // an empty password there (its own retry/report path owns it).
+            return await _tui.AskSecretAsync(prompt, ct) ?? Array.Empty<char>();
         }
         catch (OperationCanceledException)
         {
-            return Task.FromResult(Array.Empty<char>());
+            return Array.Empty<char>();
         }
     }
 }

@@ -488,13 +488,13 @@ internal sealed class AnsiInputReader(
     /// </summary>
     public bool Interactive => true;
 
-    public Task<char[]> AskSecretAsync(string question, CancellationToken ct)
+    public Task<char[]?> AskSecretAsync(string question, CancellationToken ct)
     {
         var saved = SnapshotBgInput();
         painter.AddMessage(new AnsiPainter.Msg("sys", $"? {question}"));
         StopBackgroundInput();
 
-        char[] secret;
+        char[]? secret;
         try
         {
             painter.SetActionLane(question,
@@ -508,15 +508,17 @@ internal sealed class AnsiInputReader(
             painter.Paint();
             StartBackgroundInput(saved);
         }
-        if (secret.Length > 0)
+        if (secret is null)
+            painter.AddMessage(new AnsiPainter.Msg("sys", "• hidden input cancelled"));
+        else if (secret.Length > 0)
             painter.AddMessage(new AnsiPainter.Msg("sys", "• hidden input provided (not shown)"));
         else
-            painter.AddMessage(new AnsiPainter.Msg("sys", "• hidden input cancelled"));
+            painter.AddMessage(new AnsiPainter.Msg("sys", "• empty input submitted"));
         painter.Paint();
         return Task.FromResult(secret);
     }
 
-    private char[] ReadSecretCore(CancellationToken ct)
+    private char[]? ReadSecretCore(CancellationToken ct)
     {
         painter.Sz();
         painter.Write($"{AnsiPainter.E}[?25h");
@@ -585,10 +587,12 @@ internal sealed class AnsiInputReader(
                         else if (scroll != 0) { ApplyScroll(scroll); }
                         continue;
                     }
-                    // Esc alone = cancel. Wipe what was typed.
+                    // Esc alone = cancel. Wipe what was typed. Distinct from
+                    // an empty Enter (empty array) — the elevation flow counts
+                    // an empty submit as an attempt but a cancel ends it.
                     for (var i = 0; i < buf.Count; i++) buf[i] = '\0';
                     buf.Clear();
-                    return [];
+                    return null;
                 }
 
                 if (k.Key == ConsoleKey.Enter)
@@ -775,6 +779,40 @@ internal sealed class AnsiInputReader(
 
         var title       = $"{AnsiPainter.Fy}{AnsiPainter.B}▸ Permission required: {tool}{AnsiPainter.R}  {AnsiPainter.Fk}↑/↓ move · Enter confirm{AnsiPainter.R}";
         var summaryLine = $"{AnsiPainter.Fw}{summary}{AnsiPainter.R}";
+
+        PermissionResponse response;
+        try { response = ReadPermissionMenu(title, summaryLine); }
+        finally { painter.ClearLane(); }
+        painter.Paint();
+        StartBackgroundInput(saved);
+        return Task.FromResult(response);
+    }
+
+    /// <summary>
+    /// Elevated (sudo) host-execution consent card. Deliberately distinct from
+    /// the normal permission card — red banner + double warning — so root
+    /// escalation can never be mistaken for an ordinary tool approval. Any
+    /// allow here is followed by the masked password prompt (the caller runs
+    /// the attempt loop), which is the actual elevation consent.
+    /// </summary>
+    public Task<PermissionResponse> AskElevatedPermissionAsync(
+        string tool, string summary, string command, CancellationToken ct)
+    {
+        var saved = SnapshotBgInput();
+        StopBackgroundInput();
+
+        Utils.DesktopNotifier.Alert(
+            "OpenMono — ELEVATED permission needed",
+            $"The agent needs root (sudo) on the host to run: {command}");
+
+        painter.AddMessage(new AnsiPainter.Msg("sys",
+            $"{AnsiPainter.Fr}{AnsiPainter.B}⚠ ELEVATED host execution — runs as root (sudo){AnsiPainter.R}\n" +
+            $"{AnsiPainter.Fr}{command}{AnsiPainter.R}\n" +
+            $"{AnsiPainter.Fk}Approving asks for your sudo password; nothing runs without it.{AnsiPainter.R}"));
+        painter.PaintConvThrottled(force: true);
+
+        var title = $"{AnsiPainter.Fr}{AnsiPainter.B}⚠ ELEVATED permission required: {tool} (sudo){AnsiPainter.R}  {AnsiPainter.Fk}↑/↓ move · Enter confirm{AnsiPainter.R}";
+        var summaryLine = $"{AnsiPainter.Fr}{summary}{AnsiPainter.R}";
 
         PermissionResponse response;
         try { response = ReadPermissionMenu(title, summaryLine); }

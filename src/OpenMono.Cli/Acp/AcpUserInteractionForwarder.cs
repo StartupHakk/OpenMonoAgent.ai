@@ -31,12 +31,18 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
         _timeout = timeout;
     }
 
-    public async Task<(bool Allow, string Scope)> RequestPermissionAsync(string toolName, string summary, bool dangerous, CancellationToken ct)
+    public async Task<(bool Allow, string Scope)> RequestPermissionAsync(
+        string toolName, string summary, bool dangerous, CancellationToken ct,
+        PermissionRequestContext? context = null)
     {
         var contextKey = PermissionContextKey(toolName, summary);
+        var elevated = context?.Elevated == true;
+        var command = context?.Command;
 
         // Session memory first: a remembered grant resolves without a new pause.
-        if (_session.Store.TryResolve(contextKey) is { } cached)
+        // ELEVATED requests never ride a remembered grant ("allow-all never
+        // covers sudo") — they always get their own card + password flow.
+        if (!elevated && _session.Store.TryResolve(contextKey) is { } cached)
             return (cached.Allow, cached.Scope.ToWireString());
 
         // If a pause for this contextKey is already pending (e.g. from a concurrent
@@ -54,24 +60,33 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
         var id = "perm_" + Guid.NewGuid().ToString("N")[..12];
 
         // Try to process immediately, or queue if another permission is in flight
-        bool shouldProcess = _session.TryEnqueuePermission(id, toolName, summary, dangerous);
+        bool shouldProcess = _session.TryEnqueuePermission(id, toolName, summary, dangerous, elevated, command);
 
         if (shouldProcess)
         {
             // Register pause and emit permission_request
             var tcs = _session.RegisterPause(id, PendingResponseKind.Permission, contextKey);
+            if (elevated) _session.MarkPauseElevated(id);
             await _writer.WriteEventAsync("permission_request", new
             {
                 id,
                 tool = toolName,
                 summary,
                 dangerous,
+                // ELEVATED variant (additive; older clients ignore the fields):
+                // the card is a root consent, an allow opens the password
+                // prompt, and the response carries `password`.
+                elevated,
+                needs_password = elevated,
+                command,
             });
 
             // Alert the user in case they've switched away from this agent's tab.
             DesktopNotifier.Alert(
-                "OpenMono — permission needed",
-                $"The agent needs your permission to run {toolName}.");
+                elevated ? "OpenMono — ELEVATED permission needed" : "OpenMono — permission needed",
+                elevated
+                    ? $"The agent needs root (sudo) on the host to run: {command}"
+                    : $"The agent needs your permission to run {toolName}.");
         }
 
         throw new PendingUserResponseException(id, PendingResponseKind.Permission);
@@ -135,48 +150,17 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
 
     public async Task<string?> RequestUserInputAsync(string question, CancellationToken ct)
     {
-        // No general caching: every free-form question prompts. (HOST_EXEC
+        // No general caching: every free-form question prompts. (Host-exec
         // authorization caching lives in the bridge's HostExecPermissionStore
         // as grants, never replayed answers.)
         var id = "ask_" + Guid.NewGuid().ToString("N")[..12];
         _session.RegisterPause(id, PendingResponseKind.UserInput, question);
 
-        // HOST_EXEC envelope: emit structured fields next to the raw question
-        // so the client can render a proper consent card (command, cwd,
-        // escalation, timeout) without re-parsing the question text. Additive:
-        // old clients keep the {id, question} shape they already handle, and
-        // unparseable envelopes are sent exactly as before.
-        if (HostExecRequest.LooksLikeHostExec(question) &&
-            HostExecRequest.TryParse(question, out var hostExec) && hostExec is not null)
+        await _writer.WriteEventAsync("user_input_request", new
         {
-            // needs_password: a root escalation the daemon will NOT run
-            // unattended (allow_sudo != allow) requires the client's
-            // full-screen password modal (long-lived pause). Unpaired
-            // sessions have no gateway ⇒ false (the card degrades to the
-            // plain consent row; the daemon fails closed as before).
-            var needsPassword = hostExec.AsRoot &&
-                HostGatewayRegistry.Get(_session.Id) is { } gw && gw.Sudo != SudoPolicy.Allow;
-            await _writer.WriteEventAsync("user_input_request", new
-            {
-                id,
-                question,
-                kind = "host_exec",
-                command = hostExec.Command,
-                cwd = HostGatewayBootstrap.ResolveWorkDir(),
-                as_root = hostExec.AsRoot,
-                timeout_ms = hostExec.TimeoutMs,
-                background = hostExec.Background,
-                needs_password = needsPassword,
-            });
-        }
-        else
-        {
-            await _writer.WriteEventAsync("user_input_request", new
-            {
-                id,
-                question,
-            });
-        }
+            id,
+            question,
+        });
 
         DesktopNotifier.Alert(
             "OpenMono — input needed",

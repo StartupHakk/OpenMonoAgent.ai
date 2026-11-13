@@ -1443,6 +1443,13 @@ public sealed class ConversationLoop : IDisposable
         },
         AskUser = (question, ct) => _input.AskUserAsync(question, ct),
         AskUserWithOptions = (question, options, ct) => _input.AskUserAsync(question, options, ct),
+        // Masked in-place secret prompt for the sudo elevation flow. Only a
+        // truly interactive surface gets it: a redirected terminal would
+        // "answer" three placeholder prompts, so the flow fails honestly
+        // instead (null channel).
+        AskSecret = _input.Interactive
+            ? (question, ct) => _input.AskSecretAsync(question, ct)
+            : null,
         FileHistory = _session.Meta.FileHistory,
         Cursors = _cursorStore,
         BeginResponse = _output.StartAssistantResponse,

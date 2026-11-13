@@ -43,6 +43,27 @@ public sealed class AcpInputReaderAdapter : IInputReader
         };
     }
 
+    /// <summary>
+    /// Elevated (root) HostExec consent: the permission_request carries the
+    /// elevated/needs_password fields so the client renders its ELEVATED card
+    /// variant; the client's allow response then carries the sudo password,
+    /// which the resume branch verifies before resolving the pause.
+    /// </summary>
+    public async Task<PermissionResponse> AskElevatedPermissionAsync(
+        string toolName, string summary, string command, CancellationToken ct)
+    {
+        var (allow, scope) = await _interaction.RequestPermissionAsync(
+            toolName, summary, dangerous: true, ct,
+            new PermissionRequestContext(Elevated: true, Command: command));
+        return (allow, scope) switch
+        {
+            (true, "session") => PermissionResponse.AllowAll,
+            (true, _) => PermissionResponse.Allow,
+            (false, "session") => PermissionResponse.DenyAll,
+            _ => PermissionResponse.Deny
+        };
+    }
+
     public async Task<string> AskUserAsync(string question, CancellationToken ct)
     {
         var value = await _interaction.RequestUserInputAsync(question, ct);

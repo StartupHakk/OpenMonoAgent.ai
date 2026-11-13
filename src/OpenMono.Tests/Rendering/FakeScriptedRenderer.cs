@@ -43,13 +43,43 @@ internal sealed class FakeScriptedRenderer : IRenderer
         => Task.FromResult(_answers.Count > 0 ? _answers.Dequeue() : "");
 
     public Task<PermissionResponse> AskPermissionAsync(string toolName, string summary, CancellationToken ct)
-        => Task.FromResult(PermissionResponse.Allow);
+        => Task.FromResult(PermissionAnswer);
+
+    /// <summary>What every permission/elevated card answers (default Allow).</summary>
+    public PermissionResponse PermissionAnswer { get; set; } = PermissionResponse.Allow;
+
+    public Task<PermissionResponse> AskElevatedPermissionAsync(
+        string toolName, string summary, string command, CancellationToken ct)
+    {
+        ElevatedPrompts.Add((toolName, command));
+        return AskPermissionAsync(toolName, summary, ct);
+    }
+
+    public List<(string Tool, string Command)> ElevatedPrompts { get; } = new();
 
     public Task<bool> RequestPlaybookApprovalAsync(PlaybookToolPlan plan, CancellationToken ct)
         => Task.FromResult(true);
 
-    public Task<char[]> AskSecretAsync(string question, CancellationToken ct)
-        => Task.FromResult((_answers.Count > 0 ? _answers.Dequeue() : "").ToCharArray());
+    public Task<char[]?> AskSecretAsync(string question, CancellationToken ct)
+    {
+        SecretPrompts.Add(question);
+        if (_secrets.Count > 0)
+        {
+            var s = _secrets.Dequeue();
+            return Task.FromResult(s is null ? null : s.ToCharArray());
+        }
+        return Task.FromResult<char[]?>(Array.Empty<char>());
+    }
+
+    private readonly Queue<string?> _secrets = new();
+    public List<string> SecretPrompts { get; } = new();
+
+    /// <summary>Script masked-prompt answers in order; null scripts a cancel
+    /// (Esc) so the elevation flow's cancel path can be asserted.</summary>
+    public void EnqueueSecret(params string?[] secrets)
+    {
+        foreach (var s in secrets) _secrets.Enqueue(s);
+    }
 
     public Task<string?> SelectOptionAsync(string title, IReadOnlyList<string> options, int initial, CancellationToken ct)
     {

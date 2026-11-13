@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace OpenMono.HostBridge;
@@ -16,7 +17,16 @@ namespace OpenMono.HostBridge;
 /// (container side, via the host daemon) both parse the same envelope, so the
 /// contract can never drift between surfaces.
 /// </summary>
-public sealed record HostExecRequest(string Command, int? TimeoutMs, bool Background, bool AsRoot)
+// Wire names pinned explicitly so the request serializes in the snake_case
+// format every parser on the wire expects (the daemon hand-parses as_root /
+// command in the test fake; envelope parsers are snake_case too). The real
+// daemon reads case-insensitively so it tolerates either, but the contract
+// is snake_case — never let the C# property casing leak onto the wire.
+public sealed record HostExecRequest(
+    [property: JsonPropertyName("command")] string Command,
+    [property: JsonPropertyName("timeout_ms")] int? TimeoutMs,
+    [property: JsonPropertyName("background")] bool Background,
+    [property: JsonPropertyName("as_root")] bool AsRoot)
 {
     public const string Prefix = "HOST_EXEC:";
 

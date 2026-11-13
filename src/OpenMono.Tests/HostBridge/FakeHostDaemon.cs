@@ -23,6 +23,8 @@ internal sealed class FakeHostDaemon : IDisposable
     public int ExecCount { get; private set; }
     public string? LastExecPassword { get; private set; }
     public List<string?> ExecPasswords { get; } = new();
+    public int VerifyCount { get; private set; }
+    public List<string?> VerifyPasswords { get; } = new();
     public string SudoPolicy { get; }
 
     private readonly string _correctPassword;
@@ -81,6 +83,9 @@ internal sealed class FakeHostDaemon : IDisposable
             case "/exec":
                 HandleExec(ctx);
                 return;
+            case "/sudo/verify":
+                HandleSudoVerify(ctx);
+                return;
             default:
                 ctx.Response.StatusCode = 404;
                 ctx.Response.Close();
@@ -135,6 +140,56 @@ internal sealed class FakeHostDaemon : IDisposable
 
         var command = r.GetProperty("command").GetString();
         Respond(ctx, new { ok = true, output = command });
+    }
+
+    /// <summary>
+    /// Mirrors the real daemon's /sudo/verify code matrix: unpaired token ⇒
+    /// unpaired_or_bad_token (terminal), sudo=deny ⇒ sudo_denied (terminal),
+    /// empty password ⇒ password_failure without burning a sudo attempt,
+    /// wrong password ⇒ password_failure (the client's attempt loop owns the
+    /// count), correct password ⇒ ok. Every submitted password is recorded
+    /// (VerifyPasswords) so tests can assert exactly what crossed the wire.
+    /// </summary>
+    private void HandleSudoVerify(HttpListenerContext ctx)
+    {
+        var raw = new StreamReader(ctx.Request.InputStream).ReadToEnd();
+        using var doc = JsonDocument.Parse(raw);
+        var req = doc.RootElement;
+        VerifyCount++;
+
+        var password = req.TryGetProperty("password", out var p) && p.ValueKind == JsonValueKind.String
+            ? p.GetString()
+            : null;
+        VerifyPasswords.Add(password);
+
+        var token = req.TryGetProperty("token", out var t) && t.ValueKind == JsonValueKind.String
+            ? t.GetString()
+            : null;
+        if (token != "tok_fake")
+        {
+            Respond(ctx, new { ok = false, denied = true, error = "unpaired_or_bad_token", output = "no live session token" });
+            return;
+        }
+
+        if (SudoPolicy == "deny")
+        {
+            Respond(ctx, new { ok = false, denied = true, error = "sudo_denied", output = "sudo is denied on this host (allow_sudo=deny)." });
+            return;
+        }
+
+        if (string.IsNullOrEmpty(password))
+        {
+            Respond(ctx, new { ok = false, denied = true, error = "password_failure", output = "sudo authentication failed: empty password submitted (no sudo attempt was made)." });
+            return;
+        }
+
+        if (password != _correctPassword)
+        {
+            Respond(ctx, new { ok = false, denied = true, error = "password_failure", output = "sudo authentication failed: sudo rejected the password." });
+            return;
+        }
+
+        Respond(ctx, new { ok = true });
     }
 
     private static void Respond(HttpListenerContext ctx, object body)
