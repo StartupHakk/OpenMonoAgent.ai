@@ -91,6 +91,7 @@ public sealed class HostExecTool : ToolBase
                 var flow = await SudoAttemptFlow.RunAsync(context.AskSecret, gateway, ct);
                 if (!flow.Verified)
                     return ToolResult.PermissionDenied(flow.ModelMessage!);
+                context.Output?.WriteInfo("\u2713 sudo password verified \u2014 running this command as root (one-shot).");
                 verifiedPassword = flow.Password;
             }
         }

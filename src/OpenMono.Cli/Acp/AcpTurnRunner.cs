@@ -428,6 +428,22 @@ public sealed class AcpTurnRunner : IAcpEventSink
                     if (verdict.Ok && !string.IsNullOrEmpty(password))
                     {
                         HostElevationRegistry.Attach(_acpSession.Id, ElevationGrant.Verified(password));
+                        // Tell the client the password verified BEFORE the pause
+                        // resolves: the webview closes its modal and swaps the
+                        // attempt banner to a success state while the command
+                        // starts, instead of sitting on the last error until
+                        // the whole turn finishes.
+                        var attemptNo = (_acpSession.LookupSudoAttemptState(id)?.SudoAttempt ?? 0) + 1;
+                        await _writer.WriteEventAsync("permission_attempt", new
+                        {
+                            id,
+                            ok = true,
+                            attempt = attemptNo,
+                            max = SudoAttemptFlow.MaxAttempts,
+                        });
+                        Utils.Log.Info(
+                            $"[OMA_SUDO] permission pause {id}: password verified on attempt {attemptNo}; " +
+                            "elevation grant attached");
                     }
                     else if (verdict.Error == "password_failure")
                     {

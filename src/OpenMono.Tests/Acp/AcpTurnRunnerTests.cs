@@ -492,7 +492,10 @@ public sealed class AcpTurnRunnerTests
         var toolMsg = session.Messages.Last(m => m.Role == MessageRole.Tool);
         toolMsg.Content.Should().Contain("root-output");
         var events = ParseSseEvents(body);
-        events.Should().NotContain(e => e.name == "permission_attempt");
+        var ok = events.Single(e => e.name == "permission_attempt");
+        ok.data.GetProperty("ok").GetBoolean().Should().BeTrue(
+            "a verified password emits an ok:true attempt event so the webview can show success");
+        ok.data.GetProperty("id").GetString().Should().Be("perm_sudo");
         events.Last().name.Should().Be("done");
     }
 
