@@ -421,6 +421,11 @@ public sealed class ConversationLoop : IDisposable
 
         var maxIterations = _maxIterations;
         var overflowRecoveredThisTurn = false;
+        // Truncation retries are bounded per turn: a model stuck on a payload
+        // larger than max_tokens must not burn the whole iteration budget
+        // re-emitting the same discarded call forever.
+        const int MaxTruncationRetries = 3;
+        var truncationRetries = 0;
 
         for (var i = 0; i < maxIterations; i++)
         {
@@ -760,6 +765,19 @@ public sealed class ConversationLoop : IDisposable
 
                 if (toolCalls.Count == 0)
                 {
+                    truncationRetries++;
+                    if (truncationRetries > MaxTruncationRetries)
+                    {
+                        // Endless truncation — the model cannot fit a smaller
+                        // answer. Stop retrying and say so instead of looping.
+                        _output.WriteWarning(
+                            $"⚠ Output kept exceeding the token limit after {MaxTruncationRetries} retries — stopping the turn. " +
+                            "Try narrowing the request or a model with a larger output limit.");
+                        if (_sink is not null)
+                            await _sink.OnSubAgentLogAsync("Truncation retries exhausted — turn stopped.");
+                        _journal.FinishTurn("truncation_retry_cap");
+                        break;
+                    }
                     // Nothing survived — continue the iteration loop (bounded by maxIterations)
                     // so it re-enters with the truncation notice in context and the model retries
                     // with smaller content instead of the turn silently ending.

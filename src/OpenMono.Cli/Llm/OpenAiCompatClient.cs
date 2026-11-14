@@ -77,6 +77,13 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
         var lastException = default(Exception);
         TimeSpan? pendingRetryAfter = null;
         var retryDelay = TimeSpan.Zero;
+        // Vision recovery: an inference server without a vision encoder answers
+        // image requests with HTTP 400. On the first such rejection we strip
+        // image parts from the request and retry once, transparently — the
+        // text-only fallback beats a dead turn.
+        IReadOnlyList<Message> requestMessages = messages;
+        var visionStripped = false;
+        var visionStripRequested = false;
 
         for (var attempt = 0; attempt <= MaxRetries; attempt++)
         {
@@ -91,7 +98,7 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                 await Task.Delay(retryDelay, ct);
             }
 
-            var requestBody = BuildRequestBody(messages, tools, options, _model);
+            var requestBody = BuildRequestBody(requestMessages, tools, options, _model);
             var requestJson = JsonSerializer.Serialize(requestBody, JsonOptions.Default);
 
             if (attempt == 0)
@@ -146,6 +153,24 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                     response.Dispose();
                     response = null;
                     continue;
+                }
+
+                if (response.StatusCode == System.Net.HttpStatusCode.BadRequest &&
+                    !visionStripped && ContainsImageParts(requestMessages))
+                {
+                    var body400 = await response.Content.ReadAsStringAsync(ct);
+                    if (IsVisionUnsupportedError(body400))
+                    {
+                        visionStripped = true;
+                        requestMessages = StripImageParts(requestMessages);
+                        Log.Warn($"[OMA_VISION] Server rejected image input (HTTP 400): {Truncate(body400, 200)} — retrying without images");
+                        OnDebug?.Invoke("[LLM] \u26a0 This model/server has no vision support \u2014 images removed from the request, retrying text-only");
+                        response.Dispose();
+                        response = null;
+                        attempt--; // recovery, not a retry — does not burn a retry slot
+                        continue;
+                    }
+                    response.Content = new StringContent(body400, Encoding.UTF8, "application/json");
                 }
 
                 response.EnsureSuccessStatusCode();
@@ -286,6 +311,17 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                             throw new ContextOverflowException(errorMsg ?? "context overflow");
                         }
 
+                        if (!yieldedToCaller && !visionStripped &&
+                            ContainsImageParts(requestMessages) && IsVisionUnsupportedError(errorMsg))
+                        {
+                            visionStripped = true;
+                            visionStripRequested = true;
+                            requestMessages = StripImageParts(requestMessages);
+                            Log.Warn($"[OMA_VISION] Server rejected image input mid-stream: {Truncate(errorMsg, 200)} — retrying without images");
+                            OnDebug?.Invoke("[LLM] \u26a0 This model/server has no vision support \u2014 images removed from the request, retrying text-only");
+                            break;
+                        }
+
                         if (!yieldedToCaller && attempt < MaxRetries)
                         {
                             retryableStreamError = errorMsg;
@@ -422,6 +458,13 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
             }
             }
 
+            if (visionStripRequested)
+            {
+                visionStripRequested = false;
+                attempt--; // recovery, not a retry — does not burn a retry slot
+                continue;
+            }
+
             if (retryableStreamError is not null)
             {
                 lastException = new HttpRequestException($"LLM API error: {retryableStreamError}");
@@ -448,6 +491,33 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
             or System.Net.HttpStatusCode.GatewayTimeout;
 
     private static string Truncate(string? s, int max) => string.IsNullOrEmpty(s) ? "" : (s.Length <= max ? s : s[..max] + "…");
+
+    /// <summary>
+    /// Heuristic: does this provider error text indicate the model/server cannot
+    /// accept image input (no vision encoder / multimodal disabled)?
+    /// </summary>
+    internal static bool IsVisionUnsupportedError(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message)) return false;
+        var m = message.ToLowerInvariant();
+        if (m.Contains("vision") || m.Contains("mmproj") || m.Contains("multimodal")) return true;
+        return m.Contains("image") &&
+               (m.Contains("not support") || m.Contains("unsupported") || m.Contains("no support") ||
+                m.Contains("does not") || m.Contains("without"));
+    }
+
+    private static bool ContainsImageParts(IReadOnlyList<Message> msgs) =>
+        msgs.Any(m => m.ContentParts is { Count: > 0 } parts && parts.Any(p => p is ImagePart));
+
+    /// <summary>
+    /// Copy of the message list with every ImagePart removed. Text-only servers
+    /// still see all text context; an image-only message degrades to its text
+    /// content (possibly empty), matching how null-content user messages are sent.
+    /// </summary>
+    private static IReadOnlyList<Message> StripImageParts(IReadOnlyList<Message> msgs) =>
+        msgs.Select(m => m.ContentParts is { Count: > 0 } parts && parts.Any(p => p is ImagePart)
+            ? m with { ContentParts = parts.Where(p => p is not ImagePart).ToList() }
+            : m).ToList();
 
     private static object BuildRequestBody(
         IReadOnlyList<Message> messages,
