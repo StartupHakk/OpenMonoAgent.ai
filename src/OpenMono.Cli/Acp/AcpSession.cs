@@ -35,6 +35,16 @@ public sealed class AcpSession
 
     public SemaphoreSlim TurnLock { get; } = new(1, 1);
 
+    /// <summary>
+    /// Host-mode toggle requested while a turn was streaming. Applying it
+    /// mid-turn would swap the standing-orders block the model is reading or
+    /// unpair a gateway the active turn is executing against, so the request
+    /// waits and is applied when the turn ends. A second toggle overwrites the
+    /// first (latest wins). In-memory only — a queued toggle never survives a
+    /// process exit.
+    /// </summary>
+    public string? PendingHostAction { get; set; }
+
     private CancellationTokenSource? _turnCts;
     private readonly object _turnCtsGate = new();
 

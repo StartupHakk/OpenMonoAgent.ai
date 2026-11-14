@@ -135,6 +135,12 @@ public static class AcpEndpoints
         var thinkingEnabled = session.State.Meta.ThinkingLevel is null
             ? thinkingProfile.DefaultEnabled && thinkingProfile.DefaultLevel != "off"
             : session.State.Meta.ThinkingEnabled;
+        // Report the LIVE truth: after an agent restart the persisted flag can
+        // say ON while nothing is paired in this process. The heal (re-pair or
+        // flip off) happens at turn start; a read must never advertise a host
+        // mode the agent cannot execute right now.
+        var hostLive = session.State.Meta.HostEnabled
+            && HostGatewayRegistry.Get(session.Id) is { IsPaired: true };
         return Results.Ok(new
         {
             session_id = session.Id,
@@ -143,7 +149,7 @@ public static class AcpEndpoints
             started_at = session.StartedAt.ToString("o"),
             turn_count = session.TurnCount,
             plan_mode = session.PlanMode,
-            host_enabled = session.State.Meta.HostEnabled,
+            host_enabled = hostLive,
             thinking_level = thinkingLevel,
             thinking_enabled = thinkingEnabled,
             thinking_levels = thinkingProfile.Kind == ReasoningKind.EffortLevels ? thinkingProfile.Levels : ["off", "on"],
@@ -196,6 +202,47 @@ public static class AcpEndpoints
         if (action is not ("on" or "off"))
             return Results.BadRequest(new { error = "invalid_action", detail = "action must be \"on\" or \"off\"" });
 
+        // Toggling while a turn streams must not yank the standing orders out
+        // from under the model or unpair a gateway mid-exec — park the request;
+        // PostTurn's finally applies it when the turn ends.
+        if (!session.TurnLock.Wait(0))
+        {
+            session.PendingHostAction = action;
+            var stillLive = session.State.Meta.HostEnabled
+                && HostGatewayRegistry.Get(session.Id) is { IsPaired: true };
+            Log.Info($"[HOSTGATEWAY] session {session.Id}: host '{action}' requested mid-turn — queued for end of turn");
+            return Results.Ok(new { ok = true, queued = true, host_enabled = stillLive, pending_action = action });
+        }
+        try
+        {
+            var (ok2, hostEnabled2, runAs2, sudo2, error2) =
+                await ApplyHostActionAsync(session, store, action, ct);
+            if (ok2 is null)
+                return Results.Ok(new { ok = false, host_enabled = hostEnabled2, error = error2 ?? "pairing failed" });
+            return Results.Ok(new
+            {
+                ok = true,
+                host_enabled = hostEnabled2,
+                queued = false,
+                run_as = runAs2,
+                sudo = sudo2?.ToLowerInvariant(),
+            });
+        }
+        finally
+        {
+            session.TurnLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Performs the actual host on/off for a session. The caller must hold the
+    /// session's TurnLock (or have verified no turn is active) so pairing state
+    /// cannot change while a turn executes. Returns (ok, host_enabled, run_as,
+    /// sudo, error); ok=null means pairing failed with a readable error.
+    /// </summary>
+    private static async Task<(bool? Ok, bool HostEnabled, string? RunAs, string? Sudo, string? Error)>
+        ApplyHostActionAsync(AcpSession session, AcpSessionStore store, string action, CancellationToken ct)
+    {
         if (action == "on")
         {
             var gateway = HostGatewayRegistry.Get(session.Id);
@@ -212,20 +259,14 @@ public static class AcpEndpoints
             {
                 var (paired, error) = await HostGatewayBootstrap.TryPairAsync(session.State, ct);
                 if (paired is null)
-                    return Results.Ok(new { ok = false, host_enabled = false, error = error ?? "pairing failed" });
+                    return (null, false, null, null, error ?? "pairing failed");
                 gateway = paired;
             }
 
             session.State.Meta.HostEnabled = true;
             InjectHostStandingOrders(session, gateway);
             store.Save(session);
-            return Results.Ok(new
-            {
-                ok = true,
-                host_enabled = true,
-                run_as = gateway.RunAs,
-                sudo = gateway.Sudo.ToString().ToLowerInvariant(),
-            });
+            return (true, true, gateway.RunAs, gateway.Sudo.ToString(), null);
         }
 
         // off: idempotent — an unpaired session is already sandboxed.
@@ -239,7 +280,7 @@ public static class AcpEndpoints
         session.State.Meta.HostEnabled = false;
         StripHostStandingOrders(session);
         store.Save(session);
-        return Results.Ok(new { ok = true, host_enabled = false });
+        return (true, false, null, null, null);
     }
 
     private static void InjectHostStandingOrders(AcpSession session, HostGateway gateway)
@@ -383,6 +424,33 @@ public static class AcpEndpoints
             session.RegisterTurn(turnCts);
             var ct = turnCts.Token;
 
+            // Host-state heal across restarts: Meta.HostEnabled persists in the
+            // session file but the live pairing lives only in this process's
+            // registry. A session resumed in a fresh agent process claims host ON
+            // while nothing is paired, so HostExec would be offered yet fail every
+            // exec. Re-pair it now (only with a credential — never enter the
+            // interactive approval request mode unattended); if that's impossible,
+            // flip the flag OFF and strip the standing orders so the UI never
+            // advertises a host mode the agent cannot actually execute.
+            if (session.State.Meta.HostEnabled && HostGatewayRegistry.Get(session.Id) is not { IsPaired: true })
+            {
+                var healGateway = HostGatewayBootstrap.HasCredential()
+                    ? (await HostGatewayBootstrap.TryPairAsync(session.State, ct)).Gateway
+                    : null;
+                if (healGateway is not null)
+                {
+                    Log.Info($"[HOSTGATEWAY] resumed session {session.Id}: re-paired host gateway at {healGateway.BaseUrl} run_as={healGateway.RunAs}");
+                    InjectHostStandingOrders(session, healGateway);
+                }
+                else
+                {
+                    Log.Warn($"[HOSTGATEWAY] resumed session {session.Id}: cannot re-pair host daemon (no credential or daemon down) — host mode turned OFF");
+                    session.State.Meta.HostEnabled = false;
+                    StripHostStandingOrders(session);
+                }
+                store.Save(session);
+            }
+
             try
             {
                 if (root.TryGetProperty("message", out var msgEl))
@@ -495,6 +563,20 @@ public static class AcpEndpoints
             finally
             {
                 session.ClearTurn();
+                // A host toggle parked mid-turn is applied now — the model is no
+                // longer streaming and the old pairing has no in-flight exec.
+                var pending = session.PendingHostAction;
+                session.PendingHostAction = null;
+                if (pending is not null)
+                {
+                    Log.Info($"[HOSTGATEWAY] session {session.Id}: applying queued host '{pending}' at end of turn");
+                    var (pOk, pEnabled, _, _, pErr) = await ApplyHostActionAsync(session, store, pending, CancellationToken.None);
+                    if (pOk is null)
+                        Log.Warn($"[HOSTGATEWAY] session {session.Id}: queued host '{pending}' failed — {pErr}");
+                    // No SSE push: this turn's stream is ending anyway — the
+                    // extension re-reads GET /sessions/{id} after done, which
+                    // now reports the live host state.
+                }
                 session.LastActivityAt = DateTime.UtcNow;
                 store.Save(session);
                 session.TurnLock.Release();
