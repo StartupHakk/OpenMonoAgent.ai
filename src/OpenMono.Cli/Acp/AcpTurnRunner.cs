@@ -243,6 +243,11 @@ public sealed class AcpTurnRunner : IAcpEventSink
         // A fresh user message is genuine new direction: it acknowledges any pending
         // escalation barrier (same rule as interactive RunTurnAsync).
         _acpSession.State.Meta.AwaitingEscalationAck = false;
+        // A new user message also abandons any outstanding consent modal: answering a
+        // pause goes through the permission-response path, never here. Dropping the
+        // abandoned pauses (pending TCS + in-flight permission id + queue) prevents an
+        // unanswered prompt from permanently blocking every later permission request.
+        _acpSession.CancelAllPending();
         // Ensure system prompt is set on first message
         if (_acpSession.Messages.Count == 0 || _acpSession.Messages[0].Role != MessageRole.System)
         {
@@ -482,6 +487,21 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
                 if (elevationFailure is not null)
                 {
+                    // Terminal failure: emit a closing attempt event BEFORE the
+                    // pause resolves. Without it the client's consent modal sits
+                    // on the last error (or spins on "waiting") while the turn
+                    // resumes underneath — a correct-looking card for a command
+                    // that will never run. terminal:true tells the webview to
+                    // close now and render the outcome as refused.
+                    var terminalAttempt = _acpSession.LookupSudoAttemptState(id)?.SudoAttempt ?? 0;
+                    await _writer.WriteEventAsync("permission_attempt", new
+                    {
+                        id,
+                        ok = false,
+                        terminal = true,
+                        attempt = terminalAttempt == 0 ? 1 : terminalAttempt,
+                        max = SudoAttemptFlow.MaxAttempts,
+                    });
                     // Never run the command, but let the tool itself refuse so
                     // the model receives this exact reason (not "user denied").
                     allow = true;

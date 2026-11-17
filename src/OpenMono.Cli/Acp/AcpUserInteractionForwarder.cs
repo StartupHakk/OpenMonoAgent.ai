@@ -54,7 +54,10 @@ public sealed class AcpUserInteractionForwarder : IAcpUserInteraction
         {
             var ctx = _session.LookupPauseContext(existingId);
             if (ctx?.Kind == PendingResponseKind.Permission && ctx?.ContextKey == contextKey)
+            {
+                Utils.Log.Info($"[OMA_PERM] Reusing in-flight pause id={existingId} for contextKey={contextKey}");
                 throw new PendingUserResponseException(existingId, PendingResponseKind.Permission);
+            }
         }
 
         var id = "perm_" + Guid.NewGuid().ToString("N")[..12];

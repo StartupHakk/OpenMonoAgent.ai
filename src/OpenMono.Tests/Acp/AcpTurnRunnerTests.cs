@@ -576,6 +576,15 @@ public sealed class AcpTurnRunnerTests
         toolMsg.Content.Should().Contain("NOT run");
         daemon.ExecCount.Should().Be(0, "the command never runs without a verified password");
         daemon.VerifyPasswords.Should().HaveCount(3);
+        // The terminal failure must also close the client modal: a final
+        // permission_attempt with terminal:true rides the last failure.
+        var attempts = ParseSseEvents(body).Where(e => e.name == "permission_attempt").ToList();
+        attempts.Should().HaveCount(3);
+        var lastAttempt = attempts.Last().data;
+        lastAttempt.GetProperty("ok").GetBoolean().Should().BeFalse();
+        lastAttempt.GetProperty("terminal").GetBoolean().Should().BeTrue(
+            "the last failure carries terminal:true so the webview closes the modal");
+        lastAttempt.GetProperty("attempt").GetInt32().Should().Be(3);
         ParseSseEvents(body).Last().name.Should().Be("done");
     }
 
@@ -755,9 +764,11 @@ public sealed class AcpTurnRunnerTests
             llmRounds: new List<List<StreamChunk>>
             {
                 // Fake LLM rounds are consumed in call order, not matched to message content —
-                // the tool-call round must be third to line up with the "delete it" turn below.
+                // the tool-call round must be last of the pre-pause rounds to line up with the
+                // "delete it" turn below.
                 TextRound("chat reply 1"),
                 TextRound("chat reply 2"),
+                TextRound("meanwhile 0"), TextRound("meanwhile 1"), TextRound("meanwhile 2"), TextRound("meanwhile 3"), TextRound("meanwhile 4"),
                 new()
                 {
                     new() { ToolCallDelta = new ToolCall { Id = "call_p", Name = "AskingTool", Arguments = "{}" }, IsComplete = false },
@@ -766,16 +777,16 @@ public sealed class AcpTurnRunnerTests
                 TextRound("ok 1"), TextRound("ok 2"), TextRound("ok 3"), TextRound("ok 4"), TextRound("ok 5"),
             });
 
-        // Two ordinary turns of chat, then the risky call that pauses for a permission decision.
+        // Several turns of chat first, then the risky call that pauses for a permission decision.
+        // The chat turns come BEFORE the pause on purpose: a fresh user message abandons any
+        // outstanding consent modal (see Missed_permission_prompt_does_not_brick_* tests), so an
+        // unresolved permission must never be interleaved with later user messages.
         await runner.RunUserMessageAsync("chat 1", CancellationToken.None);
         await runner.RunUserMessageAsync("chat 2", CancellationToken.None);
-        await runner.RunUserMessageAsync("delete it", CancellationToken.None);
-        var pauseId = session.PendingIds.Single();
-
-        // Five more turns pass before the user gets back to that permission prompt — the ACP
-        // layer explicitly supports outstanding/queued permissions, so this is a real scenario.
         for (var i = 0; i < 5; i++)
             await runner.RunUserMessageAsync($"meanwhile {i}", CancellationToken.None);
+        await runner.RunUserMessageAsync("delete it", CancellationToken.None);
+        var pauseId = session.PendingIds.Single();
 
         // A long-running session eventually compacts. Simulate that happening while the
         // permission is still outstanding, using the exact same Compactor the real loop
@@ -881,6 +892,87 @@ public sealed class AcpTurnRunnerTests
         session2.DequeueNextPermission().Should().BeNull();
     }
 
+    [Fact]
+    public async Task Missed_permission_prompt_does_not_brick_later_same_tool_prompt()
+    {
+        var tools = new ToolRegistry();
+        tools.Register(new AskingTool());
+
+        var (runner, session, body) = BuildHarness(
+            tools: tools,
+            llmRounds: new List<List<StreamChunk>>
+            {
+                // Turn 1: prompts and pauses; the user never answers — they close.
+                new()
+                {
+                    new() { ToolCallDelta = new ToolCall { Id = "call_first", Name = "AskingTool", Arguments = "{}" }, IsComplete = false },
+                    new() { IsComplete = true },
+                },
+                // Turn 2 after "close & resume": same tool must get a fresh card.
+                new()
+                {
+                    new() { ToolCallDelta = new ToolCall { Id = "call_second", Name = "AskingTool", Arguments = "{}" }, IsComplete = false },
+                    new() { IsComplete = true },
+                },
+            });
+
+        await runner.RunUserMessageAsync("first", CancellationToken.None);
+        var staleId = session.PendingIds.Single();
+
+        // Simulate close & resume on a live process: the client reconnects against the
+        // SAME cached AcpSession (live cache hands it back untouched) and sends a new
+        // message instead of ever answering the outstanding card.
+        body.SetLength(0);
+        await runner.RunUserMessageAsync("second", CancellationToken.None);
+
+        var events = ParseSseEvents(body);
+        events.Should().Contain(e => e.name == "permission_request",
+            "a new user message abandons the missed prompt; the re-prompted tool must get a " +
+            "fresh card instead of the old pause silently swallowing the turn");
+        events.Last(e => e.name == "permission_request").data.GetProperty("id")
+            .GetString().Should().NotBe(staleId, "the reused stale pause id would resolve nothing client-side");
+        events.Should().NotContain(e => e.name == "done", "the new pause must close the stream without `done`");
+    }
+
+    [Fact]
+    public async Task Missed_permission_prompt_does_not_brick_later_different_tool_prompt()
+    {
+        var tools = new ToolRegistry();
+        tools.Register(new AskingTool());
+        tools.Register(new OtherAskingTool());
+
+        var (runner, session, body) = BuildHarness(
+            tools: tools,
+            llmRounds: new List<List<StreamChunk>>
+            {
+                new()
+                {
+                    new() { ToolCallDelta = new ToolCall { Id = "call_first", Name = "AskingTool", Arguments = "{}" }, IsComplete = false },
+                    new() { IsComplete = true },
+                },
+                new()
+                {
+                    new() { ToolCallDelta = new ToolCall { Id = "call_second", Name = "OtherAskingTool", Arguments = "{}" }, IsComplete = false },
+                    new() { IsComplete = true },
+                },
+            });
+
+        await runner.RunUserMessageAsync("first", CancellationToken.None);
+
+        // Same close & resume, but the retried tool is different — this exercises the
+        // queue-stuck path: _currentPermissionId still points at the abandoned pause,
+        // so the new request is silently queued behind a card that can never resolve.
+        body.SetLength(0);
+        await runner.RunUserMessageAsync("second", CancellationToken.None);
+
+        var events = ParseSseEvents(body);
+        events.Should().Contain(e => e.name == "permission_request",
+            "the abandoned pause must not leave _currentPermissionId set forever, which " +
+            "silently queues every later permission behind a dead card");
+        events.Last(e => e.name == "permission_request").data.GetProperty("tool")
+            .GetString().Should().Be("OtherAskingTool");
+    }
+
     private static List<(string name, JsonElement data)> ParseSseEvents(MemoryStream body)
     {
         var text = Encoding.UTF8.GetString(body.ToArray());
@@ -920,6 +1012,18 @@ public sealed class AcpTurnRunnerTests
 
 
 
+
+    private sealed class OtherAskingTool : ITool
+    {
+        public string Name => "OtherAskingTool";
+        public string Description => "Always asks for permission, then succeeds";
+        public bool IsConcurrencySafe => false;
+        public bool IsReadOnly => false;
+        public JsonElement InputSchema { get; } = JsonDocument.Parse("""{"type":"object"}""").RootElement.Clone();
+        public PermissionLevel RequiredPermission(JsonElement input) => PermissionLevel.Ask;
+        public Task<ToolResult> ExecuteAsync(JsonElement input, ToolContext ctx, CancellationToken ct)
+            => Task.FromResult(ToolResult.Success("done"));
+    }
 
     private sealed class ScriptedLlm : ILlmClient
     {
