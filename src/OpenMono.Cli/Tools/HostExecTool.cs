@@ -61,7 +61,8 @@ public sealed class HostExecTool : ToolBase
         // credential. The password loop runs INSIDE this tool call (after
         // the permission card above), so the conversation loop cannot resume
         // between attempts; it resumes only with the terminal outcome. Each
-        // submit is verified on the host with `sudo -v` (no payload runs);
+        // submit is verified on the host with `sudo -k -S -v` (no payload runs,
+        // -k forces a real auth even when sudo's timestamp is warm);
         // wrong/empty passwords re-prompt in place up to MaxAttempts total;
         // a cancel ends the flow immediately. On success the VERIFIED
         // password rides the single following real exec, one-shot.

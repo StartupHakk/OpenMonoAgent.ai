@@ -63,7 +63,8 @@ public sealed record SudoVerifyRequest(
     // (same target resolution as an as_root / non-as_root exec).
     [property: JsonPropertyName("as_root")] bool AsRoot,
     // One-shot candidate password from the client elevation card. The daemon
-    // verifies it with `sudo -v -S` (no payload runs), never logs it, and
+    // verifies it with `sudo -k -S -v` (no payload runs; -k forces a real
+    // auth even against a warm sudo timestamp), never logs it, and
     // wipes its copy on every return path.
     [property: JsonPropertyName("password")] string Password);
 

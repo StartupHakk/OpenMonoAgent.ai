@@ -288,7 +288,10 @@ public sealed class HostExecutor
 
     /// <summary>
     /// Verify a client-typed sudo password WITHOUT running any payload:
-    /// <c>sudo -S -v -u target</c> validates/refreshes the credential only.
+    /// <c>sudo -k -S -v -u target</c> validates/refreshes the credential only.
+    /// The <c>-k</c> is the security spine: it drops any cached timestamp for
+    /// this invocation, so the piped password MUST authenticate — otherwise a
+    /// warm cache would let any password "verify" inside sudo's timeout window.
     /// The password is used for this one probe (never stored on the identity,
     /// never logged) and its byte copy is wiped on every return path. An
     /// empty password short-circuits to AuthFailure so a sudo/PAM attempt is
@@ -307,7 +310,11 @@ public sealed class HostExecutor
         var psi = new ProcessStartInfo
         {
             FileName = "/bin/bash",
-            ArgumentList = { "-c", $"sudo -S -v -u {targetUser}" },
+            // -k: discard any cached sudo timestamp for THIS invocation before
+            // verifying. Without it, sudo -v succeeds off a warm cache and
+            // NEVER reads the piped password — inside the 5-min window any
+            // wrong (or empty) password would "verify" and grant root.
+            ArgumentList = { "-c", $"sudo -k -S -v -u {targetUser}" },
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             RedirectStandardInput = true,
