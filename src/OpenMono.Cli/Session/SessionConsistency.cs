@@ -13,7 +13,26 @@ public static class SessionConsistency
             session.Messages.Clear();
             session.Messages.AddRange(repaired);
         }
+        synthesized += RepairOrphanPlans(session);
         return synthesized;
+    }
+
+    /// <summary>
+    /// A cold-loaded session has no live turns — so any plan still marked
+    /// Implementing belongs to a process that died mid-implementation. Mark it
+    /// Abandoned so UIs stop presenting it as live work (mirrors what
+    /// RepairMessages does for unanswered tool calls).
+    /// </summary>
+    private static int RepairOrphanPlans(SessionState session)
+    {
+        var abandoned = 0;
+        foreach (var plan in session.Meta.Plans)
+        {
+            if (plan.Status != PlanStatus.Implementing) continue;
+            plan.Status = PlanStatus.Abandoned;
+            abandoned++;
+        }
+        return abandoned;
     }
 
     public static (List<Message> Messages, int Synthesized) RepairMessages(IReadOnlyList<Message> messages)

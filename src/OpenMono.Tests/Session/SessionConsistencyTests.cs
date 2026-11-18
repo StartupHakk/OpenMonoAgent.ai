@@ -6,6 +6,31 @@ namespace OpenMono.Tests.Session;
 public class SessionConsistencyTests
 {
     [Fact]
+    public void Repair_Normalizes_Orphan_Implementing_Plans()
+    {
+        var session = SessionManager.CreateSession();
+        session.Meta.Plans.Add(new PlanRecord
+        {
+            Id = "plan_done",
+            Content = "finished plan",
+            CreatedAtUtc = System.DateTime.UtcNow,
+            Status = PlanStatus.Implementing,
+        });
+        session.Meta.Plans.Add(new PlanRecord
+        {
+            Id = "plan_pending",
+            Content = "awaiting decision",
+            CreatedAtUtc = System.DateTime.UtcNow,
+            Status = PlanStatus.Pending,
+        });
+
+        SessionConsistency.Repair(session);
+
+        session.Meta.Plans.Single(p => p.Id == "plan_done").Status.Should().Be(PlanStatus.Abandoned);
+        session.Meta.Plans.Single(p => p.Id == "plan_pending").Status.Should().Be(PlanStatus.Pending);
+    }
+
+    [Fact]
     public void Repair_SynthesizesResult_ForTrailingUnansweredToolCall()
     {
         var session = SessionManager.CreateSession();

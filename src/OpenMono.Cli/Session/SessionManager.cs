@@ -85,6 +85,18 @@ public sealed class SessionManager
             session.Meta.GitProfileName = header.GitProfileName;
             session.Meta.GitProfileTouched = header.GitProfileTouched;
             if (header.Todos.Count > 0) session.Todos.AddRange(header.Todos);
+            if (header.Plans.Count > 0)
+            {
+                session.Meta.Plans.Clear();
+                session.Meta.Plans.AddRange(header.Plans);
+                var lastPending = session.Meta.Plans.LastOrDefault(p => p.Status == PlanStatus.Pending);
+                if (lastPending is not null)
+                {
+                    session.Meta.LastPlanId = lastPending.Id;
+                    session.Meta.LastPlanContent = lastPending.Content;
+                    session.Meta.LastPlanPath = lastPending.Path;
+                }
+            }
 
             // Restore the token tracker so compaction/checkpoint thresholds work
             // correctly after an ACP session reload, and mirror restored totals back into the
@@ -246,6 +258,9 @@ public sealed class SessionManager
             TotalCompletionTokens = tracker?.TotalCompletionTokens ?? 0,
             MaxPromptTokens = tracker?.MaxPromptTokens ?? 0,
             ApiCalls = tracker?.ApiCalls ?? 0,
+            // Plan history rides in the header so a resumed session (new process)
+            // can re-list and re-offer its plans; empty for pre-plan sessions.
+            Plans = session.Meta.Plans.Count > 0 ? session.Meta.Plans.ToList() : new(),
         };
     }
 
@@ -297,4 +312,8 @@ public sealed record SessionHeader
     public int TotalCompletionTokens { get; init; }
     public int MaxPromptTokens { get; init; }
     public int ApiCalls { get; init; }
+
+    /// <summary>Plan history (see <see cref="PlanRecord"/>). Empty for sessions
+    /// saved before plan persistence existed.</summary>
+    public List<PlanRecord> Plans { get; init; } = new();
 }

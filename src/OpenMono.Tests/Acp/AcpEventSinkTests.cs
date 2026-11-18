@@ -360,7 +360,7 @@ public sealed class AcpEventSinkTests
 
         public Task OnTextDeltaAsync(string content) { TextDeltas.Add(content); return Task.CompletedTask; }
         public Task OnModeChangedAsync(string mode) { ModeChanges.Add(mode); return Task.CompletedTask; }
-        public Task OnPlanReadyAsync(string planContent, string? planPath) { PlanReady.Add(planPath); return Task.CompletedTask; }
+        public Task OnPlanReadyAsync(string planContent, string? planPath, string planId) { PlanReady.Add(planPath); return Task.CompletedTask; }
         public Task OnThinkingDeltaAsync(string content) { ThinkingDeltas.Add(content); return Task.CompletedTask; }
         public List<(string callId, string status)> ToolStatuses { get; } = new();
         public Task OnToolStartAsync(string callId, string name, string summary, string? arguments = null)

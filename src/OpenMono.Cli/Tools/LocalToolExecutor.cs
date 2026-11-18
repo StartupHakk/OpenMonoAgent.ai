@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Linq;
 using System.Text.Json;
 using OpenMono.Acp;
 using OpenMono.Config;
@@ -102,7 +103,7 @@ public sealed class LocalToolExecutor : IToolExecutor
         if (_sink is not null)
         {
             Log.Info($"[OMA_TOOLSTART] Sending tool_start: {call.Name}");
-            await _sink.OnToolStartAsync(call.Id, call.Name, SummarizeToolArgs(call.Arguments), call.Arguments);
+            await _sink.OnToolStartAsync(call.Id, call.Name, SummarizeToolCallForUi(call.Name, call.Arguments), call.Arguments);
             await EmitLiveContextUsageAsync(force: true);
         }
 
@@ -488,5 +489,35 @@ public sealed class LocalToolExecutor : IToolExecutor
         var snippet = trimmed.Length <= 120 ? trimmed.ToString() : trimmed[..120].ToString() + "...";
 
         return string.Join(" ", snippet.Split(new[] { '\n', '\r', '\t' }, StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    /// <summary>
+    /// Tool-call summary for the transcript: normally the raw args snippet, but
+    /// CreatePlan carries a whole markdown document as JSON — show its first
+    /// meaningful heading instead of a wall of escaped JSON.
+    /// </summary>
+    internal static string SummarizeToolCallForUi(string name, string? arguments)
+    {
+        if (string.Equals(name, "CreatePlan", StringComparison.Ordinal)
+            && !string.IsNullOrWhiteSpace(arguments))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(arguments);
+                if (doc.RootElement.TryGetProperty("plan", out var planEl)
+                    && planEl.ValueKind == JsonValueKind.String)
+                {
+                    var first = planEl
+                        .GetString()!
+                        .Split('\n')
+                        .Select(l => l.Trim().TrimStart('#', ' '))
+                        .FirstOrDefault(l => l.Length > 0);
+                    if (!string.IsNullOrEmpty(first))
+                        return first.Length <= 120 ? first : first[..120] + "…";
+                }
+            }
+            catch (JsonException) { /* fall through to the generic summary */ }
+        }
+        return SummarizeToolArgs(arguments ?? "");
     }
 }

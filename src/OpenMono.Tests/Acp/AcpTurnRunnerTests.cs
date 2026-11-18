@@ -311,7 +311,7 @@ public sealed class AcpTurnRunnerTests
             });
         session.PlanMode = true;
 
-        await runner.ResumeWithPlanDecisionAsync("auto", CancellationToken.None);
+        await runner.ResumeWithPlanDecisionAsync("auto", null, CancellationToken.None);
 
         session.PlanMode.Should().BeFalse("Auto implement flips Plan → Build");
         session.AutoApproveWrites.Should().BeTrue("Auto implement pre-approves writes");
@@ -331,10 +331,73 @@ public sealed class AcpTurnRunnerTests
             });
         session.PlanMode = true;
 
-        await runner.ResumeWithPlanDecisionAsync("gated", CancellationToken.None);
+        await runner.ResumeWithPlanDecisionAsync("gated", null, CancellationToken.None);
 
         session.PlanMode.Should().BeFalse();
         session.AutoApproveWrites.Should().BeFalse("Ask-before-edits leaves writes going through normal prompts");
+    }
+
+    [Fact]
+    public async Task ResumeWithPlanDecisionAsync_stamps_matching_plan_status_and_time()
+    {
+        var (runner, session, _) = BuildHarness(
+            tools: new ToolRegistry(),
+            llmRounds: new List<List<StreamChunk>>
+            {
+                new() { new() { IsComplete = true, Usage = new UsageInfo() } },
+            });
+        session.PlanMode = true;
+        session.State.Meta.Plans.Add(new PlanRecord { Id = "plan_abc123", Content = "do it", CreatedAtUtc = DateTime.UtcNow });
+        session.State.Meta.LastPlanId = "plan_abc123";
+
+        await runner.ResumeWithPlanDecisionAsync("auto", "plan_abc123", CancellationToken.None);
+
+        var plan = session.State.Meta.Plans.Single();
+        plan.Status.Should().Be(PlanStatus.Completed, "a clean implementing turn ends Implementing → Completed");
+        plan.DecidedAtUtc.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task ResumeWithPlanDecisionAsync_leaves_plan_open_when_turn_pauses()
+    {
+        // The LLM asks for a permission during the implementing turn: the plan
+        // must stay Implementing so a later clean turn can complete it.
+        var tools = new ToolRegistry();
+        tools.Register(new AskingTool());
+        var (runner, session, body) = BuildHarness(
+            tools: tools,
+            llmRounds: new List<List<StreamChunk>>
+            {
+                new()
+                {
+                    new() { ToolCallDelta = new ToolCall { Id = "call_p", Name = "AskingTool", Arguments = "{}" }, IsComplete = false },
+                    new() { IsComplete = true, Usage = new UsageInfo() },
+                },
+            });
+        session.PlanMode = true;
+        session.State.Meta.Plans.Add(new PlanRecord { Id = "plan_p", Content = "do it", CreatedAtUtc = DateTime.UtcNow });
+        session.State.Meta.LastPlanId = "plan_p";
+
+        await runner.ResumeWithPlanDecisionAsync("gated", "plan_p", CancellationToken.None);
+
+        session.State.Meta.Plans.Single().Status.Should().Be(PlanStatus.Implementing, "the implementing turn paused on a permission — not finished");
+        ParseSseEvents(body).Should().Contain(e => e.name == "permission_request");
+    }
+
+    [Fact]
+    public async Task ResumeWithPlanDecisionAsync_rejects_stale_plan_id()
+    {
+        var (runner, session, body) = BuildHarness(new ToolRegistry(), new());
+        session.PlanMode = true;
+        session.State.Meta.Plans.Add(new PlanRecord { Id = "plan_old", Content = "old", Status = PlanStatus.Superseded, CreatedAtUtc = DateTime.UtcNow });
+        session.State.Meta.Plans.Add(new PlanRecord { Id = "plan_new", Content = "new", CreatedAtUtc = DateTime.UtcNow });
+        session.State.Meta.LastPlanId = "plan_new";
+
+        await runner.ResumeWithPlanDecisionAsync("auto", "plan_old", CancellationToken.None);
+
+        session.PlanMode.Should().BeTrue("a decision for a superseded plan must not switch modes");
+        session.State.Meta.Plans.Single(p => p.Id == "plan_new").Status.Should().Be(PlanStatus.Pending);
+        ParseSseEvents(body).Should().Contain(e => e.name == "done");
     }
 
     [Fact]
@@ -343,7 +406,7 @@ public sealed class AcpTurnRunnerTests
         var (runner, session, body) = BuildHarness(new ToolRegistry(), new());
         session.PlanMode = true;
 
-        await runner.ResumeWithPlanDecisionAsync("keep", CancellationToken.None);
+        await runner.ResumeWithPlanDecisionAsync("keep", null, CancellationToken.None);
 
         session.PlanMode.Should().BeTrue("Keep planning must not switch modes");
         ParseSseEvents(body).Should().Contain(e => e.name == "done");

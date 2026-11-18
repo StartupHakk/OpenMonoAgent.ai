@@ -47,6 +47,10 @@ public static class AcpEndpoints
         // Flat per-session model menu (backends × advertised models) for the
         // extension's model picker.
         app.MapGet("/api/v1/models", ListModels);
+
+        // Plan history for the session (newest first) — extension side drawer /
+        // TUI /plans hydrate from here after reload.
+        app.MapGet("/api/v1/sessions/{id}/plans", GetPlansAsync);
     }
 
 
@@ -124,6 +128,100 @@ public static class AcpEndpoints
     }
 
 
+
+    private static async Task<IResult> GetPlansAsync(
+        string id, AcpSessionStore store, AppConfig config, CancellationToken ct)
+    {
+        var session = store.TryGet(id);
+        if (session is null) return Results.NotFound();
+        var plans = await BuildPlanHistoryAsync(session, config, ct);
+        return Results.Ok(plans
+            .Select(p => new
+            {
+                id = p.Id,
+                path = p.Path,
+                created_at = p.CreatedAtUtc,
+                decided_at = p.DecidedAtUtc,
+                status = p.Status.ToString(),
+                content = p.Content,
+            }));
+    }
+
+    /// <summary>
+    /// Session plan history: the in-memory/persisted records, or — for sessions that
+    /// predate plan persistence (resumed after upgrade, so Meta.Plans is empty) —
+    /// reconstructed from the plan files under {workspace}/.openmono/plans that name
+    /// this session. The newest backfilled plan becomes Pending (so its decision card
+    /// is re-offered and the plan can be resumed); older ones are Superseded. The
+    /// backfilled records are folded into session state so a later decision on the
+    /// re-offered card passes the runner's stale-plan guard.
+    /// </summary>
+    internal static async Task<List<PlanRecord>> BuildPlanHistoryAsync(
+        AcpSession session, AppConfig config, CancellationToken ct)
+    {
+        if (session.State.Meta.Plans.Count > 0)
+            return session.State.Meta.Plans
+                .OrderByDescending(p => p.CreatedAtUtc)
+                .ToList();
+        var backfilled = await BackfillPlansFromDiskAsync(session, config.WorkingDirectory, ct);
+        if (backfilled.Count > 0 && session.State.Meta.Plans.Count == 0)
+        {
+            session.State.Meta.Plans.AddRange(backfilled);
+            var pending = backfilled.FirstOrDefault(p => p.Status == PlanStatus.Pending);
+            if (pending is not null)
+            {
+                session.State.Meta.LastPlanId = pending.Id;
+                session.State.Meta.LastPlanContent = pending.Content;
+                session.State.Meta.LastPlanPath = pending.Path;
+            }
+        }
+        return backfilled;
+    }
+
+    private static async Task<List<PlanRecord>> BackfillPlansFromDiskAsync(
+        AcpSession session, string workingDirectory, CancellationToken ct)
+    {
+        var result = new List<PlanRecord>();
+        try
+        {
+            var dir = Path.Combine(workingDirectory, ".openmono", "plans");
+            if (!Directory.Exists(dir)) return result;
+            foreach (var path in Directory.GetFiles(dir, "*-plan.md"))
+            {
+                string content;
+                try { content = await File.ReadAllTextAsync(path, ct); }
+                catch { continue; }
+                if (content.IndexOf($"Session: {session.Id}", StringComparison.Ordinal) < 0)
+                    continue;
+                var stamp = Path.GetFileName(path); // 20261117-223959-plan.md
+                DateTime.TryParseExact(
+                    stamp.Length >= 15 ? stamp[..15] : stamp,
+                    "yyyyMMdd-HHmmss", null,
+                    System.Globalization.DateTimeStyles.None, out var created);
+                result.Add(new PlanRecord
+                {
+                    Id = "disk_" + Math.Abs(path.ToLowerInvariant().GetHashCode()),
+                    Content = content,
+                    Path = Path.GetRelativePath(workingDirectory, path),
+                    CreatedAtUtc = created,
+                    Status = PlanStatus.Superseded,
+                });
+            }
+        }
+        catch
+        {
+            // Backfill is best-effort: an unreadable plans dir never fails the endpoint.
+        }
+        var ordered = result
+            .OrderByDescending(p => p.CreatedAtUtc)
+            .ToList();
+        // A resumed session that never answered the last plan left it undecided;
+        // there is no decision marker on disk, so treat the newest plan as still
+        // awaiting its choice. Older plans are history.
+        if (ordered.Count > 0)
+            ordered[0].Status = PlanStatus.Pending;
+        return ordered;
+    }
 
     private static IResult GetSession(string id, AcpSessionStore store)
     {
@@ -507,9 +605,15 @@ public static class AcpEndpoints
                 }
                 else if (root.TryGetProperty("plan_decision", out var pdEl))
                 {
+                    // Two shapes: legacy bare string (applies to the newest pending plan)
+                    // or { id, decision } keyed to a specific plan card.
+                    var (pdDecision, pdPlanId) = pdEl.ValueKind == JsonValueKind.Object
+                        ? (pdEl.TryGetProperty("decision", out var dEl) ? dEl.GetString() ?? "keep" : "keep",
+                           pdEl.TryGetProperty("id", out var iEl) ? iEl.GetString() : null)
+                        : (pdEl.GetString() ?? "keep", (string?)null);
                     StartSseResponse(ctx);
                     var runner = runners.Create(session, new SseWriter(ctx.Response.Body, ctx.RequestAborted));
-                    await runner.ResumeWithPlanDecisionAsync(pdEl.GetString() ?? "keep", ct);
+                    await runner.ResumeWithPlanDecisionAsync(pdDecision, pdPlanId, ct);
                 }
                 else if (root.TryGetProperty("toggle_mode", out var tmEl))
                 {
@@ -1011,6 +1115,13 @@ public static class AcpEndpoints
         foreach (var m in messages)
         {
             if (m.Role == MessageRole.Tool || m.Role == MessageRole.System) continue;
+            // The plan-presented barrier is harness-internal (a User-role nudge to the
+            // model). The extension shows the plan as a card, so replaying the raw
+            // instructions as a chat message is pure noise.
+            if (m.Role == MessageRole.User
+                && m.Content is { Length: > 0 }
+                && m.Content.StartsWith(ModeInstructions.PlanPresented, StringComparison.Ordinal))
+                continue;
 
             var role = m.Role switch
             {
@@ -1031,7 +1142,7 @@ public static class AcpEndpoints
                     {
                         Id = call.Id,
                         Name = call.Name,
-                        Summary = TruncateForUi(call.Arguments, 120),
+                        Summary = OpenMono.Tools.LocalToolExecutor.SummarizeToolCallForUi(call.Name, call.Arguments),
                         Ok = ToolResultLooksOk(toolMsg),
                         Preview = toolMsg?.Content,
                     });

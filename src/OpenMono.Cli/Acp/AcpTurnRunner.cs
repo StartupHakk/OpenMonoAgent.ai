@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using OpenMono.Config;
 using OpenMono.HostBridge;
@@ -129,6 +130,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
         "- `/think` — toggle / set thinking (no arg cycles; `/think [level]` sets a level)\n" +
         "- `/compact [focus]` — summarize history to free context space\n" +
         "- `/playbook <name> [--resume] [--key=value...]` — run a playbook directly (no LLM narration)\n" +
+        "- `/plans` — list this session's plans and their statuses\n" +
         "- `/help` — show this list\n\n" +
         "Also available: `/clear`, `/sessions`, `/undo`, `/redo`, `/stop`.";
 
@@ -232,6 +234,30 @@ public sealed class AcpTurnRunner : IAcpEventSink
             case "/playbook":
                 await RunPlaybookDirectAsync(args, ct);
                 return true;
+
+            case "/plans":
+            {
+                var plans = _acpSession.State.Meta.Plans;
+                if (plans.Count == 0)
+                {
+                    await OnTextDeltaAsync("No plans yet this session — use `/plan [task]` to get one.");
+                    await _writer.WriteEventAsync("done", new { });
+                    return true;
+                }
+                var sb = new StringBuilder("**Plans this session** (newest first):\n");
+                var i = 1;
+                foreach (var p in plans.OrderByDescending(p => p.CreatedAtUtc))
+                {
+                    var title = p.Content.Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.Length > 0)?.TrimStart('#', ' ') ?? "(untitled)";
+                    if (title.Length > 70) title = title[..69] + "…";
+                    var current = p.Id == _acpSession.State.Meta.LastPlanId ? " *(latest)*" : "";
+                    sb.AppendLine($"{i++}. **{p.Status}** · {p.CreatedAtUtc.ToLocalTime():g} · {title}{current}");
+                }
+                sb.AppendLine("\nAsk me to open one and I'll re-print it.");
+                await OnTextDeltaAsync(sb.ToString());
+                await _writer.WriteEventAsync("done", new { });
+                return true;
+            }
 
             default:
                 return false;
@@ -622,9 +648,28 @@ public sealed class AcpTurnRunner : IAcpEventSink
         await DriveLoopAsync(ct);
     }
 
-    public async Task ResumeWithPlanDecisionAsync(string decision, CancellationToken ct)
+    public async Task ResumeWithPlanDecisionAsync(string decision, string? planId, CancellationToken ct)
     {
+        // Stale-card guard: only the newest plan accepts a decision. A click on a
+        // superseded card (the stacked-plan-cards bug) must not switch modes or
+        // drive a turn. Legacy clients omit planId and act on the newest plan.
+        var target = planId is null
+            ? _acpSession.State.Meta.Plans.LastOrDefault(p => p.Status == PlanStatus.Pending)
+            : _acpSession.State.Meta.Plans.LastOrDefault(p => p.Id == planId);
+        if (planId is not null && (target is null || target.Status != PlanStatus.Pending))
+        {
+            Log.Info($"[OMA_PLAN] stale plan_decision id={planId} (current={_acpSession.State.Meta.LastPlanId}) — ignored");
+            await _writer.WriteEventAsync("done", new { });
+            return;
+        }
+
         var (implement, autoApprove, instruction) = ModeInstructions.ResolvePlanDecision(decision);
+
+        if (target is not null)
+        {
+            target.Status = implement ? PlanStatus.Implementing : PlanStatus.KeptPlanning;
+            target.DecidedAtUtc = DateTime.UtcNow;
+        }
 
         if (!implement)
         {
@@ -784,6 +829,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
         try
         {
             await loop.ContinueTurnAsync(ct);
+            MarkImplementingPlansCompleted();
             await _writer.WriteEventAsync("done", new { });
         }
         catch (PendingUserResponseException)
@@ -795,6 +841,24 @@ public sealed class AcpTurnRunner : IAcpEventSink
         catch (Exception e)
         {
             await _writer.WriteEventAsync("error", new { message = e.Message });
+        }
+    }
+
+    /// <summary>
+    /// A plan's Implementing status ends with the turn that implements it. Only
+    /// reached on CLEAN completion: permission/input pauses throw earlier and
+    /// leave the plan Implementing (a later turn can still finish it), as do
+    /// errors and Stop. The newest Implementing plan becomes Completed — a
+    /// terminal status — so UIs stop showing a live "implementing" badge after
+    /// the work is done.
+    /// </summary>
+    private void MarkImplementingPlansCompleted()
+    {
+        foreach (var plan in _acpSession.State.Meta.Plans)
+        {
+            if (plan.Status != PlanStatus.Implementing) continue;
+            plan.Status = PlanStatus.Completed;
+            Log.Info($"[OMA_PLAN] plan {plan.Id} implementation finished → Completed");
         }
     }
 
@@ -889,8 +953,8 @@ public sealed class AcpTurnRunner : IAcpEventSink
         return _writer.WriteEventAsync("mode_changed", new { mode });
     }
 
-    public Task OnPlanReadyAsync(string planContent, string? planPath)
-        => _writer.WriteEventAsync("plan_ready", new { plan = planContent, plan_path = planPath });
+    public Task OnPlanReadyAsync(string planContent, string? planPath, string planId)
+        => _writer.WriteEventAsync("plan_ready", new { id = planId, plan = planContent, plan_path = planPath });
 
     public Task OnThinkingChangedAsync(string level, bool enabled, string[] levels, string description)
         => _writer.WriteEventAsync("thinking_changed", new

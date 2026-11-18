@@ -22,10 +22,10 @@ public interface IAcpEventSink
     // the source of truth; this is how it pushes an agent-initiated change to the frontend.
     Task OnModeChangedAsync(string mode);
 
-    // Emitted when the agent has presented a plan (CreatePlan). Carries the plan content so the
-    // frontend renders the plan + proceed-options (buttons) as one card; the choice routes back
-    // through a plan_decision turn.
-    Task OnPlanReadyAsync(string planContent, string? planPath);
+    // Emitted when the agent has presented a plan (CreatePlan). Carries the plan content and its
+    // session-stable id so the frontend renders the plan + proceed-options (buttons) as one card
+    // and can retire stale cards; the choice routes back through a plan_decision turn keyed by id.
+    Task OnPlanReadyAsync(string planContent, string? planPath, string planId);
 
     Task OnCompactionStartedAsync(string reason, int promptTokens);
 

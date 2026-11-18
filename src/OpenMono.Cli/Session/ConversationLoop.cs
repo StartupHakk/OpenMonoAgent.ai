@@ -932,7 +932,7 @@ public sealed class ConversationLoop : IDisposable
                     if (_sink is not null)
                     {
                         // Extension: render the plan + options as a card with buttons.
-                        await _sink.OnPlanReadyAsync(planText, _session.Meta.LastPlanPath);
+                        await _sink.OnPlanReadyAsync(planText, _session.Meta.LastPlanPath, _session.Meta.LastPlanId ?? "");
                     }
                     else
                     {

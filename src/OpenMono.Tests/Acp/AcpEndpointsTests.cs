@@ -605,6 +605,36 @@ public sealed class AcpEndpointsTests : IAsyncLifetime
         first.GetProperty("last_activity_at").GetString().Should().NotBeNullOrEmpty();
     }
 
+    [Fact]
+    public async Task GetPlans_returns_newest_first_with_expected_shape()
+    {
+        var sid = await CreateSessionAsync();
+        var store = _app.Services.GetRequiredService<AcpSessionStore>();
+        var session = store.TryGet(sid)!;
+        session.State.Meta.Plans.Add(new PlanRecord { Id = "plan_a", Content = "first plan", CreatedAtUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) });
+        session.State.Meta.Plans.Add(new PlanRecord { Id = "plan_b", Content = "second plan", CreatedAtUtc = new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc), Status = PlanStatus.Implementing, DecidedAtUtc = new DateTime(2026, 1, 2, 1, 0, 0, DateTimeKind.Utc) });
+
+        var res = await _client.GetAsync($"/api/v1/sessions/{sid}/plans");
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        var plans = doc.RootElement.EnumerateArray().ToList();
+        plans.Should().HaveCount(2);
+        plans[0].GetProperty("id").GetString().Should().Be("plan_b", "newest first");
+        plans[0].GetProperty("status").GetString().Should().Be("Implementing");
+        plans[0].GetProperty("content").GetString().Should().Be("second plan");
+        plans[0].GetProperty("decided_at").GetDateTime().Should().Be(new DateTime(2026, 1, 2, 1, 0, 0, DateTimeKind.Utc));
+        plans[1].GetProperty("id").GetString().Should().Be("plan_a");
+        plans[1].GetProperty("status").GetString().Should().Be("Pending");
+    }
+
+    [Fact]
+    public async Task GetPlans_unknown_session_returns_404()
+    {
+        var res = await _client.GetAsync("/api/v1/sessions/sess_missing/plans");
+        res.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
     private async Task<string> CreateSessionAsync()
     {
         var res = await _client.PostAsJsonAsync("/api/v1/sessions", new { });

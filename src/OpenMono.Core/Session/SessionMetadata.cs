@@ -47,6 +47,15 @@ public sealed class SessionMetadata
     public string? LastPlanContent { get; set; }
     /// <summary>Workspace-relative path of the most recent plan file written by CreatePlan (where it's saved).</summary>
     public string? LastPlanPath { get; set; }
+    /// <summary>Id of the most recent plan (plan_&lt;12hex&gt;); plan_decision is rejected when its id doesn't match.</summary>
+    public string? LastPlanId { get; set; }
+    /// <summary>
+    /// Every plan presented via CreatePlan this session, oldest first. Each keeps its
+    /// id, content and status so UIs (extension drawer, TUI /plans) can list history
+    /// and re-open a plan after the decision card is gone. Supersede/stamp lives in
+    /// CreatePlanTool + AcpTurnRunner.
+    /// </summary>
+    public List<PlanRecord> Plans { get; set; } = new();
     /// <summary>
     /// True after a playbook abort / doom-loop escalation appended a User-role stop
     /// barrier. Cleared by the next fresh user message (<c>RunTurnAsync</c>), which

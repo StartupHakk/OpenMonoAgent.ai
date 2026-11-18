@@ -82,10 +82,23 @@ public sealed class CreatePlanTool : ToolBase
             return ToolResult.Error(
                 "Not in plan mode — call EnterPlanMode first to plan, then CreatePlan to present it.");
 
+        var planId = "plan_" + Guid.NewGuid().ToString("N")[..12];
+        foreach (var prior in context.Session.Meta.Plans)
+            if (prior.Status == PlanStatus.Pending)
+                prior.Status = PlanStatus.Superseded;
+
+        context.Session.Meta.Plans.Add(new PlanRecord
+        {
+            Id = planId,
+            Content = plan,
+            CreatedAtUtc = DateTime.UtcNow,
+        });
+        context.Session.Meta.LastPlanId = planId;
         context.Session.Meta.LastPlanContent = plan;
 
         var savedPath = await TryWritePlanFileAsync(plan, context, ct);
         context.Session.Meta.LastPlanPath = savedPath;
+        context.Session.Meta.Plans[^1].Path = savedPath;
 
         return ToolResult.Success("Plan presented to the user — awaiting their choice (Auto implement / Ask before edits / Keep planning).")
             .WithBreakTurn();

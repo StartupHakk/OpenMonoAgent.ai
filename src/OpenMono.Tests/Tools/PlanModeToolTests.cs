@@ -46,6 +46,24 @@ public class PlanModeToolTests
     }
 
     [Fact]
+    public async Task CreatePlan_appends_record_and_supersedes_prior_pending()
+    {
+        var context = CreateContext();
+        context.Session.Meta.PlanMode = true;
+        var tool = new CreatePlanTool();
+
+        await tool.ExecuteAsync(JsonDocument.Parse("""{"plan": "first plan"}""").RootElement, context, CancellationToken.None);
+        await tool.ExecuteAsync(JsonDocument.Parse("""{"plan": "second plan"}""").RootElement, context, CancellationToken.None);
+
+        context.Session.Meta.Plans.Should().HaveCount(2);
+        context.Session.Meta.Plans[0].Status.Should().Be(PlanStatus.Superseded);
+        context.Session.Meta.Plans[1].Status.Should().Be(PlanStatus.Pending);
+        context.Session.Meta.LastPlanId.Should().Be(context.Session.Meta.Plans[1].Id);
+        context.Session.Meta.Plans[0].Id.Should().NotBe(context.Session.Meta.Plans[1].Id);
+        context.Session.Meta.Plans[1].Id.Should().StartWith("plan_");
+    }
+
+    [Fact]
     public async Task CreatePlan_NotInPlanMode_ReturnsError()
     {
         var tool = new CreatePlanTool();
