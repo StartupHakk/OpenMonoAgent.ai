@@ -144,6 +144,7 @@ public static class AcpEndpoints
                 decided_at = p.DecidedAtUtc,
                 status = p.Status.ToString(),
                 content = p.Content,
+                implementation_summary = p.ImplementationSummary,
             }));
     }
 

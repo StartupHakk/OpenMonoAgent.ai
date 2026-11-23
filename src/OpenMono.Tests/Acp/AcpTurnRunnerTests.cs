@@ -344,7 +344,7 @@ public sealed class AcpTurnRunnerTests
             tools: new ToolRegistry(),
             llmRounds: new List<List<StreamChunk>>
             {
-                new() { new() { IsComplete = true, Usage = new UsageInfo() } },
+                new() { new() { TextDelta = "All steps are done and verified.", IsComplete = false }, new() { IsComplete = true, Usage = new UsageInfo() } },
             });
         session.PlanMode = true;
         session.State.Meta.Plans.Add(new PlanRecord { Id = "plan_abc123", Content = "do it", CreatedAtUtc = DateTime.UtcNow });
@@ -355,6 +355,47 @@ public sealed class AcpTurnRunnerTests
         var plan = session.State.Meta.Plans.Single();
         plan.Status.Should().Be(PlanStatus.Completed, "a clean implementing turn ends Implementing → Completed");
         plan.DecidedAtUtc.Should().NotBeNull();
+        plan.ImplementationSummary.Should().Be("All steps are done and verified.", "the final assistant message becomes the plan's implementation summary");
+    }
+
+    [Fact]
+    public async Task ResumeWithPlanDecisionAsync_appends_implementation_result_to_plan_file_once()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "openmono-planfile-" + Guid.NewGuid().ToString("N")[..8]);
+        var planDir = Path.Combine(tempDir, ".openmono", "plans");
+        Directory.CreateDirectory(planDir);
+        var planPath = Path.Combine(planDir, "20260101-000000-plan.md");
+        try
+        {
+            await File.WriteAllTextAsync(planPath, "# My plan\n\n1. do it\n");
+
+            var (runner, session, _) = BuildHarness(
+                tools: new ToolRegistry(),
+                llmRounds: new List<List<StreamChunk>>
+                {
+                    new() { new() { TextDelta = "Implemented and tested.", IsComplete = false }, new() { IsComplete = true, Usage = new UsageInfo() } },
+                },
+                workingDirectory: tempDir);
+            session.PlanMode = true;
+            session.State.Meta.Plans.Add(new PlanRecord { Id = "plan_abc123", Content = "do it", Path = ".openmono/plans/20260101-000000-plan.md", CreatedAtUtc = DateTime.UtcNow });
+            session.State.Meta.LastPlanId = "plan_abc123";
+
+            await runner.ResumeWithPlanDecisionAsync("auto", "plan_abc123", CancellationToken.None);
+
+            var saved = await File.ReadAllTextAsync(planPath);
+            saved.Should().Contain("## Implementation result");
+            saved.Should().Contain("Implemented and tested.");
+
+            // A second completing turn must not duplicate the section.
+            session.State.Meta.Plans[^1].Status = PlanStatus.Implementing;
+            await runner.ResumeWithPlanDecisionAsync("auto", "plan_abc123", CancellationToken.None);
+            saved = await File.ReadAllTextAsync(planPath);
+            saved.Split("## Implementation result").Length.Should().Be(2, "the result section is appended at most once");
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, recursive: true); } catch { }
+        }
     }
 
     [Fact]
@@ -689,20 +730,23 @@ public sealed class AcpTurnRunnerTests
     private static (AcpTurnRunner runner, AcpSession session, MemoryStream body) BuildHarness(
         ToolRegistry tools,
         List<List<StreamChunk>> llmRounds,
-        bool visionEnabled = false)
+        bool visionEnabled = false,
+        string? workingDirectory = null)
     {
-        return BuildHarness(NewSession(), tools, llmRounds, visionEnabled);
+        return BuildHarness(NewSession(), tools, llmRounds, visionEnabled, workingDirectory);
     }
 
     private static (AcpTurnRunner runner, AcpSession session, MemoryStream body) BuildHarness(
         AcpSession session,
         ToolRegistry tools,
         List<List<StreamChunk>> llmRounds,
-        bool visionEnabled = false)
+        bool visionEnabled = false,
+        string? workingDirectory = null)
     {
         var body = new MemoryStream();
         var writer = new SseWriter(body, CancellationToken.None);
         var config = new AppConfig { DataDirectory = Path.Combine(Path.GetTempPath(), "openmono-runner-" + Guid.NewGuid().ToString("N")[..8]) };
+        if (workingDirectory is not null) config.WorkingDirectory = workingDirectory;
         config.VisionEnabled = visionEnabled;
         Directory.CreateDirectory(config.DataDirectory);
         var renderer = new TerminalRenderer();

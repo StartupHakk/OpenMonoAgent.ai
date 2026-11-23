@@ -612,7 +612,7 @@ public sealed class AcpEndpointsTests : IAsyncLifetime
         var store = _app.Services.GetRequiredService<AcpSessionStore>();
         var session = store.TryGet(sid)!;
         session.State.Meta.Plans.Add(new PlanRecord { Id = "plan_a", Content = "first plan", CreatedAtUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) });
-        session.State.Meta.Plans.Add(new PlanRecord { Id = "plan_b", Content = "second plan", CreatedAtUtc = new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc), Status = PlanStatus.Implementing, DecidedAtUtc = new DateTime(2026, 1, 2, 1, 0, 0, DateTimeKind.Utc) });
+        session.State.Meta.Plans.Add(new PlanRecord { Id = "plan_b", Content = "second plan", CreatedAtUtc = new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc), Status = PlanStatus.Completed, DecidedAtUtc = new DateTime(2026, 1, 2, 1, 0, 0, DateTimeKind.Utc), ImplementationSummary = "Done: all steps shipped." });
 
         var res = await _client.GetAsync($"/api/v1/sessions/{sid}/plans");
         res.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -621,11 +621,13 @@ public sealed class AcpEndpointsTests : IAsyncLifetime
         var plans = doc.RootElement.EnumerateArray().ToList();
         plans.Should().HaveCount(2);
         plans[0].GetProperty("id").GetString().Should().Be("plan_b", "newest first");
-        plans[0].GetProperty("status").GetString().Should().Be("Implementing");
+        plans[0].GetProperty("status").GetString().Should().Be("Completed");
         plans[0].GetProperty("content").GetString().Should().Be("second plan");
+        plans[0].GetProperty("implementation_summary").GetString().Should().Be("Done: all steps shipped.");
         plans[0].GetProperty("decided_at").GetDateTime().Should().Be(new DateTime(2026, 1, 2, 1, 0, 0, DateTimeKind.Utc));
         plans[1].GetProperty("id").GetString().Should().Be("plan_a");
         plans[1].GetProperty("status").GetString().Should().Be("Pending");
+        plans[1].GetProperty("implementation_summary").ValueKind.Should().Be(JsonValueKind.Null, "a plan without a summary serializes the field as null");
     }
 
     [Fact]

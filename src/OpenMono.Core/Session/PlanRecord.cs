@@ -30,4 +30,11 @@ public sealed class PlanRecord
     public DateTime CreatedAtUtc { get; set; }
     public PlanStatus Status { get; set; } = PlanStatus.Pending;
     public DateTime? DecidedAtUtc { get; set; }
+
+    /// <summary>
+    /// Short summary of the implementation outcome (the final assistant message
+    /// of the implementing turn), set when the plan reaches Completed. UIs show
+    /// this appended after the plan content.
+    /// </summary>
+    public string? ImplementationSummary { get; set; }
 }

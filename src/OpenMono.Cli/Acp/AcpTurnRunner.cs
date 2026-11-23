@@ -829,7 +829,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
         try
         {
             await loop.ContinueTurnAsync(ct);
-            MarkImplementingPlansCompleted();
+            await MarkImplementingPlansCompletedAsync(ct);
             await _writer.WriteEventAsync("done", new { });
         }
         catch (PendingUserResponseException)
@@ -850,17 +850,53 @@ public sealed class AcpTurnRunner : IAcpEventSink
     /// leave the plan Implementing (a later turn can still finish it), as do
     /// errors and Stop. The newest Implementing plan becomes Completed — a
     /// terminal status — so UIs stop showing a live "implementing" badge after
-    /// the work is done.
+    /// the work is done. The final assistant message of the turn is stored as
+    /// the plan's ImplementationSummary and appended to the plan's saved file,
+    /// so the plan keeps a durable record of its outcome.
     /// </summary>
-    private void MarkImplementingPlansCompleted()
+    private async Task MarkImplementingPlansCompletedAsync(CancellationToken ct)
     {
+        var finalText = _acpSession.Messages
+            .LastOrDefault(m => m.Role == MessageRole.Assistant && !string.IsNullOrWhiteSpace(m.Content))
+            ?.Content;
         foreach (var plan in _acpSession.State.Meta.Plans)
         {
             if (plan.Status != PlanStatus.Implementing) continue;
             plan.Status = PlanStatus.Completed;
+            if (!string.IsNullOrWhiteSpace(finalText))
+                plan.ImplementationSummary = Truncate(finalText, MaxSummaryChars);
+            await AppendSummaryToPlanFileAsync(plan, ct);
             Log.Info($"[OMA_PLAN] plan {plan.Id} implementation finished → Completed");
         }
     }
+
+    private const int MaxSummaryChars = 4000;
+    private const string SummarySectionHeader = "\n\n## Implementation result\n\n";
+
+    /// <summary>
+    /// Appends the ImplementationSummary section to the plan's saved .md file
+    /// (idempotent — guarded by the section header so a re-run never duplicates it).
+    /// Best-effort: a failure here must not fail the turn.
+    /// </summary>
+    private async Task AppendSummaryToPlanFileAsync(PlanRecord plan, CancellationToken ct)
+    {
+        if (plan.Path is null || plan.ImplementationSummary is null) return;
+        try
+        {
+            var fullPath = Path.Combine(_loopFactory.Config.WorkingDirectory, plan.Path);
+            if (!File.Exists(fullPath)) return;
+            var existing = await File.ReadAllTextAsync(fullPath, ct);
+            if (existing.Contains("## Implementation result", StringComparison.Ordinal)) return;
+            await File.AppendAllTextAsync(fullPath, SummarySectionHeader + plan.ImplementationSummary + "\n", ct);
+        }
+        catch (Exception e)
+        {
+            Log.Error($"[OMA_PLAN] failed to append implementation summary to {plan.Path}: {e.Message}");
+        }
+    }
+
+    private static string Truncate(string text, int maxChars)
+        => text.Length <= maxChars ? text : text[..maxChars] + "\n\n…(truncated)";
 
 
 
