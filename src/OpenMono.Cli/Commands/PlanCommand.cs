@@ -18,7 +18,8 @@ public sealed class PlanCommand : ICommand
         var task = args.Length > 0 ? string.Join(' ', args).Trim() : "";
 
         var wasPlanMode = session.Meta.PlanMode;
-        session.Meta.PlanMode = true;
+        await (session.Settings
+            ??= OpenMono.Session.SessionSettings.Attach(session, "tui")).SetPlanModeAsync(true, ct);
 
         // Notice in the conversation so the agent registers the switch on its next turn.
         if (!wasPlanMode)

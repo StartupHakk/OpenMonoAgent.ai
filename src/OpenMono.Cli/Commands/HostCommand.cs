@@ -73,7 +73,7 @@ public sealed class HostCommand : ICommand
                     context.Renderer.WriteError("Could not pair: " + (error ?? "unknown error"));
                     break;
                 }
-                context.Session.Meta.HostEnabled = true;
+                await Settings(context).SetHostEnabledAsync(true, ct);
                 InjectStandingOrders(context, paired);
                 context.Renderer.WriteInfo(
                     $"HOST:ON — paired to {paired.BaseUrl} (run as {paired.RunAs}, sudo={paired.Sudo}). " +
@@ -89,7 +89,7 @@ public sealed class HostCommand : ICommand
                 await gateway.UnpairAsync(ct);
                 HostGatewayRegistry.Unregister(context.Session.Id);
                 gateway.Dispose();
-                context.Session.Meta.HostEnabled = false;
+                await Settings(context).SetHostEnabledAsync(false, ct);
                 context.Renderer.WriteInfo("HOST:OFF — pairing revoked, back to workspace-only tools.");
                 break;
 
@@ -98,6 +98,10 @@ public sealed class HostCommand : ICommand
                 break;
         }
     }
+
+    private static OpenMono.Session.SessionSettings Settings(CommandContext context)
+        => context.Session.Settings
+            ??= OpenMono.Session.SessionSettings.Attach(context.Session, "tui");
 
     private static void InjectStandingOrders(CommandContext context, HostGateway gateway)
     {

@@ -46,6 +46,16 @@ public sealed class SessionState
 
     public int CheckpointCutoffIndex { get; set; }
 
+    /// <summary>
+    /// The single mutation-pipeline owner for this session's mutable settings
+    /// (see <see cref="SessionSettings"/>). Null until a frontend attaches one
+    /// at startup/reattach; frontends must mutate settings through it so
+    /// validation, revision bumping, write-through persistence and change
+    /// broadcasting happen in one place.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public SessionSettings? Settings { get; set; }
+
     public void AddMessage(Message message) => Messages.Add(message);
 }
 

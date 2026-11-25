@@ -86,8 +86,88 @@ public static class ConfigCommand
             return ($"error: could not write {path}: {ex.Message}", 1);
         }
 
+        // llm.endpoint / llm.api_key / llm.model seed the 'default' backend. Mirror
+        // the change into backends.json when that file already exists (or when
+        // 'default' is explicitly flagged), so the registry never re-reads a stale
+        // entry and shadows the new settings.json value.
+        var mirrored = key.ToLowerInvariant() switch
+        {
+            "llm.endpoint" => MirrorDefaultBackend(AppConfigDataDirectory(), e => e["endpoint"] = value),
+            "llm.api_key" => MirrorDefaultBackend(AppConfigDataDirectory(), e => e["api_key"] = value),
+            "llm.model" => MirrorDefaultBackend(AppConfigDataDirectory(), e => e["default_model"] = value),
+            _ => null,
+        };
+
         var isSecret = IsSecretPath(key);
-        return ($"set {key} = {(isSecret ? "(masked)" : NodeToText(target))}  [{path}]", 0);
+        var msg = $"set {key} = {(isSecret ? "(masked)" : NodeToText(target))}  [{path}]";
+        if (mirrored is not null) msg += $"\nmirrored to the 'default' backend  [{mirrored}]";
+        return (msg, 0);
+    }
+
+    /// <summary>
+    /// Applies <paramref name="mutate"/> to the <c>default</c> entry of backends.json,
+    /// creating the entry/file only when the default pointer still aims at 'default'.
+    /// Returns the file path on success, null when nothing was mirrored.
+    /// </summary>
+    private static string? MirrorDefaultBackend(string dataDir, Action<JsonObject> mutate)
+    {
+        var backendsFile = Path.Combine(dataDir, "backends.json");
+        try
+        {
+            JsonNode doc = File.Exists(backendsFile)
+                ? JsonNode.Parse(File.ReadAllText(backendsFile)) ?? new JsonObject()
+                : new JsonObject();
+            if (doc is not JsonObject root) root = new JsonObject();
+
+            // The user deliberately moved the default to another backend — the
+            // 'default' entry (if any) is inert, so don't keep mirroring into it.
+            var defaultMoved = !DefaultBackendMarker(backendsFile).Equals(DefaultBackendName, StringComparison.OrdinalIgnoreCase);
+            if (defaultMoved) return null;
+
+            var entry = root["default"] as JsonObject;
+
+            if (entry is null)
+            {
+                entry = new JsonObject { ["name"] = "default" };
+                root["default"] = entry;
+            }
+            mutate(entry);
+
+            Directory.CreateDirectory(dataDir);
+            File.WriteAllText(backendsFile, root.ToJsonString(Indented));
+            Chmod600(backendsFile);
+            return backendsFile;
+        }
+        catch (Exception)
+        {
+            // Best-effort mirror — settings.json remains the source of truth.
+            return null;
+        }
+    }
+
+    /// <summary>Name of the backend marked as registry default in backends.json
+    /// (per-entry "default": true flag, else legacy "_default_backend", else 'default').</summary>
+    private static string DefaultBackendMarker(string backendsFile)
+    {
+        try
+        {
+            if (!File.Exists(backendsFile)) return DefaultBackendName;
+            var doc = JsonNode.Parse(File.ReadAllText(backendsFile));
+            if (doc is not JsonObject root) return DefaultBackendName;
+            foreach (var kv in root)
+            {
+                if (kv.Value is JsonObject o
+                    && o.TryGetPropertyValue("default", out var f)
+                    && f is JsonValue fv && fv.TryGetValue(out bool fb) && fb)
+                    return kv.Key;
+            }
+            if (root.TryGetPropertyValue("_default_backend", out var dEl)
+                && dEl is JsonValue dv && dv.TryGetValue(out string? ds)
+                && !string.IsNullOrWhiteSpace(ds))
+                return ds;
+        }
+        catch { /* malformed — treat as no explicit default */ }
+        return DefaultBackendName;
     }
 
     // ── backends ─────────────────────────────────────────────────────────────────
@@ -122,11 +202,13 @@ public static class ConfigCommand
                         string.IsNullOrEmpty(endpoint) ? false : true, hasKey, null);
                 }
 
+                var activeDefault = DefaultBackendMarker(backendsFile);
                 var lines = new List<string> { "Backend (inference endpoint):" };
                 foreach (var (name, e) in entries.OrderBy(kv => kv.Key, StringComparer.Ordinal))
                 {
+                    var isDefault = name.Equals(activeDefault, StringComparison.OrdinalIgnoreCase);
                     var label = string.IsNullOrEmpty(e.Nickname) ? name : $"{name} \"{e.Nickname}\"";
-                    lines.Add($"  {label,-28} endpoint={e.Endpoint,-40} model={OrDash(e.Model)}" +
+                    lines.Add($"  {(isDefault ? "*" : " ")} {label,-27} endpoint={e.Endpoint,-40} model={OrDash(e.Model)}" +
                                (e.HasKey ? "  key=set" : (e.IsLocal ? "  (local)" : "  key=NONE")));
                 }
                 lines.Add($"\nfile: {backendsFile}");
@@ -169,12 +251,44 @@ public static class ConfigCommand
                 return ($"added backend '{name}' -> {endpoint}{(key is null ? "" : " (key persisted)")}  [{backendsFile}]", 0);
             }
 
+            case "set-default":
+            {
+                var name = rest.Length > 0 ? rest[0] : "";
+                if (name.Length == 0) return ("usage: openmono config backends set-default <name>", 2);
+
+                JsonNode doc = File.Exists(backendsFile)
+                    ? JsonNode.Parse(File.ReadAllText(backendsFile)) ?? new JsonObject()
+                    : new JsonObject();
+                if (doc is not JsonObject broot) broot = new JsonObject();
+                if (!broot.TryGetPropertyValue(name, out var target) || target is not JsonObject tObj)
+                    return ($"backend '{name}' not found in {backendsFile} — add it first: openmono config backends add {name} --endpoint <url>", 1);
+
+                var flagged = broot
+                    .Where(kv => kv.Value is JsonObject o && o.TryGetPropertyValue("default", out _))
+                    .Select(kv => kv.Key)
+                    .ToList();
+                foreach (var k in flagged)
+                    ((JsonObject)broot[k]!)["default"] = false;
+                tObj["default"] = true;
+                broot["_default_backend"] = name;
+
+                Directory.CreateDirectory(dataDir);
+                File.WriteAllText(backendsFile, broot.ToJsonString(Indented));
+                Chmod600(backendsFile);
+                return ($"default backend is now '{name}'  [{backendsFile}]", 0);
+            }
+
             case "remove":
             {
                 var name = rest.Length > 0 ? rest[0] : "";
                 if (name.Length == 0) return ("usage: openmono config backends remove <name>", 2);
-                if (name.Equals(DefaultBackendName, StringComparison.OrdinalIgnoreCase))
-                    return ("the 'default' backend (from llm.endpoint) cannot be removed; edit llm.endpoint instead.", 1);
+                // The seeded 'default' entry reappears on next startup while it is
+                // still the active default — removing it is pointless until the
+                // default has moved to a named backend.
+                if (name.Equals(DefaultBackendName, StringComparison.OrdinalIgnoreCase)
+                    && DefaultBackendMarker(backendsFile).Equals(DefaultBackendName, StringComparison.OrdinalIgnoreCase))
+                    return ("the 'default' backend (from llm.endpoint) cannot be removed while it is the default; " +
+                            "move the default first: openmono config backends set-default <name>", 1);
 
                 var fileDoc = File.Exists(backendsFile) ? JsonNode.Parse(File.ReadAllText(backendsFile)) : null;
                 if (fileDoc is JsonObject o && o.TryGetPropertyValue(name, out _))
@@ -357,6 +471,7 @@ public static class ConfigCommand
             root = new JsonObject();
 
         var entry = root[name] as JsonObject ?? new JsonObject();
+        root[name] = entry; // attach freshly-created entries (indexer set is a no-op for existing)
         entry["name"] = name;
         entry["endpoint"] = endpoint;
         if (model is not null && model.Length > 0) entry["default_model"] = model;
@@ -411,15 +526,18 @@ Notes:
 
     private static string BackendsUsage() =>
 """
-openmono config backends <list|add|remove|set-key>
+openmono config backends <list|add|remove|set-default|set-key>
 
-  list                                  list configured inference backends
+  list                                  list backends; '*' marks the default
   add <name> --endpoint <url>           add a backend
       [--model <m>]                     default model for the backend
+      [--nickname <n>]                  display label shown in menus
       [--key <k>]                       persist the API key (0600)
       [--provider-type <t>]             openai-compat (default) | anthropic
-      [--local true]                    mark as a local server (no key required)
+      [--local true]                    mark as a local server (a key is still
+                                        required whenever the server enforces one)
   remove <name>                         remove a backend (not 'default')
+  set-default <name>                    make <name> the default for new sessions
   set-key <name> <key>                  persist (or clear) a backend's API key
 
 Examples:

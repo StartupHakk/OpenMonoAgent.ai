@@ -15,6 +15,14 @@ public sealed record ServerReasoningInfo
     public string[]? EffortLevels { get; init; }
     public string? EffortDefaultLevel { get; init; }
 
+    /// <summary>
+    /// The server's advertised context window (<c>n_ctx</c> from <c>/props</c>)
+    /// for this (endpoint, model), when reported. Drives the context-usage gauge
+    /// denominator so it follows the active model instead of staying pinned to
+    /// whatever was loaded at startup. Null when the server doesn't report it.
+    /// </summary>
+    public int? ContextWindow { get; init; }
+
     public static bool TemplateShowsThinking(string? chatTemplate)
     {
         if (string.IsNullOrEmpty(chatTemplate))

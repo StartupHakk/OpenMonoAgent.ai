@@ -47,6 +47,8 @@
 #                               (reads _GPU_TIER, GPU_MODE, AMD_IGPU_MODE,
 #                               TOTAL_MEM, CAN_STRATA, CAN_BONSAI)
 #   mc_auto_reason              one-line why for the same pick (menu/log text)
+#   mc_auto_pick_menu_line <plat> <key>
+#                               menu text for the menu row the auto pick maps to
 #   mc_vision_default           "yes" when setup should default vision on with no
 #                               prompt, "ask" when it should prompt; honouring
 #                               OPENMONO_SETUP_OPTIONS
@@ -78,7 +80,7 @@ cat <<'JSON'
     "24":{"name":"Qwen3.8-27B-UD-Q4_K_M.gguf","url":"https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf","mmproj":"mmproj-qwen3.8-27B-F16.gguf","mmproj_url":"https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf","ctx":196608,"kv":"q8_0","accuracy":"full","label":"Qwen3.8-27B-UD-Q4_K_M (~15GB) [GPU 24GB+ — full accuracy]"},
     "16":{"name":"Qwen3.8-27B-UD-IQ3_XXS.gguf","url":"https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-IQ3_XXS.gguf","mmproj":"mmproj-qwen3.8-27B-F16.gguf","mmproj_url":"https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf","ctx":180224,"kv":"q4_0","accuracy":"lower","label":"Qwen3.8-27B-UD-IQ3_XXS (~12GB) [GPU 16GB — lower accuracy]"},
     "12":{"name":"Qwen3.5-9B-UD-Q4_K_XL.gguf","url":"https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q4_K_XL.gguf","mmproj":"mmproj-qwen3.5-9B-F16.gguf","mmproj_url":"https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/mmproj-F16.gguf","ctx":196608,"kv":"q4_0","accuracy":"lower","label":"Qwen3.5-9B-UD-Q4_K_XL (~5GB) [GPU 12GB — lower accuracy]"},
-    "cpu":{"name":"Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf","url":"https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf","mmproj":"mmproj-qwen3.6-35B-A3B-F16.gguf","mmproj_url":"https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/mmproj-F16.gguf","ctx":196608,"kv":"q8_0","accuracy":"standard","label":"Qwen3.6-35B-A3B (~17.6GB) [CPU]"}}},
+    "cpu":{"name":"Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf","url":"https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf","mmproj":"mmproj-qwen3.6-35B-A3B-F16.gguf","mmproj_url":"https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/mmproj-F16.gguf","ctx":196608,"kv":"q8_0","accuracy":"standard","label":"Qwen3.6-35B-A3B (~17.6GB) [CPU]","label_igpu":"Qwen3.6-35B-A3B (~17.6GB) [AMD iGPU / Vulkan]"}}},
   "macos":{"tiers":{
     "48":{"name":"Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf","url":"https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf","mmproj":"mmproj-qwen3.6-35B-A3B-F16.gguf","mmproj_url":"https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/mmproj-F16.gguf","ctx":196608,"accuracy":"standard","label":"Qwen3.6-35B-A3B (~17.6GB) [Apple Silicon >=48GB — standard]"},
     "32":{"name":"Qwen3.5-9B-UD-Q4_K_XL.gguf","url":"https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q4_K_XL.gguf","mmproj":"mmproj-qwen3.5-9B-F16.gguf","mmproj_url":"https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/mmproj-F16.gguf","ctx":65536,"accuracy":"lower","label":"Qwen3.5-9B-UD-Q4_K_XL (~5GB) [Apple Silicon 32GB]"},
@@ -151,7 +153,58 @@ mc_requires() { mc_meta "${1:-}" requires; }
 mc_menu()     { local id="${1:-}" f="${2:-}"; [ -z "$id" ] && return 0
                 _mc_q --arg i "$id" --arg f "$f" '.models[]|select(.id==$i)|(.menu[$f] // empty)' 2>/dev/null; }
 
+# mc_menu_line <id> [plat] — menu row text with platform override: a bonsai /
+# engine row can carry menu.line_macos (e.g. "[Metal]" instead of the CUDA tag)
+# or menu.line_amd_igpu (7940HS path — the Prism image is Vulkan-only there);
+# falls back to menu.line. Keeps the installers from hand-writing model names.
+mc_menu_line() {
+    local id="${1:-}" plat="${2:-$MC_PLATFORM}" _ln=""
+    if [ "$plat" = "macos" ]; then _ln="$(mc_menu "$id" line_macos)"; fi
+    if [ -z "$_ln" ] && [ "$plat" = "linux" ] && [ "${AMD_IGPU_MODE:-0}" = "1" ]; then
+        _ln="$(mc_menu "$id" line_amd_igpu)"
+    fi
+    [ -z "$_ln" ] && _ln="$(mc_menu "$id" line)"
+    printf '%s' "$_ln"
+}
+
 mc_deny()     { mc_meta "${1:-}" deny; }
+
+# mc_qwen_tier_label <plat> <key> — concrete label of a Qwen tier row, honouring
+# the AMD iGPU variant: a cpu-tier Qwen on a 7940HS-class box runs on the 780M
+# through the Vulkan image, not on CPU, so its tier may carry "label_igpu".
+mc_qwen_tier_label() {
+    local plat="${1:-$MC_PLATFORM}" key="${2:-}" tier=""
+    [ -z "$key" ] && return 0
+    if [ "$plat" = "linux" ] && [ "${AMD_IGPU_MODE:-0}" = "1" ]; then
+        tier="$(mc_tier_field qwen "$plat" "$key" label_igpu)"
+    fi
+    [ -z "$tier" ] && tier="$(mc_tier_field qwen "$plat" "$key" label)"
+    printf '%s' "$tier"
+}
+
+# mc_qwen_menu_line <plat> <key> — menu text for a Qwen row: the concrete file
+# label of the selected tier ("Qwen3.6-35B-A3B (~17.6GB) [CPU]", not the vague
+# "Qwen on llama.cpp"). <key> is a linux VRAM bucket (24|16|12|cpu) or a macOS
+# unified-RAM tier key (48|32|16|8). Falls back to the catalog menu line when
+# the label is missing, so a row never renders empty.
+mc_qwen_menu_line() {
+    local plat="${1:-$MC_PLATFORM}" key="${2:-}" tier
+    [ -n "$key" ] && tier="$(mc_qwen_tier_label "$plat" "$key")"
+    if [ -n "$tier" ]; then printf '%s' "$tier"; else mc_menu qwen line; fi
+}
+
+# mc_auto_pick_menu_line <plat> <key> — menu text for the row that maps to the
+# hardware gate's pick: the other engine's menu line verbatim when the gate
+# would pick Bonsai/Strata, otherwise the concrete Qwen tier label.
+mc_auto_pick_menu_line() {
+    local plat="${1:-$MC_PLATFORM}" key="${2:-}" _id _ln
+    _id="$(mc_auto_pick)"
+    if [ "$_id" != "qwen" ]; then
+        _ln="$(mc_menu_line "$_id" "$plat")"
+        [ -n "$_ln" ] && { printf '%s' "$_ln"; return; }
+    fi
+    mc_qwen_menu_line "$plat" "$key"
+}
 
 # mc_flag <NAME> — echo the value of capability flag NAME as it is set in the
 # current shell (0 when unset). Lets the catalog gate models by name instead of
@@ -335,7 +388,11 @@ mc_select() {
     mm="$(mc_tier_field "$id" "$plat" "$key" mmproj)"
     mmurl="$(mc_tier_field "$id" "$plat" "$key" mmproj_url)"
     acc="$(mc_tier_field "$id" "$plat" "$key" accuracy)"
-    label="$(mc_tier_field "$id" "$plat" "$key" label)"
+    if [ "$id" = "qwen" ]; then
+        label="$(mc_qwen_tier_label "$plat" "$key")"
+    else
+        label="$(mc_tier_field "$id" "$plat" "$key" label)"
+    fi
 
     # Fixed-identity models (Bonsai) put the file in files.* instead.
     if [ -z "$name" ];  then name="$(mc_file_field "$id" name)";       fi

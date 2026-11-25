@@ -91,6 +91,40 @@ public class BackendRegistryTests : IDisposable
     }
 
     [Fact]
+    public void LoadFromFile_PerservesPerEntryDefaultFlag()
+    {
+        var r = new BackendRegistry();
+        r.Add(Def("default"));
+        r.Add(Def("relay", "http://relay:10422"));
+        r.SetDefault("relay");
+
+        var path = Path.Combine(_tempDir, "flagged.json");
+        r.SaveToFile(path);
+        File.ReadAllText(path).Should().Contain("\"default\": true");
+
+        var r2 = new BackendRegistry();
+        r2.LoadFromFile(path);
+        r2.DefaultName.Should().Be("relay");
+    }
+
+    [Fact]
+    public void LoadFromFile_LegacyTopLevelDefaultStillWorks()
+    {
+        var path = Path.Combine(_tempDir, "legacy.json");
+        File.WriteAllText(path, """
+        {
+          "a": { "endpoint": "http://a" },
+          "b": { "endpoint": "http://b" },
+          "_default_backend": "b"
+        }
+        """);
+
+        var r = new BackendRegistry();
+        r.LoadFromFile(path);
+        r.DefaultName.Should().Be("b");
+    }
+
+    [Fact]
     public void RemapLoopbackEndpoints_RewritesLocalLoopbackOnly()
     {
         var r = new BackendRegistry();

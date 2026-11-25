@@ -31,9 +31,7 @@ public static class SessionReattach
         foreach (var todo in loaded.Todos)
             live.Todos.Add(todo);
 
-        live.Meta.PlanMode = loaded.Meta.PlanMode;
-        live.Meta.GitProfileName = loaded.Meta.GitProfileName;
-        live.Meta.GitProfileTouched = loaded.Meta.GitProfileTouched;
+        SessionMetaMerger.Merge(live, loaded);
 
         SessionConsistency.Repair(live);
     }

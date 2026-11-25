@@ -95,10 +95,12 @@ select_model() {
 # (Bonsai model selection lives in scripts/lib/prism.sh as
 # select_bonsai_model(), shared with the macOS installer.)
 
-# Unified model + engine picker. ALWAYS defaults to Qwen on stock llama.cpp —
-# the same default as main. Bonsai (Prism CUDA/Vulkan) and Qwen3.8-Flash-Next
-# (Strata, NVIDIA/CUDA 13) are offered ONLY when the caller's CAN_BONSAI /
-# CAN_STRATA capability flags say this box can run them. Honors OPENMONO_MODEL
+# Unified model + engine picker. Row 1 / bare Enter / non-TTY all default to
+# the hardware gate's pick (mc_auto_pick) — the exact model a run WITHOUT
+# --options installs — named concretely per tier. Bonsai (Prism CUDA/Vulkan)
+# and Qwen3.8-Flash-Next (Strata, NVIDIA/CUDA 13) are offered ONLY when the
+# caller's CAN_BONSAI / CAN_STRATA capability flags say this box can run them.
+# Honors OPENMONO_MODEL
 # (auto|qwen|bonsai-pq2|bonsai-ptq1|flash-next) and an explicit
 # OPENMONO_INFERENCE_BACKEND=strata. Sets INFERENCE_BACKEND; for llama choices
 # also MODEL_* / IS_BONSAI (via select_bonsai_model). Requires _GPU_TIER,
@@ -125,30 +127,81 @@ prompt_model_choice() {
         qwen)                  INFERENCE_BACKEND=llama; return 0 ;;
     esac
 
-    # choice == auto. Non-interactive: safe default = Qwen on stock llama.cpp.
+    # choice == auto with no TTY (e.g. --options piped in CI): honor the same
+    # hardware gate a no-options run uses, so the default never disagrees
+    # between the two paths. Named concretely so the log says what was picked.
     if [ ! -t 0 ]; then
-        INFERENCE_BACKEND=llama
-        info "Model: Qwen on stock llama.cpp (default). For another engine: --model=flash-next (Strata, NVIDIA) or --model=bonsai-pq2|bonsai-ptq1."
+        local _ni_id _ni_key
+        _ni_id="$(mc_auto_pick)"
+        _ni_key="${_GPU_TIER:-0}"; case "$_ni_key" in 24|16|12) ;; *) _ni_key=cpu ;; esac
+        case "$_ni_id" in
+            flash-next)
+                INFERENCE_BACKEND=strata
+                info "Model: $(mc_menu flash-next line) (hardware auto-pick: $(mc_auto_reason))."
+                ;;
+            bonsai-pq2|bonsai-ptq1)
+                select_bonsai_model "${_ni_id#bonsai-}"
+                INFERENCE_BACKEND=llama
+                info "Model: $_MODEL_LABEL (hardware auto-pick: $(mc_auto_reason))."
+                ;;
+            *)
+                INFERENCE_BACKEND=llama
+                info "Model: $(mc_qwen_menu_line linux "$_ni_key") (hardware auto-pick: $(mc_auto_reason))."
+                ;;
+        esac
+        info "For another engine: --model=flash-next (Strata, NVIDIA) | --model=qwen | --model=bonsai-pq2 | --model=bonsai-ptq1."
         return 0
     fi
 
-    # Interactive: show only options this box can run; default = Qwen (1).
+    # Interactive: show only options this box can run; row 1 = the no-options
+    # hardware-gate pick, so bare Enter installs exactly what no-options would.
     flush_stdin
     echo ""
-    echo "  Which model + engine for this box? (GPU tier: ${_GPU_TIER:-CPU})"
-    echo ""
-    printf '  1) %s\n' "$(mc_menu qwen line)"
-    local bonsai_pq2=0 bonsai_ptq1=0 strata_n=0 n=1 _ln
-    _ln="$(mc_menu bonsai-pq2 line)"
-    if [ -n "$_ln" ] && [ "$(mc_flag "$(mc_requires bonsai-pq2)")" = "1" ]; then
-        bonsai_pq2=$(( n + 1 ));  printf '  %s) %s\n' "$bonsai_pq2"  "$_ln"
-        _ln="$(mc_menu bonsai-ptq1 line)"
-        bonsai_ptq1=$(( n + 2 )); printf '  %s) %s\n' "$bonsai_ptq1" "$_ln"
-        n=$(( n + 2 ))
+    local _tier_txt="GPU tier: ${_GPU_TIER:-CPU}"
+    if [ "${_GPU_TIER:-0}" = "0" ]; then
+        [ "${AMD_IGPU_MODE:-0}" = "1" ] && _tier_txt="AMD iGPU (shared RAM)" || _tier_txt="CPU only"
     fi
-    _ln="$(mc_menu flash-next line)"
-    if [ -n "$_ln" ] && [ "$(mc_flag "$(mc_requires flash-next)")" = "1" ]; then
-        strata_n=$(( n + 1 )); printf '  %s) %s\n' "$strata_n" "$_ln"
+    echo "  Which model + engine for this box? (${_tier_txt})"
+    echo ""
+    # Row 1 is always what setup picks WITHOUT --options (the hardware gate,
+    # mc_auto_pick) and is named by the concrete model for this tier — so bare
+    # Enter here is exactly the same install as running without --options.
+    local _auto_id _auto_line _qwen_key _qwen_n=0 bonsai_pq2=0 bonsai_ptq1=0 strata_n=0 n=1 _ln
+    # Qwen tier key for this box — same mapping select_model uses (8GB GPUs land
+    # on the cpu row there because no Qwen GGUF targets 8GB).
+    _qwen_key="${_GPU_TIER:-0}"
+    case "$_qwen_key" in 24|16|12) ;; *) _qwen_key=cpu ;; esac
+    _auto_id="$(mc_auto_pick)"
+    _auto_line="$(mc_auto_pick_menu_line linux "$_qwen_key")"
+    printf '  1) %s (default)\n' "$_auto_line"
+    # The gate picked another engine — list Qwen as the llama fallback below it.
+    # (Qwen runs everywhere — it is the stock llama.cpp default — so this row
+    # never depends on the Bonsai/Strata capability gates.)
+    if [ "$_auto_id" != "qwen" ]; then
+        _ln="$(mc_qwen_menu_line linux "$_qwen_key")"
+        n=$(( n + 1 )); _qwen_n=$n; printf '  %s) %s (llama.cpp fallback)\n' "$n" "$_ln"
+    fi
+    # Offer the other engine rows the box can run (skipping whichever one is
+    # already row 1, so the box never sees the same model twice).
+    if [ "$_auto_id" != "bonsai-pq2" ] && [ "$(mc_flag CAN_BONSAI)" = "1" ]; then
+        _ln="$(mc_menu_line bonsai-pq2 linux)"
+        if [ -n "$_ln" ]; then
+            bonsai_pq2=$(( n + 1 )); printf '  %s) %s\n' "$bonsai_pq2" "$_ln"
+            n=$(( n + 1 ))
+        fi
+    fi
+    if [ "$_auto_id" != "bonsai-ptq1" ] && [ "$(mc_flag CAN_BONSAI)" = "1" ]; then
+        _ln="$(mc_menu_line bonsai-ptq1 linux)"
+        if [ -n "$_ln" ]; then
+            bonsai_ptq1=$(( n + 1 )); printf '  %s) %s\n' "$bonsai_ptq1" "$_ln"
+            n=$(( n + 1 ))
+        fi
+    fi
+    if [ "$_auto_id" != "flash-next" ] && [ "$(mc_flag CAN_STRATA)" = "1" ]; then
+        _ln="$(mc_menu flash-next line)"
+        if [ -n "$_ln" ]; then
+            strata_n=$(( n + 1 )); printf '  %s) %s\n' "$strata_n" "$_ln"
+        fi
     fi
     echo ""
     printf "  Enter choice [default: 1]: "
@@ -164,7 +217,18 @@ prompt_model_choice() {
     if [ "$bonsai_ptq1" != "0" ] && [ "$_mc" = "$bonsai_ptq1" ]; then
         select_bonsai_model ptq1; INFERENCE_BACKEND=llama; return 0
     fi
-    # anything else (incl. bare Enter) → default Qwen on stock llama.cpp
+    # Explicit pick of the Qwen llama fallback row — MODEL_* already holds the
+    # qwen tier identity (select_model ran before the picker).
+    if [ "$_qwen_n" != "0" ] && [ "$_mc" = "$_qwen_n" ]; then
+        INFERENCE_BACKEND=llama; return 0
+    fi
+    # Row 1 or anything else (incl. bare Enter) → exactly what the no-options
+    # hardware gate would have picked.
+    case "$_auto_id" in
+        flash-next) INFERENCE_BACKEND=strata; return 0 ;;
+        bonsai-pq2) select_bonsai_model pq2;  INFERENCE_BACKEND=llama; return 0 ;;
+        bonsai-ptq1) select_bonsai_model ptq1; INFERENCE_BACKEND=llama; return 0 ;;
+    esac
     INFERENCE_BACKEND=llama
 }
 
@@ -234,7 +298,8 @@ vp_box_set_role "$OPENMONO_ROLE"
 
 # ── Inference backend (Linux only; macOS uses its native path) ───────────────
 # The backend is FINALIZED by the unified picker further below (analyze the
-# box → present only runnable options → default Qwen on stock llama.cpp). The
+# box → present only runnable options → default = the hardware gate's pick).
+# The
 # default here is llama to match main; only an explicit
 # OPENMONO_INFERENCE_BACKEND=strata short-circuits ahead of the picker.
 # Agent role needs no local engine, so the backend is informational there.
@@ -404,7 +469,7 @@ IS_BONSAI=0
 CAN_BONSAI=0
 CAN_STRATA=0
 # Analyze the box, keep only the options it can actually run, then pick
-# (default Qwen on stock llama.cpp). Sets INFERENCE_BACKEND + MODEL_* that every
+# (default = the hardware gate's pick, mc_auto_pick). Sets INFERENCE_BACKEND + MODEL_* that every
 # downstream step (download, docker env, start) reads. Runs for EVERY
 # inference-capable role, regardless of backend.
 if [ "$OPENMONO_ROLE" != "agent" ]; then
@@ -1166,10 +1231,14 @@ fi
 # what lets a box that previously ran Strata switch back to --model=qwen without
 # the launcher (which reads this file) still trying to route to a Strata server.
 if [ -f "$DOCKER_ENV_FILE" ]; then
-    grep -v -E "^MODEL_NAME=|^MODEL_ALIAS=|^MODEL_MMPROJ=|^OPENMONO_VISION_ENABLED=|^CTX_SIZE=|^INFERENCE_BACKEND=|^INFERENCE_PORT=|^LLAMA_PORT=|^STRATA_PORT=|^LLAMA_UPSTREAM=|^INFERENCE_PARALLEL=|^LLAMA_PARALLEL=|^STRATA_PARALLEL=" "$DOCKER_ENV_FILE" > "${DOCKER_ENV_FILE}.tmp" || true
+    grep -v -E "^MODEL_NAME=|^MODEL_ALIAS=|^MODEL_MMPROJ=|^OPENMONO_VISION_ENABLED=|^CTX_SIZE=|^INFERENCE_BACKEND=|^INFERENCE_PORT=|^LLAMA_PORT=|^STRATA_PORT=|^LLAMA_UPSTREAM=|^INFERENCE_PARALLEL=|^LLAMA_PARALLEL=|^STRATA_PARALLEL=|^GPU_MODE=|^AMD_IGPU_MODE=" "$DOCKER_ENV_FILE" > "${DOCKER_ENV_FILE}.tmp" || true
     mv "${DOCKER_ENV_FILE}.tmp" "$DOCKER_ENV_FILE"
 fi
 printf "INFERENCE_BACKEND=llama\nINFERENCE_PORT=%s\nLLAMA_UPSTREAM=llama-server:7474\nMODEL_NAME=%s\nMODEL_ALIAS=%s\nMODEL_MMPROJ=%s\nCTX_SIZE=%s\nINFERENCE_PARALLEL=%s\n" "${INFERENCE_PORT:-7474}" "$MODEL_NAME" "$MODEL_ALIAS" "${MODEL_MMPROJ:-}" "${_CTX:-$CTX_CPU}" "${PARALLEL_SLOTS:-1}" >> "$DOCKER_ENV_FILE"
+# Record the acceleration mode too — 'openmono upgrade' reads these to pick the
+# llama image flavor (cuda|vulkan|cpu). Without them a Vulkan iGPU box was
+# misread as CPU and its llama-server silently downgraded to the CPU image.
+printf "GPU_MODE=%s\nAMD_IGPU_MODE=%s\n" "${GPU_MODE:-0}" "${AMD_IGPU_MODE:-0}" >> "$DOCKER_ENV_FILE"
 # Mirror the model config into settings.json so it is the single source of
 # truth. `openmono upgrade` (and `openmono start`) re-apply it from here into
 # docker/.env, so a model swap or ctx change survives a git pull + image

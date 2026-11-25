@@ -551,6 +551,22 @@ public sealed class AcpEndpointsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GetModels_normalizes_active_backend_and_model_for_fresh_session()
+    {
+        // A brand-new session has no explicit backend and adopts the config default model;
+        // the menu must still report the EFFECTIVE pair so the extension's model chip renders.
+        var sid = await CreateSessionAsync();
+
+        var res = await _client.GetAsync($"/api/v1/models?session={sid}");
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        var root = doc.RootElement;
+        root.GetProperty("active_backend").GetString().Should().Be(OpenMono.Llm.BackendRegistry.DefaultBackendName);
+        root.GetProperty("active_model").GetString().Should().Be("test-model");
+    }
+
+    [Fact]
     public async Task SetSessionBackend_honors_explicit_model_in_body()
     {
         var sid = await CreateSessionAsync();
@@ -634,6 +650,88 @@ public sealed class AcpEndpointsTests : IAsyncLifetime
     public async Task GetPlans_unknown_session_returns_404()
     {
         var res = await _client.GetAsync("/api/v1/sessions/sess_missing/plans");
+        res.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task PostThinking_sets_level_and_persists()
+    {
+        // test-model has no advertised reasoning by default; make the store's
+        // resolved profile effort-based so /thinking has real levels to set.
+        var cfg = _app.Services.GetRequiredService<AppConfig>();
+        cfg.Llm.ServerReasoning = new OpenMono.Utils.ServerReasoningInfo
+        {
+            EffortLevels = ["low", "medium", "xhigh"],
+            EffortDefaultLevel = "low",
+        };
+
+        var sid = await CreateSessionAsync();
+
+        var res = await _client.PostAsJsonAsync($"/api/v1/sessions/{sid}/thinking", new { level = "medium" });
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("ok").GetBoolean().Should().BeTrue();
+        doc.RootElement.GetProperty("level").GetString().Should().Be("medium");
+        doc.RootElement.GetProperty("enabled").GetBoolean().Should().BeTrue();
+
+        var store = _app.Services.GetRequiredService<AcpSessionStore>();
+        var after = store.TryGet(sid)!;
+        after.State.Meta.ThinkingLevel.Should().Be("medium");
+        after.State.Meta.ThinkingEnabled.Should().BeTrue();
+        // The pipeline bumped the revision (cross-process sync marker).
+        after.State.Meta.Revision.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task PostThinking_cycles_when_no_level_given()
+    {
+        var cfg = _app.Services.GetRequiredService<AppConfig>();
+        cfg.Llm.ServerReasoning = new OpenMono.Utils.ServerReasoningInfo
+        {
+            EffortLevels = ["low", "medium", "xhigh"],
+            EffortDefaultLevel = "low",
+        };
+        var sid = await CreateSessionAsync();
+        var store = _app.Services.GetRequiredService<AcpSessionStore>();
+        store.TryGet(sid)!.State.Meta.ThinkingLevel = "low";
+
+        var res = await _client.PostAsJsonAsync($"/api/v1/sessions/{sid}/thinking", new { });
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("level").GetString().Should().Be("medium");
+    }
+
+    [Fact]
+    public async Task PostThinking_survives_store_recreation()
+    {
+        // The whole point of the change: thinking now persists across process restarts.
+        var cfg = _app.Services.GetRequiredService<AppConfig>();
+        cfg.Llm.ServerReasoning = new OpenMono.Utils.ServerReasoningInfo
+        {
+            EffortLevels = ["low", "medium", "xhigh"],
+            EffortDefaultLevel = "low",
+        };
+        var sid = await CreateSessionAsync();
+        await _client.PostAsJsonAsync($"/api/v1/sessions/{sid}/thinking", new { level = "xhigh" });
+
+        var settings = _app.Services.GetRequiredService<AcpServerSettings>();
+        var freshStore = new AcpSessionStore(cfg, settings, startReaper: false);
+        try
+        {
+            var reloaded = freshStore.TryGet(sid)!;
+            reloaded.State.Meta.ThinkingLevel.Should().Be("xhigh");
+            reloaded.State.Meta.ThinkingEnabled.Should().BeTrue();
+        }
+        finally
+        {
+            freshStore.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task PostThinking_unknown_session_returns_404()
+    {
+        var res = await _client.PostAsJsonAsync("/api/v1/sessions/sess_missing/thinking", new { level = "low" });
         res.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 

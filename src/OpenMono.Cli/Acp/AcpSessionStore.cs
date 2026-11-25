@@ -40,7 +40,13 @@ public sealed class AcpSessionStore : IDisposable
     public string Directory => _dir;
 
     internal ModelReasoningProfile ResolveReasoning(string? modelName)
-        => ModelReasoningProfile.Resolve(modelName, _config.Llm.ServerReasoning);
+        => ModelReasoningProfile.Resolve(modelName, ResolvedServerReasoning(modelName));
+
+    /// <summary>Server-advertised reasoning for a model: capability cache first
+    /// (shared across processes + refreshed on /model switches), falling back to
+    /// the startup probe result on config.Llm.</summary>
+    internal ServerReasoningInfo? ResolvedServerReasoning(string? modelName)
+        => _config.Capabilities.Get(_config.Llm.Endpoint, modelName) ?? _config.Llm.ServerReasoning;
 
     public AcpSession Create(string? model, AppConfig cfg, string? backendName = null)
     {
@@ -74,6 +80,7 @@ public sealed class AcpSessionStore : IDisposable
         state.Meta.ThinkingEnabled = reasoningProfile.DefaultEnabled && reasoningProfile.DefaultLevel != "off";
 
         var session = new AcpSession { State = state, LastActivityAt = now };
+        AttachSettings(session);
         _live[session.Id] = session;
         Save(session);
         return session;
@@ -84,7 +91,11 @@ public sealed class AcpSessionStore : IDisposable
         if (!IsValidId(id)) return null;
 
         if (_live.TryGetValue(id, out var live))
-            return IsExpired(live) ? null : live;
+        {
+            if (IsExpired(live)) return null;
+            RefreshIfDiskNewer(live);
+            return live;
+        }
 
         SessionState? state;
         lock (_ioLock)
@@ -104,9 +115,11 @@ public sealed class AcpSessionStore : IDisposable
         {
             State = state,
             LastActivityAt = state.Messages.Count > 0 ? state.Messages[^1].Timestamp : state.StartedAt,
+            DiskStamp = DiskStampFor(state.Id),
         };
         if (IsExpired(session)) return null;
 
+        AttachSettings(session);
         _live[id] = session;
         return session;
     }
@@ -122,6 +135,7 @@ public sealed class AcpSessionStore : IDisposable
         _live[session.Id] = session;
         lock (_ioLock)
             _sessions.SaveAsync(session.State, CancellationToken.None).GetAwaiter().GetResult();
+        session.DiskStamp = DiskStampFor(session.Id);
     }
 
     public void Delete(string id)
@@ -169,6 +183,102 @@ public sealed class AcpSessionStore : IDisposable
         if (DateTime.UtcNow - session.LastActivityAt <= _ttl) return false;
         Delete(session.Id);
         return true;
+    }
+
+    /// <summary>
+    /// Cross-process freshness: if the session file on disk was written after our
+    /// last write (e.g. a TUI resumed the same session and saved), reload it and
+    /// merge into the live in-memory copy before handing the session out.
+    /// Messages union by content so interleaved writes from both processes are
+    /// preserved; settings resolve by revision via <see cref="SessionMetaMerger"/>.
+    /// </summary>
+    private void RefreshIfDiskNewer(AcpSession live)
+    {
+        var current = DiskStampFor(live.Id);
+        if (current is null) return;
+        if (live.DiskStamp is null) { live.DiskStamp = current; return; }
+        if (current <= live.DiskStamp) return;
+
+        SessionState? loaded;
+        lock (_ioLock)
+            loaded = _sessions.LoadAsync(live.Id, CancellationToken.None).GetAwaiter().GetResult();
+        if (loaded is null) return;
+
+        live.DiskStamp = current;
+
+        var changed = SessionMetaMerger.Merge(live.State, loaded);
+        changed |= UnionMessages(live.State, loaded);
+        if (loaded.Checkpoints.Count > live.State.Checkpoints.Count)
+        {
+            live.State.Checkpoints.Clear();
+            live.State.Checkpoints.AddRange(loaded.Checkpoints);
+            live.State.CheckpointCutoffIndex = loaded.CheckpointCutoffIndex;
+            changed = true;
+        }
+
+        if (changed)
+        {
+            Log.Info($"[ACP] session {live.Id}: merged newer on-disk state (rev {loaded.Meta.Revision} vs live)");
+            live.Settings?.Commit();
+            Save(live);
+        }
+    }
+
+    /// <summary>
+    /// Append messages the live copy is missing. Exact-duplicate detection uses
+    /// role+timestamp+content so messages each process wrote independently are
+    /// not duplicated when both copies are merged.
+    /// </summary>
+    private static bool UnionMessages(SessionState live, SessionState loaded)
+    {
+        static string Key(Message m) =>
+            $"{m.Role}|{m.Timestamp.Ticks}|{m.Content}|{m.ToolCallId}";
+
+        var liveKeys = new HashSet<string>(live.Messages.Select(Key));
+        var added = 0;
+        foreach (var msg in loaded.Messages)
+        {
+            if (liveKeys.Add(Key(msg)))
+            {
+                live.Messages.Add(msg);
+                added++;
+            }
+        }
+        if (added > 0)
+            live.Messages.Sort((a, b) => a.Timestamp.CompareTo(b.Timestamp));
+        return added > 0;
+    }
+
+    /// <summary>mtime of the session file, or null when it doesn't exist.</summary>
+    private DateTime? DiskStampFor(string sessionId)
+    {
+        try
+        {
+            var files = System.IO.Directory.GetFiles(_dir, $"*_{sessionId}.jsonl");
+            if (files.Length == 0) return null;
+            return File.GetLastWriteTimeUtc(files[0]);
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Wire the single settings pipeline for a session: every mutation clamps to
+    /// server-advertised capabilities, bumps the revision, write-throughs to disk
+    /// (via this store, so DiskStamp stays accurate), and broadcasts a
+    /// state_changed event to the session's current SSE sink.
+    /// </summary>
+    private void AttachSettings(AcpSession session)
+    {
+        if (session.Settings is not null) return;
+        session.Settings = SessionSettings.Attach(
+            session.State,
+            "acp",
+            persist: state => Task.Run(() => Save(session)),
+            reasoningProfile: () => ResolveReasoning(session.State.Model),
+            onChanged: args => session.CurrentEventSink?.Invoke("state_changed", args));
     }
 
     private void MigrateLegacyBlobs(AppConfig cfg, AcpServerSettings settings)

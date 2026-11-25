@@ -31,7 +31,7 @@ public interface IAcpEventSink
 
     Task OnCompactionAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null, string? reason = null, int messagesBefore = 0, int messagesAfter = 0, int tokensBefore = 0, int tokensAfter = 0);
 
-    Task OnCheckpointAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null, string? trigger = null, int messagesKept = 0);
+    Task OnCheckpointAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null, string? trigger = null, int messagesKept = 0, int tokensAfter = 0);
 
     Task OnCheckpointStartedAsync(string trigger, int promptTokens);
 

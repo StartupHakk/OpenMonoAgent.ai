@@ -144,6 +144,14 @@ sessions can carry different profiles at once.
   (or `{ "profile": null }` for pass-through). Returns
   `{ ok, git_profile, error? }`; an unknown name is `ok:false` with a readable
   `error`, matching the `/host` endpoint's guidance style.
+- **VS Code / Cursor extension** — **Menu → Git** opens a profiles page: every
+  configured profile (type/host/identity badges), a **HOST** row for
+  pass-through, and the profile the session is on marked **ACTIVE**. Clicking a
+  row hot-swaps that session — the editor equivalent of `/git <name>`. It reads
+  profiles from `GET /api/v1/git`, which returns
+  `{ profiles: [{ name, type, host?, user?, email?, has_credential }], default }`
+  — never token values, env-var names, or key paths. Creating profiles stays
+  CLI-side (the `/git add` wizard or hand-edited settings.json).
 
 The TUI selection is what `/git` writes; ACP sessions start from the profile
 resolved at startup (`OPENMONO_GIT_PROFILE` / `git.default`) and the endpoint

@@ -63,4 +63,26 @@ public sealed class SessionMetadata
     /// has seen the escalation.
     /// </summary>
     public bool AwaitingEscalationAck { get; set; }
+
+    /// <summary>
+    /// Monotonic revision of the mutable session settings (thinking, host mode,
+    /// auto-approve, plan mode, git profile, backend). Bumped by
+    /// <see cref="SessionSettings"/> on every mutation and persisted in the session
+    /// header. Used by <see cref="SessionMetaMerger"/> to resolve cross-process
+    /// conflicts: the side with the higher revision wins. Zero means "never mutated
+    /// through the settings pipeline" (legacy or pre-bump session file).
+    /// </summary>
+    public int Revision { get; set; }
+
+    /// <summary>Which writer last bumped <see cref="Revision"> — "tui" or "acp".
+    /// Informational (shown in diagnostics); merge decisions use Revision alone.</summary>
+    public string? LastWriter { get; set; }
+
+    /// <summary>Bump the settings revision. Called by every <see cref="SessionSettings"/>
+    /// mutator right before persist so the new value and its revision land in the same write.</summary>
+    public void BumpRevision(string writer)
+    {
+        Revision++;
+        LastWriter = writer;
+    }
 }

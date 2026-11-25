@@ -119,6 +119,17 @@ openmono setup --cpu     # force CPU
 ```
 
 > [!NOTE]
+> On an AMD Ryzen 9 7940HS box the CPU-vs-iGPU choice is its own prompt during
+> setup (**1** = CPU only on stock llama.cpp, **2** = Radeon 780M via Vulkan —
+> the iGPU path modifies the kernel config and needs a reboot). The choice is
+> remembered across setup re-runs; `openmono setup --cpu` forces true CPU mode
+> and overrides a saved iGPU choice. Qwen on that row then runs on the CPU, not
+> on the 780M — the `[AMD iGPU / Vulkan]` label only appears when iGPU mode is
+> active. `openmono upgrade` detects the running flavor (CUDA / Vulkan / CPU)
+> from `docker/.env` (`GPU_MODE` / `AMD_IGPU_MODE`) and keeps the box on its
+> image — it never silently swaps a Vulkan box to CPU or back.
+
+> [!NOTE]
 > You may see a `.NET SDK not installed` warning at the start of Phase 2 — safe to ignore. The SDK was just installed but the current shell session hasn't loaded it yet.
 
 > [!TIP]

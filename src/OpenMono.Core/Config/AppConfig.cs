@@ -57,6 +57,14 @@ public sealed class AppConfig
     public string? HostWorkingDirectory { get; set; }
     public string DataDirectory { get; set; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".openmono");
+
+    private ReasoningCapabilityCache? _capabilities;
+
+    /// <summary>Shared (endpoint, model) → advertised reasoning capabilities cache.
+    /// Fed by the startup /props probe; consulted by profile resolution, /model
+    /// switches and session loads so both processes share one probe per model.</summary>
+    public ReasoningCapabilityCache Capabilities
+        => _capabilities ??= new ReasoningCapabilityCache(DataDirectory);
 }
 
 public sealed class ProviderSettings

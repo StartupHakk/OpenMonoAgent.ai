@@ -89,7 +89,8 @@
               "mmproj": "mmproj-qwen3.6-35B-A3B-F16.gguf",
               "mmproj_url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/mmproj-F16.gguf",
               "ctx": 196608, "kv": "q8_0", "accuracy": "standard",
-              "label": "Qwen3.6-35B-A3B (~17.6GB) [CPU]"
+              "label": "Qwen3.6-35B-A3B (~17.6GB) [CPU]",
+              "label_igpu": "Qwen3.6-35B-A3B (~17.6GB) [AMD iGPU / Vulkan]"
             }
           }
         },
@@ -139,7 +140,9 @@
       "menu": {
         "label": "Ternary-Bonsai-2-27B PQ2_0 (~7.2GB)",
         "tag": "Prism CUDA/Vulkan",
-        "line": "Ternary-Bonsai-2-27B PQ2_0 (~7.2GB) [Prism CUDA/Vulkan]"
+        "line": "Ternary-Bonsai-2-27B PQ2_0 (~7.2GB) [Prism CUDA/Vulkan]",
+        "line_amd_igpu": "Ternary-Bonsai-2-27B PQ2_0 (~7.2GB) [Prism Vulkan (AMD iGPU, shared RAM)]",
+        "line_macos": "Ternary-Bonsai-2-27B PQ2_0 (~7.2GB) [Metal]"
       },
       "files": {
         "name": "Ternary-Bonsai-2-27B-PQ2_0.gguf",
@@ -176,7 +179,9 @@
       "menu": {
         "label": "Ternary-Bonsai-2-27B PTQ1_0 (~5.9GB)",
         "tag": "tightest VRAM",
-        "line": "Ternary-Bonsai-2-27B PTQ1_0 (~5.9GB) [tightest VRAM]"
+        "line": "Ternary-Bonsai-2-27B PTQ1_0 (~5.9GB) [tightest VRAM]",
+        "line_amd_igpu": "Ternary-Bonsai-2-27B PTQ1_0 (~5.9GB) [Prism Vulkan (AMD iGPU, tightest memory)]",
+        "line_macos": "Ternary-Bonsai-2-27B PTQ1_0 (~5.9GB) [Metal, tightest memory]"
       },
       "files": {
         "name": "Ternary-Bonsai-2-27B-PTQ1_0.gguf",

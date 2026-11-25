@@ -9,10 +9,10 @@ public sealed class ModeCommand : ICommand
     public string Description => "Toggle between Plan mode (read-only) and Build mode (execute actions)";
     public CommandType Type => CommandType.Local;
 
-    public Task ExecuteAsync(string[] args, CommandContext context, CancellationToken ct)
+    public async Task ExecuteAsync(string[] args, CommandContext context, CancellationToken ct)
     {
         var session = context.Session;
-        session.Meta.PlanMode = !session.Meta.PlanMode;
+        await (session.Settings ?? Attach(context)).SetPlanModeAsync(!session.Meta.PlanMode, ct);
         var modeStr = session.Meta.PlanMode ? "PLAN" : "BUILD";
         Log.Info($"<---SWITCHED-TO-{modeStr}-MODE--->");
 
@@ -28,6 +28,9 @@ public sealed class ModeCommand : ICommand
         else
             context.Renderer.WriteInfo("✓ Switched to Build mode — all tools are available (including FileWrite, Edit, etc.)");
 
-        return Task.CompletedTask;
+        return;
     }
+
+    private static OpenMono.Session.SessionSettings Attach(CommandContext context)
+        => context.Session.Settings = OpenMono.Session.SessionSettings.Attach(context.Session, "tui");
 }

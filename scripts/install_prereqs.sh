@@ -56,9 +56,15 @@ if [[ -z "$GPU_MODE" && -f "$HOME/.openmono/.setup_prefs" ]]; then
 fi
 export GPU_MODE
 
-# AMD iGPU mode: restored from prefs or set by user prompt
+# AMD iGPU mode: restored from prefs or set by user prompt. --cpu forces true
+# CPU mode even when a previous run saved iGPU mode or AMD_IGPU_MODE=1 is in the
+# environment: without this, 'openmono setup --cpu' on a 7940HS box silently kept
+# the Radeon 780M (Vulkan) stack because GPU_MODE is the NVIDIA flag and stays 0
+# on the AMD path anyway.
 AMD_IGPU_MODE="${AMD_IGPU_MODE:-0}"
-if [[ "$AMD_IGPU_MODE" = "0" && -f "$HOME/.openmono/.setup_prefs" ]]; then
+if [[ -n "${OPENMONO_CPU:-}" ]]; then
+    AMD_IGPU_MODE=0
+elif [[ "$AMD_IGPU_MODE" = "0" && -f "$HOME/.openmono/.setup_prefs" ]]; then
     _saved_amd=$(grep '^AMD_IGPU_MODE=' "$HOME/.openmono/.setup_prefs" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
     if [[ "$_saved_amd" = "1" ]]; then
         AMD_IGPU_MODE=1
@@ -269,7 +275,9 @@ elif [ "$HAS_NVIDIA_HW" = true ] || command -v nvidia-smi &>/dev/null; then
 elif [[ "$HAS_AMD_780M" = true && "${OPENMONO_ROLE:-}" != "agent" ]]; then
     # AMD Ryzen 9 7940HS + Radeon 780M iGPU path
     GPU_MODE=0  # Keep GPU_MODE=0 so NVIDIA stack is skipped; use AMD_IGPU_MODE for iGPU selection
-    if [[ "${_AMD_IGPU_MODE_RESTORED:-false}" == "true" ]]; then
+    if [[ -n "${OPENMONO_CPU:-}" ]]; then
+        info "CPU mode requested (--cpu) — skipping Radeon 780M iGPU"
+    elif [[ "${_AMD_IGPU_MODE_RESTORED:-false}" == "true" ]]; then
         info "Restoring saved iGPU mode from previous session"
     elif [[ "$AMD_IGPU_MODE" = "1" ]]; then
         # Already set via env var

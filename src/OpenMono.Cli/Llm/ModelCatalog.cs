@@ -138,6 +138,57 @@ public static class ModelCatalog
     }
 
     /// <summary>
+    /// Live per-slot context windows reported by a llama.cpp-style backend's <c>/slots</c>
+    /// endpoint. Fetched fresh on every call — deliberately never cached — so the Models tab
+    /// shows the REAL context size one slot allows, and updates immediately if the server is
+    /// restarted with a different size. Returns an empty list when the backend does not serve
+    /// <c>/slots</c> (non-llama backends) or the response can't be parsed, so callers can show
+    /// "unknown" rather than a guessed number.
+    /// </summary>
+    public static async Task<IReadOnlyList<(string? Model, int NCtx)>> ProbeContextWindowsAsync(
+        string endpoint, string? apiKey, CancellationToken ct)
+    {
+        var results = new List<(string? Model, int NCtx)>();
+        try
+        {
+            using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(4) };
+            if (!string.IsNullOrWhiteSpace(apiKey))
+                http.DefaultRequestHeaders.Authorization =
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+            var baseUrl = endpoint.TrimEnd('/');
+            var json = await http.GetStringAsync($"{baseUrl}/slots", ct);
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array)
+                return results;
+            foreach (var slot in doc.RootElement.EnumerateArray())
+            {
+                if (slot.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
+                if (!slot.TryGetProperty("n_ctx", out var nCtx)
+                    || !nCtx.TryGetInt32(out var ctx)
+                    || ctx <= 0)
+                    continue;
+                string? model = null;
+                foreach (var field in new[] { "model", "model_path", "model_alias" })
+                {
+                    if (slot.TryGetProperty(field, out var mEl)
+                        && mEl.ValueKind == System.Text.Json.JsonValueKind.String
+                        && !string.IsNullOrWhiteSpace(mEl.GetString()))
+                    {
+                        model = mEl.GetString();
+                        break;
+                    }
+                }
+                results.Add((model, ctx));
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Debug($"ModelCatalog: /slots unavailable ({ex.GetType().Name})");
+        }
+        return results;
+    }
+
+    /// <summary>
     /// Raw TCP connect to the endpoint's host:port (HTTPS-aware default port).
     /// Used as a reachability fallback when /v1/models is absent.
     /// </summary>

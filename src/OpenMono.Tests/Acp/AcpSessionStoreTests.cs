@@ -442,6 +442,54 @@ public sealed class AcpSessionStoreTests : IDisposable
         session.Store.TryResolve("which algorithm?").Should().BeNull();
     }
 
+    [Fact]
+    public void TryGet_DiskNewerThanLive_MergesNewerSettingsIntoCache()
+    {
+        // Simulates the cross-process divergence defect: a long-lived ACP store
+        // holds a live session, while a *second* process (here, a second store
+        // over the same data dir) mutates + saves newer settings. The next
+        // TryGet on the first store must reload the newer on-disk state, not
+        // hand back the stale cached copy.
+        using var acp = new AcpSessionStore(_cfg, _settings, startReaper: false);
+        var session = acp.Create(model: "test-model", _cfg);
+        var id = session.Id;
+
+        // Second "process": load the same session, change thinking, bump revision, save.
+        var sessionFile = Directory.GetFiles(_sessionsDir, $"*_{id}.jsonl")[0];
+        using (var other = new AcpSessionStore(_cfg, _settings, startReaper: false))
+        {
+            var reloaded = other.TryGet(id)!;
+            reloaded.State.Meta.ThinkingLevel = "medium";
+            reloaded.State.Meta.ThinkingEnabled = true;
+            reloaded.State.Meta.BumpRevision("tui");
+            other.Save(reloaded);
+        }
+
+        // Filesystem mtimes have 1s granularity on some platforms — force a
+        // strictly-newer stamp so the freshness probe fires deterministically.
+        File.SetLastWriteTimeUtc(sessionFile, DateTime.UtcNow.AddSeconds(2));
+
+        var after = acp.TryGet(id)!;
+
+        after.State.Meta.ThinkingLevel.Should().Be("medium");
+        after.State.Meta.ThinkingEnabled.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task TryGet_CacheFresherThanDisk_ReturnsCachedUnchanged()
+    {
+        using var acp = new AcpSessionStore(_cfg, _settings, startReaper: false);
+        var session = acp.Create(model: "test-model", _cfg);
+        await session.Settings!.SetPlanModeAsync(false);
+        var id = session.Id;
+
+        // Even if an old file lingers, a live copy with a fresh stamp is returned
+        // without a spurious reload overwriting the newer in-memory value.
+        var after = acp.TryGet(id)!;
+        ReferenceEquals(after, session).Should().BeTrue();
+        after.PlanMode.Should().BeFalse();
+    }
+
     private static AcpSession NewBareSession() => new()
     {
         State = new SessionState

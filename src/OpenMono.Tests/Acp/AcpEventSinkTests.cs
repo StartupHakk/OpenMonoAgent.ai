@@ -375,7 +375,7 @@ public sealed class AcpEventSinkTests
         { Compactions.Add((messagesCompressed, durationSeconds, checkpointIndex, reason, messagesBefore, messagesAfter, tokensBefore, tokensAfter)); return Task.CompletedTask; }
         public Task OnCheckpointStartedAsync(string trigger, int promptTokens)
         { CheckpointStarted.Add((trigger, promptTokens)); return Task.CompletedTask; }
-        public Task OnCheckpointAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null, string? trigger = null, int messagesKept = 0)
+        public Task OnCheckpointAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null, string? trigger = null, int messagesKept = 0, int tokensAfter = 0)
         { Checkpoints.Add((messagesCompressed, checkpointIndex, trigger, messagesKept)); return Task.CompletedTask; }
         public Task OnUsageAsync(int i, int o, int t, int ctx, int win, double genTps, double avgTps) { UsageEvents.Add((i, o, t, ctx, win)); return Task.CompletedTask; }
         public Task OnToolResultPreviewAsync(string callId, string preview, string? artifactId)

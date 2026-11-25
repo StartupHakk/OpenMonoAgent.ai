@@ -50,6 +50,13 @@ public sealed class AcpTurnRunner : IAcpEventSink
     private readonly LlmClientPool _clientPool;
     private string? _cachedSystemPrompt;
 
+    /// <summary>The session's single settings pipeline (attached by the store).</summary>
+    private OpenMono.Session.SessionSettings Settings => _acpSession.Settings
+        ??= OpenMono.Session.SessionSettings.Attach(
+            _acpSession.State, "acp",
+            reasoningProfile: () => ModelReasoningProfile.Resolve(
+                _acpSession.State.Model, _loopFactory.Config.Llm.ServerReasoning));
+
     public AcpTurnRunner(
         AcpSession session,
         SseWriter writer,
@@ -108,6 +115,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
     public async Task RunUserMessageAsync(string userText, CancellationToken ct)
     {
+        await using var _ = new EventSinkScope(_acpSession, _writer);
         var trimmed = userText.TrimStart();
         if (trimmed.StartsWith('/') && await TryHandleSlashCommandAsync(trimmed.Trim(), ct))
             return;
@@ -116,10 +124,32 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
     public async Task RunUserMessageAsync(string userText, IReadOnlyList<ContentPart>? imageParts, CancellationToken ct)
     {
+        await using var _ = new EventSinkScope(_acpSession, _writer);
         var trimmed = userText.TrimStart();
         if (trimmed.StartsWith('/') && await TryHandleSlashCommandAsync(trimmed.Trim(), ct))
             return;
         await SubmitUserMessageAsync(userText, imageParts, ct);
+    }
+
+    /// <summary>
+    /// Publishes this turn's SSE writer as the session's broadcast sink for the
+    /// turn's duration, so out-of-turn state mutations (REST toggles from the
+    /// extension, or another process's edits surfaced by the store's disk
+    /// refresh) land on whichever stream is currently connected.
+    /// </summary>
+    private sealed class EventSinkScope : IAsyncDisposable
+    {
+        private readonly AcpSession _session;
+        public EventSinkScope(AcpSession session, SseWriter writer)
+        {
+            _session = session;
+            session.CurrentEventSink = (evt, payload) => writer.WriteEventAsync(evt, payload);
+        }
+        public ValueTask DisposeAsync()
+        {
+            _session.CurrentEventSink = null;
+            return ValueTask.CompletedTask;
+        }
     }
 
     private static string SlashHelpText() =>
@@ -148,7 +178,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
                 return true;
 
             case "/mode":
-                _acpSession.PlanMode = !_acpSession.PlanMode;
+                await Settings.SetPlanModeAsync(!_acpSession.PlanMode, ct);
                 await OnModeChangedAsync(_acpSession.PlanMode ? "plan" : "build");
                 await OnTextDeltaAsync(_acpSession.PlanMode
                     ? "Switched to **Plan mode** — read-only. I'll investigate and propose a plan before changes."
@@ -157,7 +187,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
                 return true;
 
             case "/build":
-                _acpSession.PlanMode = false;
+                await Settings.SetPlanModeAsync(false, ct);
                 await OnModeChangedAsync("build");
                 await OnTextDeltaAsync("Switched to **Build mode** — I can make changes now.");
                 await _writer.WriteEventAsync("done", new { });
@@ -165,38 +195,17 @@ public sealed class AcpTurnRunner : IAcpEventSink
 
             case "/think":
             {
-                var profile = ModelReasoningProfile.Resolve(_loopFactory.Config.Llm.Model, _loopFactory.Config.Llm.ServerReasoning);
-                if (profile.Kind == ReasoningKind.EffortLevels)
-                {
-                    var levels = profile.Levels;
-                    var current = _acpSession.State.Meta.ThinkingLevel ?? "off";
-                    var idx = Array.IndexOf(levels, current);
-                    if (idx < 0) idx = 0;
-                    var nextIdx = !string.IsNullOrEmpty(args)
-                        ? ThinkingLevels.Resolve(args, levels)
-                        : (idx + 1) % levels.Length;
-                    if (nextIdx < 0)
-                    {
-                        await OnTextDeltaAsync($"Unknown level '{args}'. Use: {string.Join(", ", levels)}");
-                    }
-                    else
-                    {
-                        var level = levels[nextIdx];
-                        _acpSession.State.Meta.ThinkingLevel = level;
-                        _acpSession.State.Meta.ThinkingEnabled = level != "off";
-                        await OnTextDeltaAsync(level == "off"
-                            ? "**Thinking: OFF** — fast direct responses"
-                            : $"**Thinking: {level.ToUpperInvariant()}** — {ThinkingLevels.Describe(level)}");
-                        await EmitThinkingChangedAsync();
-                    }
-                }
+                var result = !string.IsNullOrEmpty(args)
+                    ? await Settings.SetThinkingAsync(args, ct)
+                    : await Settings.CycleThinkingAsync(ct: ct);
+                if (!result.Applied && result.Error is not null)
+                    await OnTextDeltaAsync(result.Error);
                 else
                 {
-                    _acpSession.State.Meta.ThinkingEnabled = !_acpSession.State.Meta.ThinkingEnabled;
-                    _acpSession.State.Meta.ThinkingLevel = _acpSession.State.Meta.ThinkingEnabled ? "on" : "off";
-                    await OnTextDeltaAsync(_acpSession.State.Meta.ThinkingEnabled
-                        ? "**Thinking mode ON** — I'll reason step-by-step before responding (uses extra context)."
-                        : "**Thinking mode OFF** — I'll respond directly.");
+                    var level = _acpSession.State.Meta.ThinkingLevel;
+                    await OnTextDeltaAsync(level == "off"
+                        ? "**Thinking: OFF** — fast direct responses"
+                        : $"**Thinking: {(level ?? "off").ToUpperInvariant()}** — {ThinkingLevels.Describe(level ?? "off")}");
                     await EmitThinkingChangedAsync();
                 }
                 await _writer.WriteEventAsync("done", new { });
@@ -341,6 +350,20 @@ public sealed class AcpTurnRunner : IAcpEventSink
         _acpSession.TurnCount++;
         Log.Info($"[OMA_TURN] Session {_acpSession.Id} turn {_acpSession.TurnCount}: Processing message with {_acpSession.Messages.Count} total messages (first is System: {_acpSession.Messages[0].Role == MessageRole.System})");
         await DriveLoopAsync(ct);
+    }
+
+    /// <summary>
+    /// Label identifying the model for the current turn, matching the webview
+    /// chip's format ("backend · model") so a history divider reads the same as
+    /// the live one. Null when neither backend nor model is set.
+    /// </summary>
+    private string? ModelLabelForHistory()
+    {
+        var backend = _acpSession.State.ActiveBackend;
+        var model = _acpSession.State.Model;
+        if (!string.IsNullOrWhiteSpace(backend) && !string.IsNullOrWhiteSpace(model))
+            return $"{backend} · {model}";
+        return string.IsNullOrWhiteSpace(model) ? null : model;
     }
 
     /// <summary>
@@ -1060,7 +1083,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
             prompt_tokens = promptTokens,
         });
 
-    public Task OnCheckpointAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null, string? trigger = null, int messagesKept = 0)
+    public Task OnCheckpointAsync(int messagesCompressed, double durationSeconds, int checkpointIndex, string? summaryText = null, string? trigger = null, int messagesKept = 0, int tokensAfter = 0)
         => _writer.WriteEventAsync("checkpoint", new
         {
             kind = "checkpoint",
@@ -1072,6 +1095,7 @@ public sealed class AcpTurnRunner : IAcpEventSink
             duration_seconds = durationSeconds,
             checkpoint_index = checkpointIndex,
             summary_text = summaryText,
+            tokens_after = tokensAfter,
         });
 
     public Task OnUsageAsync(int inputTokens, int outputTokens, int totalTokens, int contextTokens, int contextWindow, double genTps, double avgTps)

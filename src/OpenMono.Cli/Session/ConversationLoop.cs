@@ -1144,19 +1144,29 @@ public sealed class ConversationLoop : IDisposable
 
     private async Task RenderCheckpoint(CheckpointEntry entry, TimeSpan elapsed, string trigger)
     {
+        var contextWindow = _checkpointer.BuildContextWindow(_session);
         var report = new CheckpointReport
         {
             CheckpointIndex = _session.Checkpoints.Count,
             MessagesCompressed = entry.MessagesCompressed,
-            MessagesKept = _checkpointer.BuildContextWindow(_session).Count,
+            MessagesKept = contextWindow.Count,
             Duration = elapsed,
             Trigger = trigger,
             SummaryText = entry.Summary,
         };
         report.RenderTo(_output.WriteInfo);
 
+        // Reflect the new (smaller) occupancy immediately, mirroring the compaction path —
+        // otherwise the pre-checkpoint number stays on the context ring until the next real
+        // usage event arrives (which can take a long time over a slow relay).
+        var tokensAfter = TokenEstimate.EstimatePayload(contextWindow, _tools.BuildToolDefinitionsFor(_tools.All.Select(t => t.Name)), ActiveModel);
+        _session.Meta.TokenTracker?.SetEstimatedPromptTokens(tokensAfter);
+
         if (_sink is not null)
-            await _sink.OnCheckpointAsync(entry.MessagesCompressed, elapsed.TotalSeconds, report.CheckpointIndex, entry.Summary, trigger, report.MessagesKept);
+        {
+            await _sink.OnCheckpointAsync(entry.MessagesCompressed, elapsed.TotalSeconds, report.CheckpointIndex, entry.Summary, trigger, report.MessagesKept, tokensAfter);
+            await EmitUsageAsync();
+        }
     }
 
     private async Task RunCompactionAsync(int promptTokens, string? customInstructions, CancellationToken ct, string reason)

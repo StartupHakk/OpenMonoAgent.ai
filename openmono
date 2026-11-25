@@ -790,7 +790,7 @@ EOF
                 if [[ "$NATIVE_INFERENCE" == "true" ]]; then
                     echo "  mode              : Metal GPU (native llama.cpp)"
                 else
-                    echo "  mode              : $([ "${GPU_MODE:-0}" = "1" ] && echo GPU || echo CPU)"
+                    echo "  mode              : $([ "${GPU_MODE:-0}" = "1" ] && echo GPU || { [ "${AMD_IGPU_MODE:-0}" = "1" ] && echo "AMD iGPU (Vulkan)" || echo CPU; })"
                 fi
             fi
             echo ""
@@ -2286,6 +2286,21 @@ _om_upgrade_llama_flavor() {
         printf 'cuda'
     elif grep -qE '^(AMD_IGPU_MODE|VULKAN_MODE)=1' "$REPO_DIR/docker/.env" 2>/dev/null; then
         printf 'vulkan'
+    elif ! grep -qE '^(GPU_MODE|AMD_IGPU_MODE|VULKAN_MODE)=' "$REPO_DIR/docker/.env" 2>/dev/null; then
+        # Boxes installed before install.sh recorded GPU_MODE/AMD_IGPU_MODE in
+        # docker/.env: infer the flavor from the image actually running (or the
+        # image baked into the override) instead of assuming CPU — otherwise a
+        # Vulkan iGPU or CUDA box is silently downgraded to the CPU image.
+        local cur_img
+        cur_img="$(docker ps -a --filter "name=llama-server" --format '{{.Image}}' 2>/dev/null | head -1 || true)"
+        if [[ -z "$cur_img" ]]; then
+            cur_img="$(grep -oE 'image: [^ ]*llama[^ ]*' "$REPO_DIR/docker/docker-compose.override.yml" 2>/dev/null | head -1 | sed 's/^image: //' || true)"
+        fi
+        case "$cur_img" in
+            *cuda*)    printf 'cuda' ;;
+            *vulkan*)  printf 'vulkan' ;;
+            *)         printf 'cpu' ;;
+        esac
     else
         printf 'cpu'
     fi

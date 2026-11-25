@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using OpenMono.Config;
+using OpenMono.Cli.Git;
 using OpenMono.HostBridge;
 using OpenMono.Llm;
 using OpenMono.Session;
@@ -30,6 +31,8 @@ public static class AcpEndpoints
         app.MapPost("/api/v1/sessions/{id}/turn", PostTurn);
         app.MapPost("/api/v1/sessions/{id}/host", ToggleHost);
         app.MapPost("/api/v1/sessions/{id}/git", SetGit);
+        app.MapPost("/api/v1/sessions/{id}/thinking", SetThinking);
+        app.MapGet("/api/v1/git", GetGitProfiles);
         app.MapDelete("/api/v1/sessions/{id}", DeleteSession);
 
         app.MapGet("/api/v1/sessions/{id}/diffs", GetDiffs);
@@ -224,7 +227,7 @@ public static class AcpEndpoints
         return ordered;
     }
 
-    private static IResult GetSession(string id, AcpSessionStore store)
+    private static IResult GetSession(string id, AcpSessionStore store, AppConfig config)
     {
         var session = store.TryGet(id);
         if (session is null) return Results.NotFound();
@@ -245,6 +248,7 @@ public static class AcpEndpoints
             session_id = session.Id,
             model = session.Model,
             active_backend = session.State.ActiveBackend,
+            git_profile = GitProfileSelection.Resolve(config.Git, session.State).ProfileName,
             started_at = session.StartedAt.ToString("o"),
             turn_count = session.TurnCount,
             plan_mode = session.PlanMode,
@@ -456,11 +460,48 @@ public static class AcpEndpoints
         if (error is not null)
             return Results.Ok(new { ok = false, git_profile = (string?)null, error });
 
-        session.State.Meta.GitProfileName = profileName;
-        session.State.Meta.GitProfileTouched = true;
-        store.Save(session);
+        await (session.Settings ?? AcpSettings(session, store))
+            .SetGitProfileAsync(profileName, touched: true, ct);
         Log.Info($"[OMA_MODE] git auth: session={id} profile={profileName ?? "(host pass-through)"}");
         return Results.Ok(new { ok = true, git_profile = (string?)profileName });
+    }
+
+    /// <summary>The session's settings pipeline (normally pre-attached by the store).</summary>
+    internal static OpenMono.Session.SessionSettings AcpSettings(AcpSession session, AcpSessionStore store)
+        => session.Settings ??= OpenMono.Session.SessionSettings.Attach(
+            session.State, "acp", persist: _ => Task.Run(() => store.Save(session)),
+            reasoningProfile: () => store.ResolveReasoning(session.State.Model));
+
+    /// <summary>
+    /// Lists the configured git auth profiles for the extension's git config page.
+    /// Never exposes secret material: token values, token env-var <em>names</em>, and
+    /// ssh key paths are all omitted — only the display fields the picker needs.
+    /// Wire contract: 200 with <c>{ profiles: [{ name, type, host?, user?, email?,
+    /// has_credential }], default }</c>.
+    /// </summary>
+    private static IResult GetGitProfiles(AppConfig config)
+    {
+        var list = config.Git.Profiles
+            .Select(kv =>
+            {
+                var p = kv.Value;
+                var hasCred = p.Type == "ssh"
+                    ? !string.IsNullOrWhiteSpace(p.SshKey)
+                    : !string.IsNullOrWhiteSpace(p.Token) || !string.IsNullOrWhiteSpace(p.TokenEnv);
+                return new
+                {
+                    name = kv.Key,
+                    type = p.Type,
+                    host = p.Type == "https" ? p.Host : null,
+                    user = p.User,
+                    email = p.Email,
+                    has_credential = hasCred,
+                };
+            })
+            .OrderBy(p => p.name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return Results.Ok(new { profiles = list, @default = config.Git.Default });
     }
 
 
@@ -795,6 +836,14 @@ public static class AcpEndpoints
         var probes = await ModelCatalog.ProbeAsync(
             backends.Select(b => (b.Name, b.Endpoint, registry.GetKey(b.Name))), ct);
 
+        // Live per-slot context windows (llama.cpp-style /slots). Fetched fresh here — never
+        // cached — so the Models tab always shows the REAL context size one slot allows, and a
+        // llama-server restart with a different --ctx-size shows up on the next tab load.
+        var ctxByBackend = (await Task.WhenAll(backends.Select(async b => (b.Name,
+            Slots: await ModelCatalog.ProbeContextWindowsAsync(
+                b.Endpoint, registry.GetKey(b.Name), ct)))))
+            .ToDictionary(x => x.Name, x => x.Slots, StringComparer.OrdinalIgnoreCase);
+
         var activeBackend = string.IsNullOrWhiteSpace(session.State.ActiveBackend)
             ? BackendRegistry.DefaultBackendName
             : session.State.ActiveBackend;
@@ -836,19 +885,54 @@ public static class AcpEndpoints
                     has_key = registry.HasKey(b.Name),
                     is_default = isDefault,
                     rendered,
+                    context_window = ResolveContextWindow(
+                        ctxByBackend.GetValueOrDefault(b.Name), model),
                 });
             }
         }
 
+        var defaultModel = registry.Get(registry.DefaultName)?.DefaultModel ?? config.Llm.Model;
+
         return Results.Ok(new
         {
             session_id = session.Id,
-            active_backend = session.State.ActiveBackend,
-            active_model = session.State.Model,
+            // Report the EFFECTIVE backend/model, not the raw (possibly unset) session fields —
+            // a fresh session has neither, and the extension hides the model chip when both
+            // arrive null, so the "Model:" card vanished until the first explicit pick.
+            active_backend = activeBackend,
+            active_model = string.IsNullOrWhiteSpace(session.State.Model) ? defaultModel : session.State.Model,
             default_backend = registry.DefaultName,
-            default_model = registry.Get(registry.DefaultName)?.DefaultModel ?? config.Llm.Model,
+            default_model = defaultModel,
             models = rows,
         });
+    }
+
+    /// <summary>
+    /// Picks the context size to show for one Models-tab row. The number comes straight from
+    /// the backend's live <c>/slots</c> response (<c>n_ctx</c> per slot) — never a config value
+    /// or a model-name guess. Null means the backend doesn't report it (no <c>/slots</c>), so
+    /// the UI shows "unknown" instead of a fabricated size.
+    /// </summary>
+    private static int? ResolveContextWindow(
+        IReadOnlyList<(string? Model, int NCtx)>? slots, string? model)
+    {
+        if (slots is null || slots.Count == 0) return null;
+        // Slot model fields usually carry the .gguf file path; match case-insensitively by
+        // containment in either direction ("qwen3" ⊂ "/models/qwen3-30b.gguf" and back).
+        if (!string.IsNullOrWhiteSpace(model))
+        {
+            foreach (var (slotModel, nCtx) in slots)
+            {
+                if (nCtx > 0 && slotModel is not null
+                    && (slotModel.Contains(model, StringComparison.OrdinalIgnoreCase)
+                        || model.Contains(slotModel, StringComparison.OrdinalIgnoreCase)))
+                    return nCtx;
+            }
+        }
+        // Typical single-model server: slots carry no model field. If every slot agrees, that
+        // is the size one slot allows; if they disagree there is no honest single number.
+        var distinct = slots.Select(s => s.NCtx).Distinct().ToList();
+        return distinct.Count == 1 ? distinct[0] : null;
     }
 
     /// <summary>
@@ -1004,6 +1088,7 @@ public static class AcpEndpoints
         HttpContext ctx,
         string id,
         AcpSessionStore store,
+        AppConfig config,
         BackendRegistry registry,
         LlmClientPool clientPool,
         CancellationToken ct)
@@ -1056,15 +1141,52 @@ public static class AcpEndpoints
 
         clientPool.Invalidate(name);
 
-        session.State.ActiveBackend = name;
+        // Route backend + model through the settings pipeline: bumps the header
+        // revision, write-throughs, and broadcasts state_changed to the live stream.
+        var settings = session.Settings ?? AcpSettings(session, store);
+        await settings.SetBackendAsync(name, ct);
+
         // An explicit model from the request wins (extension model picker); otherwise
         // adopt the backend's default model only if the session has no explicit model.
-        if (!string.IsNullOrWhiteSpace(requestedModel))
-            session.State.Model = requestedModel;
-        else if (string.IsNullOrWhiteSpace(session.State.Model))
-            session.State.Model = def.DefaultModel;
+        var newModel = !string.IsNullOrWhiteSpace(requestedModel)
+            ? requestedModel
+            : (string.IsNullOrWhiteSpace(session.State.Model) ? def.DefaultModel : session.State.Model);
+        if (!string.IsNullOrWhiteSpace(newModel) &&
+            !string.Equals(newModel, session.State.Model, StringComparison.OrdinalIgnoreCase))
+            await settings.SetModelAsync(newModel, ct);
+        else
+            session.State.Model = newModel;
 
-        store.Save(session);
+        // Re-probe reasoning capabilities for the new (endpoint, model) and clamp
+        // thinking to what the new server advertises. Best-effort: a dead endpoint
+        // just leaves the heuristic profile in place.
+        var apiKey2 = registry.GetKey(name);
+        var info = await ReasoningCapabilityCache.ProbeAsync(def.Endpoint, apiKey2, ct);
+        if (info is not null)
+            config.Capabilities.Set(def.Endpoint, session.State.Model, info);
+        else
+            config.Capabilities.Invalidate(def.Endpoint, session.State.Model);
+        // Clamp the session's thinking to what the (possibly new) server advertises.
+        await settings.ClampThinkingToCapabilitiesAsync(ct);
+
+        // The new endpoint/model has its own n_ctx. Adopt it so the context-usage
+        // gauge denominator follows the active model (it was otherwise pinned to
+        // whatever the startup probe saw). An explicit llm.context_size always wins.
+        if (info?.ContextWindow is > 0 && !config.Llm.ContextSizeExplicit)
+            config.Llm.ContextSize = OpenMono.Utils.ContextSizeResolver.ResolveContextSize(info.ContextWindow, config.Llm.ContextSize);
+        // Refresh the live gauge now — otherwise the new window only appears on the
+        // next turn's usage event.
+        var tracker = session.State.Meta.TokenTracker;
+        session.CurrentEventSink?.Invoke("usage", new
+        {
+            input_tokens = tracker?.TotalPromptTokens ?? 0,
+            output_tokens = tracker?.TotalCompletionTokens ?? 0,
+            total_tokens = tracker?.TotalTokens ?? 0,
+            context_tokens = tracker?.LastPromptTokens ?? 0,
+            context_window = config.Llm.ContextSize,
+            gen_tps = tracker?.LastGenTokensPerSecond ?? 0,
+            avg_tps = tracker?.AvgGenTokensPerSecond ?? 0,
+        });
 
         // The model list is per-backend: re-seed the catalog so /model and the
         // suggestion overlay show the new backend's models.
@@ -1078,6 +1200,75 @@ public static class AcpEndpoints
             backend = name,
             model = session.State.Model,
             has_key = registry.HasKey(name),
+            context_window = config.Llm.ContextSize,
+        });
+    }
+
+    /// <summary>
+    /// Set or cycle the session's thinking level (<c>{"level":"low"}</c> to set,
+    /// <c>{}</c> or <c>{"cycle":true}</c> to advance). The REST equivalent of the
+    /// TUI's <c>/think</c> — the extension calls this instead of injecting a fake
+    /// <c>/think</c> turn. Validation/clamping to server-advertised levels happens
+    /// in <see cref="OpenMono.Session.SessionSettings"/>; the change also flows to
+    /// any live SSE stream as a <c>state_changed</c> event. Wire contract: 200 with
+    /// <c>{ ok, level, enabled, levels, error? }</c>; 404 unknown session; 400 bad body.
+    /// </summary>
+    private static async Task<IResult> SetThinking(
+        HttpContext ctx,
+        string id,
+        AcpSessionStore store,
+        CancellationToken ct)
+    {
+        var session = store.TryGet(id);
+        if (session is null) return Results.NotFound();
+
+        string? level = null;
+        try
+        {
+            using var doc = await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ct);
+            if (doc.RootElement.TryGetProperty("level", out var lEl) && lEl.ValueKind == JsonValueKind.String)
+                level = lEl.GetString();
+        }
+        catch (JsonException ex)
+        {
+            return Results.BadRequest(new { error = "invalid_json", detail = ex.Message });
+        }
+
+        var settings = session.Settings ?? AcpSettings(session, store);
+        var result = string.IsNullOrEmpty(level)
+            ? await settings.CycleThinkingAsync(ct: ct)
+            : await settings.SetThinkingAsync(level!, ct);
+
+        if (!result.Applied && result.Error is not null)
+            return Results.Ok(new
+            {
+                ok = false,
+                level = session.State.Meta.ThinkingLevel,
+                enabled = session.State.Meta.ThinkingEnabled,
+                levels = result.Levels,
+                error = result.Error,
+            });
+
+        // Back-compat: also emit the legacy thinking_changed shape on any live stream.
+        var profile = store.ResolveReasoning(session.State.Model);
+        session.CurrentEventSink?.Invoke("thinking_changed", new
+        {
+            kind = "thinking",
+            status = "changed",
+            level = session.State.Meta.ThinkingLevel,
+            enabled = session.State.Meta.ThinkingEnabled,
+            levels = profile.Kind == ReasoningKind.EffortLevels ? profile.Levels : new[] { "off", "on" },
+            description = profile.Kind == ReasoningKind.EffortLevels
+                ? ThinkingLevels.Describe(session.State.Meta.ThinkingLevel ?? "off")
+                : "",
+        });
+
+        return Results.Ok(new
+        {
+            ok = true,
+            level = session.State.Meta.ThinkingLevel,
+            enabled = session.State.Meta.ThinkingEnabled,
+            levels = result.Levels,
         });
     }
 
@@ -1150,6 +1341,14 @@ public static class AcpEndpoints
                 }
             }
 
+            List<string>? images = null;
+            if (m.ContentParts is { Count: > 0 })
+            {
+                foreach (var part in m.ContentParts)
+                    if (part is ImagePart img && !string.IsNullOrEmpty(img.Url))
+                        (images ??= new List<string>()).Add(img.Url);
+            }
+
             result.Add(new HistoryMessageDto
             {
                 Role = role,
@@ -1157,6 +1356,8 @@ public static class AcpEndpoints
                 Timestamp = m.Timestamp.ToString("o"),
                 ToolCalls = toolCalls,
                 Thinking = m.ThinkingContent,
+                Images = images,
+                Model = m.Model,
             });
         }
         return result;
@@ -1191,6 +1392,8 @@ public static class AcpEndpoints
         [JsonPropertyName("timestamp")] public required string Timestamp { get; init; }
         [JsonPropertyName("toolCalls")] public List<HistoryToolCallDto>? ToolCalls { get; init; }
         [JsonPropertyName("thinking")] public string? Thinking { get; init; }
+        [JsonPropertyName("images")] public List<string>? Images { get; init; }
+        [JsonPropertyName("model")] public string? Model { get; init; }
     }
 
     internal sealed record HistoryToolCallDto

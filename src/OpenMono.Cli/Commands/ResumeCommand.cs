@@ -64,6 +64,16 @@ public sealed class ResumeCommand : ICommand
 
         SessionReattach.Apply(context.Session, loaded);
 
+        // The server we're now talking to may not advertise the thinking level the
+        // session was saved with — clamp it to what's actually available.
+        if (context.Session.Settings is not null)
+        {
+            var clamped = await context.Session.Settings.ClampThinkingToCapabilitiesAsync(ct);
+            if (clamped)
+                context.Renderer.WriteInfo(
+                    $"Thinking level adjusted to '{context.Session.Meta.ThinkingLevel}' for the current model.");
+        }
+
         var cpInfo = context.Session.Checkpoints.Count > 0
             ? $", {context.Session.Checkpoints.Count} checkpoint(s) restored " +
               $"(cutoff=msg {context.Session.CheckpointCutoffIndex})"

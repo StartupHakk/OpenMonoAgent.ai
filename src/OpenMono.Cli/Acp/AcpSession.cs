@@ -9,6 +9,26 @@ public sealed class AcpSession
 
     public DateTime LastActivityAt { get; set; }
 
+    /// <summary>
+    /// Timestamp of the session file the last write to disk produced (or the
+    /// file's mtime when it was loaded). <see cref="AcpSessionStore.TryGet"/>
+    /// compares the file's current mtime against this to detect that another
+    /// process (a TUI that resumed the same session) wrote newer state, and
+    /// reload-merges before handing the session out.
+    /// </summary>
+    public DateTime? DiskStamp { get; set; }
+
+    /// <summary>Settings pipeline for this session (lazily attached by the store).</summary>
+    public OpenMono.Session.SessionSettings? Settings { get; set; }
+
+    /// <summary>
+    /// Broadcast hook to the session's currently-active SSE stream, set by
+    /// <c>AcpTurnRunner</c> for the duration of a turn. Lets state mutations that
+    /// happen outside the turn loop (REST toggles) push events to whichever
+    /// stream is connected. Null when no stream is active.
+    /// </summary>
+    public Func<string, object, Task>? CurrentEventSink { get; set; }
+
     public string Id => State.Id;
     public DateTime StartedAt => State.StartedAt;
     public string Model => State.Model ?? "";

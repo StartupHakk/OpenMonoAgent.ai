@@ -1,3 +1,4 @@
+using OpenMono.Session;
 using OpenMono.Utils;
 
 namespace OpenMono.Commands;
@@ -12,7 +13,7 @@ public sealed class ThinkCommand : ICommand, ICommandArgumentSource
     /// Model-backed via <see cref="ModelReasoningProfile"/>.</summary>
     public IEnumerable<(string Value, string Detail)> GetArgumentOptions(string query, Config.AppConfig config)
     {
-        var profile = ModelReasoningProfile.Resolve(config.Llm.Model, config.Llm.ServerReasoning);
+        var profile = Profile(config, session: null);
         if (profile.Kind == ReasoningKind.EffortLevels)
         {
             foreach (var level in profile.Levels)
@@ -25,60 +26,37 @@ public sealed class ThinkCommand : ICommand, ICommandArgumentSource
         }
     }
 
-    public Task ExecuteAsync(string[] args, CommandContext context, CancellationToken ct)
+    public async Task ExecuteAsync(string[] args, CommandContext context, CancellationToken ct)
     {
-        var profile = ModelReasoningProfile.Resolve(context.Config.Llm.Model, context.Config.Llm.ServerReasoning);
+        var settings = context.Session.Settings ?? Attach(context);
 
-        if (profile.Kind == ReasoningKind.EffortLevels)
-            CycleLevels(context, profile, args);
+        ThinkingResult result;
+        if (args.Length > 0 && args[0].Trim().Length > 0)
+            result = await settings.SetThinkingAsync(args[0].Trim(), ct);
         else
-            ToggleBinary(context);
+            result = await settings.CycleThinkingAsync(ct: ct);
 
-        return Task.CompletedTask;
-    }
-
-    private static void CycleLevels(CommandContext context, ModelReasoningProfile profile, string[] args)
-    {
-        var levels = profile.Levels;
-        var current = context.Session.Meta.ThinkingLevel ?? "off";
-        var idx = Array.IndexOf(levels, current);
-        if (idx < 0) idx = 0;
-
-        var nextIdx = args.Length > 0
-            ? ThinkingLevels.Resolve(args[0], levels)
-            : (idx + 1) % levels.Length;
-
-        if (nextIdx < 0)
+        if (!result.Applied && result.Error is not null)
         {
-            context.Renderer.WriteWarning(
-                $"Unknown level '{args[0]}'. Use: {string.Join(", ", levels)}");
+            context.Renderer.WriteWarning(result.Error);
             return;
         }
 
-        var level = levels[nextIdx];
-        context.Session.Meta.ThinkingLevel = level;
-        context.Session.Meta.ThinkingEnabled = level != "off";
-
-        context.Renderer.WriteInfo($"Thinking: {ThinkingLevels.Describe(level)}");
-        if (level != "off")
+        var level = context.Session.Meta.ThinkingLevel;
+        context.Renderer.WriteInfo($"Thinking: {ThinkingLevels.Describe(level ?? "off")}");
+        if (level is not null && level != "off")
             context.Renderer.WriteInfo("Note: thinking tokens use extra context. Use /think [level] to change.");
         if (level == "xhigh")
             context.Renderer.WriteInfo("Tip: Use /think medium for better speed on routine coding tasks.");
     }
 
-    private static void ToggleBinary(CommandContext context)
-    {
-        context.Session.Meta.ThinkingEnabled = !context.Session.Meta.ThinkingEnabled;
-        context.Session.Meta.ThinkingLevel = context.Session.Meta.ThinkingEnabled ? "on" : "off";
+    private static SessionSettings Attach(CommandContext context)
+        => context.Session.Settings = SessionSettings.Attach(
+            context.Session, "tui", reasoningProfile: () => Profile(context.Config, context.Session));
 
-        if (context.Session.Meta.ThinkingEnabled)
-        {
-            context.Renderer.WriteInfo("Thinking mode ON — model will reason step-by-step before responding.");
-            context.Renderer.WriteInfo("Note: thinking tokens use extra context. Use for complex tasks only.");
-        }
-        else
-        {
-            context.Renderer.WriteInfo("Thinking mode OFF — model responds directly (default).");
-        }
-    }
+    /// <summary>Server-advertised capabilities first, name heuristics as fallback.</summary>
+    private static ModelReasoningProfile Profile(Config.AppConfig config, SessionState? session)
+        => ModelReasoningProfile.Resolve(
+            session?.Model ?? config.Llm.Model,
+            config.Capabilities.Get(config.Llm.Endpoint, session?.Model) ?? config.Llm.ServerReasoning);
 }

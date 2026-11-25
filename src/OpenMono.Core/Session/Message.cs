@@ -27,6 +27,12 @@ public sealed record Message
     /// so a failure cannot be misread as success.
     /// </summary>
     public bool IsError { get; init; }
+    /// <summary>
+    /// Model (or backend · model label) in effect when this message was created.
+    /// Session history uses it to place model-switch dividers on resume; older
+    /// session files simply lack the field and render none.
+    /// </summary>
+    public string? Model { get; init; }
     public DateTime Timestamp { get; init; } = DateTime.UtcNow;
 }
 

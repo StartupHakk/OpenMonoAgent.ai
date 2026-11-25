@@ -6,7 +6,10 @@
 
 Setup reads your hardware and picks the **best** model the box can run — it does not ask.
 Pass `--options` to choose the model, vision and parallel slots yourself; `--model=<name>`
-always wins over the hardware gate. The gate is ordered, **first match wins**, and the
+always wins over the hardware gate. In the `--options` menu the **default row (1) is
+always the model the gate would have picked** — named with its concrete quant and size
+(e.g. `Qwen3.6-35B-A3B (~17.6GB) [CPU]`) — so pressing Enter there installs exactly what
+running without `--options` would. The gate is ordered, **first match wins**, and the
 VRAM check runs before the system-RAM check — so the same card lands on different rows
 depending on how much RAM sits behind it.
 
@@ -16,6 +19,9 @@ depending on how much RAM sits behind it.
 - `/model refresh` re-queries the backend's `/v1/models` endpoint.
 - `/model <name|index>` changes the model name sent to the active provider; it takes
   effect on the next turn.
+- `/models` switches the **backend** — the endpoint (and its API key) the session talks
+  to — while `/model` only changes the model name on the *active* backend. Full command
+  set and config format: [Backends](#backends-multiple-inference-endpoints).
 
 This does not change the provider and does not start a second local model. A llama.cpp
 server normally serves one model per process, so in practice the list contains that
@@ -58,14 +64,17 @@ Row 3 stays on Qwen3.8-27B: IQ3_XXS (~12 GB) fits a 16 GB card with room for the
 cache, so there is no reason to fall back to a ternary quant. Row 4 is where Qwen has
 no 27B option left — a 12 GB card only fits the 9B model — which is exactly where
 PQ2_0 (7.21 GB) buys a real 27B instead. The bucket spans 12 to 15 GB in the detector but
-is labelled 12 GB because NVIDIA ships no 13 to 15 GB card. Row 5 uses PQ2_0 rather than the smaller PTQ1_0 because the iGPU is UMA: it addresses system RAM, so the extra ~1.3 GB of weights comes out of the same pool the model already uses, which is why the row is documented at 32 GB+ of RAM. Below 32 GB the pick is still Bonsai, because the CPU fallback needs ~20 GB and would not load; setup warns instead of downgrading.
+is labelled 12 GB because NVIDIA ships no 13 to 15 GB card. Row 5 uses PQ2_0 rather than the smaller PTQ1_0 because the iGPU is UMA: it addresses system RAM, so the extra ~1.3 GB of weights comes out of the same pool the model already uses, which is why the row is documented at 32 GB+ of RAM. Below 32 GB the pick is still Bonsai, because the Qwen fallback needs ~20 GB and would not load; setup warns instead of downgrading. Qwen is still selectable on the iGPU row (see below) — there it runs on the 780M through the Vulkan image, not on CPU.
 NVIDIA cards below 12 GB are not a supported inference target; those boxes stay on the
 Qwen row that matches their tier.
 
 Bonsai is still *selectable* on the Qwen rows — `--model=bonsai-pq2` works on any
 NVIDIA card from 8 GB up and takes that tier's context and KV settings. Auto-select
 just prefers a 27B Qwen wherever one fits, which is why 16 GB and 24 GB+ cards no
-longer land on a ternary quant.
+longer land on a ternary quant. The reverse holds on the iGPU row: `--model=qwen`
+(installing with `--options` and picking the Qwen row) gives Qwen3.6-35B-A3B on the
+780M via the upstream Vulkan image — a 32 GB 7940HS fits its ~17.6 GB of weights in
+the ~28 GB GTT window, just far tighter than Bonsai's 7.2 GB.
 
 ### macOS (Apple Silicon, unified memory)
 
@@ -315,8 +324,10 @@ A **backend** is a named inference endpoint (e.g. your local llama.cpp server, a
 Ollama, OpenAI). You can configure several and switch between them **at runtime, per session,
 without restarting the agent.**
 
-Backends live in `~/.openmono/backends.json` (0600). The `default` entry is what a new session
-starts on; every other entry is reachable via `/models`.
+Backends live in `~/.openmono/backends.json` (0600). **Which backend is the default is a flag
+on the entry itself** — exactly one entry carries `"default": true`, and that is what a new
+session starts on; every other entry is reachable via `/models`. If no entry is flagged, the
+one named `default` (seeded from `llm.endpoint` in `settings.json`) is used.
 
 ### Config file format
 
@@ -334,7 +345,9 @@ starts on; every other entry is reachable via `/models`.
     "name": "local",
     "endpoint": "http://localhost:7474",
     "default_model": "Ternary-Bonsai-2-27B-PQ2_0",
-    "is_local": true
+    "is_local": true,
+    "default": true                              // flag on any entry makes it the
+                                                 // default for NEW sessions
   },
   "echo15": {
     "name": "echo15",
@@ -352,7 +365,8 @@ starts on; every other entry is reachable via `/models`.
 | `endpoint` | yes | OpenAI-compatible base URL. |
 | `nickname` | no | Human-friendly label; menus show `[nickname] <model>`. Falls back to `name` when absent. |
 | `default_model` | no | Model adopted when you switch to this backend. Leave unset and the backend's own `/v1/models` response is the truth. |
-| `is_local` | no | `true` for on-box servers (no API key required, endpoint reachable via loopback on the host). |
+| `is_local` | no | `true` for on-box servers (endpoint reachable via loopback on the host). A key is still required whenever the server enforces one. |
+| `default` | no | `true` marks this entry as the default backend new sessions start on. Only one entry should carry it; the first one wins. Written by the extension's "make default" control or `openmono config backends set-default`. |
 | `api_key` | no | Persisted in the 0600 file so the backend survives restarts. Can also be supplied at runtime (kept in memory only). |
 
 ### Runtime commands (TUI / terminal)
@@ -375,11 +389,21 @@ default model is adopted automatically (you can still override the model name wi
 openmono config backends list
 openmono config backends add <name> --endpoint <url> [--model <m>] [--nickname <n>] [--key <k>] [--local true]
 openmono config backends remove <name>
+openmono config backends set-default <name>   # make it the default for new sessions
 openmono config backends set-key <name> <key>     # omit <key> to clear
 ```
 
 Writes directly to `~/.openmono/backends.json` (0600) — useful for provisioning relays from
 setup scripts. A running agent picks up file changes on its next restart.
+
+`openmono config set llm.endpoint <url>` / `openmono config set llm.api_key <key>` address a
+different surface: they rewrite `settings.json`, which seeds the `default` backend when
+`backends.json` has no explicit default. When `backends.json` already exists and its default
+still points at `default`, these commands also **mirror the value into the `default` entry**
+of `backends.json` (printed in the command output), so a stale entry can never shadow the new
+setting. If you moved the default to a named backend (`set-default`), mirroring stops — the
+named entry is authoritative. Named backends are never touched by `config set`; use
+`backends add` to add a second endpoint.
 
 ### Two-level model selection
 
@@ -407,6 +431,7 @@ the extension can list, create, remove, and switch backends — including by nic
 | `GET /api/v1/backends` | List backends | `{ backends: [{ name, endpoint, nickname, default_model, provider_type, is_local, has_key }] }` — keys are never exposed. |
 | `POST /api/v1/backends` | Create/update a backend | `{ name, endpoint, default_model?, nickname?, provider_type?, is_local?, api_key? }` → `{ ok, name, endpoint, has_key }`. `api_key` is in-memory only. |
 | `DELETE /api/v1/backends/{name}` | Remove a backend | 204 / 404. |
+| `PUT /api/v1/backends/{name}/default` | Make a backend the default for new sessions | optional `{ "model": "..." }` → `{ ok, default_backend, default_model }`. 404 unknown backend. |
 | `POST /api/v1/sessions/{id}/backend` | Switch a session's backend | `{ backend, api_key? }` — `backend` is a name **or nickname** → `{ ok, backend, model, has_key }`. 404 unknown session, 400 unknown backend, `ok: false, error: "no_api_key"` when a remote backend has no key. |
 
 Notes for the extension:

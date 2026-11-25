@@ -175,6 +175,16 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     session.Meta.ThinkingLevel = reasoningProfile.DefaultLevel;
     session.Meta.ThinkingEnabled = reasoningProfile.DefaultEnabled && reasoningProfile.DefaultLevel != "off";
 
+    // Single mutation pipeline for every mutable session setting: clamps to
+    // server-advertised capabilities, bumps the header revision, write-throughs
+    // to disk. TUI slash-commands (and /model re-probe) mutate through it.
+    session.Settings = OpenMono.Session.SessionSettings.Attach(
+        session,
+        "tui",
+        persist: s => sessionManager.SaveAsync(s, CancellationToken.None),
+        reasoningProfile: () => ModelReasoningProfile.Resolve(
+            session.Model ?? config.Llm.Model,
+            config.Capabilities.Get(config.Llm.Endpoint, session.Model) ?? config.Llm.ServerReasoning));
     var enableTui = !acpOnly && (useTui ?? (!Console.IsInputRedirected && !Console.IsOutputRedirected));
     AnsiTuiRenderer? ansiTui = null;
     AppDomain.CurrentDomain.UnhandledException += (_, _) => ansiTui?.SafeExit();
@@ -1196,6 +1206,9 @@ static async Task TryDetectActualModelAsync(AppConfig config)
             EffortLevels = effortLevels,
             EffortDefaultLevel = effortDefault,
         };
+        // Share the probe result across processes (TUI ↔ ACP server) and with
+        // /model switches, keyed by what the server actually loaded.
+        config.Capabilities.Set(baseUrl, config.Llm.Model, config.Llm.ServerReasoning);
         Log.Debug($"Detected reasoning from /props: format={reasoningFormat ?? "n/a"} in_content={reasoningInContent} template_thinking={config.Llm.ServerReasoning.HasThinkingTemplate}");
 
         // Vision is auto-detected from what the server actually loaded, via the

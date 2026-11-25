@@ -84,6 +84,12 @@ public sealed class SessionManager
             session.Meta.PlanMode = header.PlanMode;
             session.Meta.GitProfileName = header.GitProfileName;
             session.Meta.GitProfileTouched = header.GitProfileTouched;
+            session.Meta.ThinkingEnabled = header.ThinkingEnabled;
+            session.Meta.ThinkingLevel = header.ThinkingLevel;
+            session.Meta.HostEnabled = header.HostEnabled;
+            session.Meta.AutoApproveWrites = header.AutoApproveWrites;
+            session.Meta.Revision = header.Revision;
+            session.Meta.LastWriter = header.LastWriter;
             if (header.Todos.Count > 0) session.Todos.AddRange(header.Todos);
             if (header.Plans.Count > 0)
             {
@@ -258,9 +264,13 @@ public sealed class SessionManager
             TotalCompletionTokens = tracker?.TotalCompletionTokens ?? 0,
             MaxPromptTokens = tracker?.MaxPromptTokens ?? 0,
             ApiCalls = tracker?.ApiCalls ?? 0,
-            // Plan history rides in the header so a resumed session (new process)
-            // can re-list and re-offer its plans; empty for pre-plan sessions.
             Plans = session.Meta.Plans.Count > 0 ? session.Meta.Plans.ToList() : new(),
+            ThinkingEnabled = session.Meta.ThinkingEnabled,
+            ThinkingLevel = session.Meta.ThinkingLevel,
+            HostEnabled = session.Meta.HostEnabled,
+            AutoApproveWrites = session.Meta.AutoApproveWrites,
+            Revision = session.Meta.Revision,
+            LastWriter = session.Meta.LastWriter,
         };
     }
 
@@ -316,4 +326,16 @@ public sealed record SessionHeader
     /// <summary>Plan history (see <see cref="PlanRecord"/>). Empty for sessions
     /// saved before plan persistence existed.</summary>
     public List<PlanRecord> Plans { get; init; } = new();
+
+    public bool ThinkingEnabled { get; init; }
+    public string? ThinkingLevel { get; init; }
+    public bool HostEnabled { get; init; }
+    public bool AutoApproveWrites { get; init; }
+
+    /// <summary>Monotonic revision counter for cross-process conflict detection.
+    /// Bumped by SessionSettings on every mutation; higher revision wins on merge.</summary>
+    public int Revision { get; init; }
+
+    /// <summary>Which writer last bumped <see cref="Revision"> ("tui" or "acp"). Informational.</summary>
+    public string? LastWriter { get; init; }
 }

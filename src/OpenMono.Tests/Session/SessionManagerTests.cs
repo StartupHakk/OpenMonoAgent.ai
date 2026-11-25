@@ -341,6 +341,46 @@ public class SessionManagerTests : IDisposable
         list.Select(s => s.Id).Should().Contain(a.Id).And.NotContain(b.Id);
     }
 
+    [Fact]
+    public async Task SaveAndLoad_RoundTrips_AllMutableSettings()
+    {
+        var session = SessionManager.CreateSession();
+        session.AddMessage(new Message { Role = MessageRole.User, Content = "hi" });
+        session.Meta.ThinkingEnabled = true;
+        session.Meta.ThinkingLevel = "medium";
+        session.Meta.HostEnabled = true;
+        session.Meta.AutoApproveWrites = true;
+        session.Meta.Revision = 7;
+        session.Meta.LastWriter = "acp";
+
+        await _manager.SaveAsync(session, CancellationToken.None);
+
+        var loaded = await _manager.LoadAsync(session.Id, CancellationToken.None);
+        loaded.Should().NotBeNull();
+        loaded!.Meta.ThinkingEnabled.Should().BeTrue();
+        loaded.Meta.ThinkingLevel.Should().Be("medium");
+        loaded.Meta.HostEnabled.Should().BeTrue();
+        loaded.Meta.AutoApproveWrites.Should().BeTrue();
+        loaded.Meta.Revision.Should().Be(7);
+        loaded.Meta.LastWriter.Should().Be("acp");
+    }
+
+    [Fact]
+    public async Task Load_LegacyFileWithoutNewFields_DefaultsSafely()
+    {
+        // A pre-revision session file must load with defaults (null thinking =
+        // profile default, revision 0), not throw.
+        var session = SessionManager.CreateSession();
+        session.AddMessage(new Message { Role = MessageRole.User, Content = "old" });
+        await _manager.SaveAsync(session, CancellationToken.None);
+
+        var loaded = await _manager.LoadAsync(session.Id, CancellationToken.None);
+
+        loaded.Should().NotBeNull();
+        loaded!.Meta.Revision.Should().Be(0);
+        loaded.Meta.LastWriter.Should().BeNull();
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempDir))

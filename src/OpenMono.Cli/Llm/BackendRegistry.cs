@@ -115,22 +115,34 @@ public sealed class BackendRegistry : IDisposable
         {
             var doc = JsonDocument.Parse(json);
 
-            // Top-level default backend marker (skip: not an object in the loop below).
+            // The modern file shape flags the default backend per-entry with
+            // "default": true. A legacy top-level "_default_backend" string is still
+            // read for backward compatibility (per-entry flag wins if both present).
+            string? legacyDefault = null;
             if (doc.RootElement.TryGetProperty("_default_backend", out var defEl)
                 && defEl.ValueKind == JsonValueKind.String
                 && !string.IsNullOrWhiteSpace(defEl.GetString()))
             {
-                lock (_backends) _defaultName = defEl.GetString()!;
+                legacyDefault = defEl.GetString();
             }
 
+            string? flaggedDefault = null;
             foreach (var prop in doc.RootElement.EnumerateObject())
             {
                 var name = prop.Name;
                 if (string.IsNullOrWhiteSpace(name)) continue;
 
-                // Legacy per-backend "default" flags are tolerated; a top-level
-                // object is the registry file shape, skip any non-object entries.
+                // A top-level object is the registry file shape; skip any non-object
+                // entries (e.g. the legacy "_default_backend" string).
                 if (prop.Value.ValueKind != JsonValueKind.Object) continue;
+
+                // First entry carrying "default": true is the registry default.
+                if (flaggedDefault is null
+                    && prop.Value.TryGetProperty("default", out var dEl)
+                    && dEl.ValueKind == JsonValueKind.True)
+                {
+                    flaggedDefault = name;
+                }
 
                 var def = new BackendDefinition
                 {
@@ -161,6 +173,13 @@ public sealed class BackendRegistry : IDisposable
                     SetKey(name, keyEl.GetString()!);
                 }
             }
+
+            // Per-entry flag takes precedence; fall back to the legacy top-level marker.
+            var resolvedDefault = flaggedDefault ?? legacyDefault;
+            if (!string.IsNullOrWhiteSpace(resolvedDefault))
+            {
+                lock (_backends) _defaultName = resolvedDefault!;
+            }
         }
         catch (Exception ex)
         {
@@ -177,14 +196,17 @@ public sealed class BackendRegistry : IDisposable
     {
         var dict = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
         foreach (var kv in _backends)
-            dict[kv.Key] = new BackendEntry(kv.Value, GetKey(kv.Key));
-        // Preserve which backend is the registry default across restarts.
+            dict[kv.Key] = new BackendEntry(kv.Value, GetKey(kv.Key),
+                string.Equals(kv.Key, DefaultName, StringComparison.OrdinalIgnoreCase));
+        // Preserve which backend is the registry default across restarts (legacy marker,
+        // kept alongside the per-entry "default": true flag for older readers).
         dict["_default_backend"] = DefaultName;
 
         var options = new JsonSerializerOptions
         {
             WriteIndented = true,
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
         };
 
         string json = JsonSerializer.Serialize(dict, options);
@@ -285,7 +307,13 @@ public sealed class BackendRegistry : IDisposable
         [System.Text.Json.Serialization.JsonPropertyName("nickname")]
         public string? Nickname { get; init; }
 
-        public BackendEntry(BackendDefinition def, string? apiKey)
+        // Written as true on whichever entry is the registry default; omitted otherwise
+        // so the common (non-default) entry shape stays byte-identical to before
+        // (nulls are dropped via DefaultIgnoreCondition in SaveToFile).
+        [System.Text.Json.Serialization.JsonPropertyName("default")]
+        public bool? Default { get; init; }
+
+        public BackendEntry(BackendDefinition def, string? apiKey, bool isDefault)
         {
             Name = def.Name;
             Endpoint = def.Endpoint;
@@ -294,6 +322,7 @@ public sealed class BackendRegistry : IDisposable
             IsLocal = def.IsLocal;
             Nickname = def.Nickname;
             ApiKey = apiKey;
+            if (isDefault) Default = true;
         }
     }
 }

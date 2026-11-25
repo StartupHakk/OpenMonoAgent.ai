@@ -62,8 +62,7 @@ public sealed class GitCommand : ICommand
 
         if (arg.Equals("off", StringComparison.OrdinalIgnoreCase))
         {
-            context.Session.Meta.GitProfileName = null;
-            context.Session.Meta.GitProfileTouched = true;
+            await Settings(context).SetGitProfileAsync(null, touched: true, ct);
             Log.Info("git auth: profile cleared (host pass-through)");
             context.Renderer.WriteInfo("✓ Git profile cleared — git commands now use the host's own credentials.");
             return;
@@ -82,8 +81,7 @@ public sealed class GitCommand : ICommand
             return;
         }
 
-        context.Session.Meta.GitProfileName = arg;
-        context.Session.Meta.GitProfileTouched = true;
+        await Settings(context).SetGitProfileAsync(arg, touched: true, ct);
         Log.Info($"git auth: switched to profile '{arg}' ({profile.Type})");
         context.Renderer.WriteInfo($"✓ Git profile switched to '{arg}' — takes effect on your next git command.");
     }
@@ -286,12 +284,15 @@ public sealed class GitCommand : ICommand
         var activate = await renderer.AskUserAsync($"Activate '{name}' for this session now? [Y/n]", ct);
         if (!activate.Equals("n", StringComparison.OrdinalIgnoreCase))
         {
-            context.Session.Meta.GitProfileName = name;
-            context.Session.Meta.GitProfileTouched = true;
+            await Settings(context).SetGitProfileAsync(name, touched: true, ct);
         }
         Log.Info($"git auth: profile '{name}' ({profile.Type}) saved via /git add");
         renderer.WriteInfo($"✓ Profile '{name}' saved{(activate.Equals("n", StringComparison.OrdinalIgnoreCase) ? "" : $" and active for this session")}.");
     }
+
+    private static OpenMono.Session.SessionSettings Settings(CommandContext context)
+        => context.Session.Settings
+            ??= OpenMono.Session.SessionSettings.Attach(context.Session, "tui");
 
     private static string SuggestName(GitConfig git)
         => git.Profiles.Count == 0 ? "default" : $"{git.Profiles.Count + 1}";

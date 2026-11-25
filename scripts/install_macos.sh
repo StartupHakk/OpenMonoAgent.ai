@@ -68,7 +68,7 @@ select_model() {
 # Pass --options to pick Qwen instead. An explicit --model=bonsai-pq2 below 24GB
 # still fails here, before any multi-GB download.
 prompt_bonsai_macos() {
-    local choice="${OPENMONO_MODEL:-auto}" _bonsai_want=""
+    local choice="${OPENMONO_MODEL:-auto}" _bonsai_want="" _auto_id="" _key="" n=1
     if [ "$choice" = "auto" ] && [ "${OPENMONO_SETUP_OPTIONS:-0}" != "1" ]; then
         choice="$(mc_auto_pick)"
         info "Auto-selected model '$choice' — $(mc_auto_reason)"
@@ -82,30 +82,48 @@ prompt_bonsai_macos() {
         *) warn "Unknown --model=$choice — using Qwen"; return 0 ;;
     esac
     if [ -z "$_bonsai_want" ]; then
-        # --options with no explicit flag: ask. 16GB Macs are offered PTQ1_0
-        # only; PQ2_0 appears from 24GB up.
+        # --options with no explicit flag: ask. Row 1 is always exactly what
+        # setup picks WITHOUT --options (the hardware gate, mc_auto_pick),
+        # named by the concrete model for this Mac — so bare Enter here is the
+        # same install as running without --options. Memory gates still apply:
+        # PTQ1_0 from 16GB, PQ2_0 from 24GB.
         if [ ! -t 0 ] || [ "${TOTAL_MEM:-0}" -lt 16 ]; then return 0; fi
         flush_stdin
+        _auto_id="$(mc_auto_pick)"
+        _key="$(mc_pick_tier qwen macos "${TOTAL_MEM:-0}")"
+        [ -n "$_key" ] || _key=8
         echo ""
         echo "  Which model for this Mac? (${TOTAL_MEM}GB unified memory)"
         echo ""
-        if [ "$TOTAL_MEM" -ge 24 ]; then
-        echo "  1) Ternary-Bonsai-2-27B PQ2_0 (~7.2GB) (default)"
-        echo "  2) Ternary-Bonsai-2-27B PTQ1_0 (~5.9GB)"
-        echo "  3) Qwen (tested on Metal)"
-        else
-        echo "  1) Ternary-Bonsai-2-27B PTQ1_0 (~5.9GB) (default)"
-        echo "  2) Qwen (tested on Metal)"
+        printf '  1) %s (default)\n' "$(mc_auto_pick_menu_line macos "$_key")"
+        local pq2_n=0 ptq1_n=0 qwen_n=0
+        if [ "$_auto_id" != "bonsai-pq2" ] && [ "${TOTAL_MEM:-0}" -ge 24 ]; then
+            pq2_n=$(( n + 1 )); printf '  %s) %s\n' "$pq2_n" "$(mc_menu_line bonsai-pq2 macos)"; n=$pq2_n
+        fi
+        if [ "$_auto_id" != "bonsai-ptq1" ] && [ "${TOTAL_MEM:-0}" -ge 16 ]; then
+            ptq1_n=$(( n + 1 )); printf '  %s) %s\n' "$ptq1_n" "$(mc_menu_line bonsai-ptq1 macos)"; n=$ptq1_n
+        fi
+        if [ "$_auto_id" != "qwen" ]; then
+            qwen_n=$(( n + 1 )); printf '  %s) %s (tested on Metal)\n' "$qwen_n" "$(mc_qwen_menu_line macos "$_key")"
         fi
         echo ""
         printf "  Enter a number [default: 1]: "
         read -r -n 1 _bmc_choice; echo ""
-        case "${_bmc_choice:-1}" in
-            1) _bonsai_want=$([ "$TOTAL_MEM" -ge 24 ] && echo pq2 || echo ptq1) ;;
-            2) _bonsai_want=$([ "$TOTAL_MEM" -ge 24 ] && echo ptq1 || echo qwen) ;;
-            3) [ "$TOTAL_MEM" -ge 24 ] && _bonsai_want=qwen || return 0 ;;
-            *) return 0 ;;
-        esac
+        # Bare Enter arrives as a lone newline with -n 1 — normalize it to the
+        # default row instead of falling through to an arbitrary pick.
+        _bmc_choice="${_bmc_choice//$'\n'/}"; _bmc_choice="${_bmc_choice//$'\r'/}"
+        if   [ "$pq2_n"  != "0" ] && [ "$_bmc_choice" = "$pq2_n"  ]; then _bonsai_want=pq2
+        elif [ "$ptq1_n" != "0" ] && [ "$_bmc_choice" = "$ptq1_n" ]; then _bonsai_want=ptq1
+        elif [ "$qwen_n" != "0" ] && [ "$_bmc_choice" = "$qwen_n" ]; then return 0
+        else
+            # Bare Enter, or an unrecognized number → exactly what the
+            # no-options hardware gate would have picked.
+            case "$_auto_id" in
+                bonsai-pq2)  _bonsai_want=pq2 ;;
+                bonsai-ptq1) _bonsai_want=ptq1 ;;
+                *)           return 0 ;;   # qwen — already selected
+            esac
+        fi
         [ "$_bonsai_want" = "qwen" ] && return 0
         [ -z "$_bonsai_want" ] && return 0
     fi
