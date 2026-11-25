@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2034  # TWEAK_* metadata is read by oma-7940hs.sh
+# Tweak template. Copy to NN-name.sh (NN = run order) to enable a new tweak.
+# Only files named [0-9][0-9]-*.sh are loaded. Each file is sourced in its own
+# subshell with profile.conf, scripts/lib/log.sh and lib/common.sh available,
+# plus OMA_SERVICE_USER and PROFILE_DIR.
+#
+# Rules: apply must be idempotent, back up any system file with backup_file
+# before changing it, and record original values with state_set_once so
+# tweak_revert can restore them. Set REBOOT_NEEDED with state_set if needed.
+
+TWEAK_ID="example"
+TWEAK_DESC="One line on what this changes"
+TWEAK_TAG="TUNING"      # PROVEN once a before/after run shows a real gain
+TWEAK_REBOOT=0
+
+tweak_check()  { echo "not active"; return 1; }   # 0 active, 1 not, 2 reboot pending
+tweak_apply()  { ok "applied"; }
+tweak_revert() { ok "reverted"; }

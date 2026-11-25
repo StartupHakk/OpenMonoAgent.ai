@@ -1,0 +1,26 @@
+# Managed by OpenMono scripts/7940hs. Edit @ETC@/oma.conf, not this file.
+[Unit]
+Description=OpenMono llama-server, AMD 7940HS / Radeon 780M native profile (Vulkan)
+Documentation=https://github.com/StartupHakk/OpenMonoAgent.ai/blob/main/scripts/7940hs/README.md
+After=network-online.target @PERF_UNIT@
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+SupplementaryGroups=render video
+Environment=OMA_CONF=@ETC@/oma.conf
+ExecStart=@PREFIX@/bin/launch-llama.sh
+ExecStartPost=@PREFIX@/bin/gpu-guard.sh
+Restart=on-failure
+RestartSec=15
+TimeoutStartSec=900
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

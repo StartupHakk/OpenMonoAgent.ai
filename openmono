@@ -255,6 +255,14 @@ _inference_backend() {
     fi
 }
 
+# Opt-in host-native llama-server (scripts/7940hs profile, AMD 7940HS iGPU).
+# The profile's installer sets LLAMA_HOST_NATIVE=1 in docker/.env and runs
+# llama-server under systemd on the inference port instead of the container.
+# Unset (every other install) means no change in behavior.
+_llama_host_native() {
+    [[ "$(_env_get LLAMA_HOST_NATIVE)" == "1" ]]
+}
+
 # Port resolution: settings.json wins, then applied env, then 7474.
 _inference_port() {
     local p=""
@@ -319,7 +327,7 @@ _apply_llama_key_restart() {
 # docker-compose.strata.yml so the Caddy gateway fronts the host's Strata
 # (host.docker.internal:7474) instead of the llama-server container.
 _compose() {
-    if [[ "$(_inference_backend)" == "strata" && -f "$DOCKER_DIR/docker-compose.strata.yml" ]]; then
+    if [[ ( "$(_inference_backend)" == "strata" || "$(_env_get LLAMA_HOST_NATIVE)" == "1" ) && -f "$DOCKER_DIR/docker-compose.strata.yml" ]]; then
         docker compose -f docker-compose.yml -f docker-compose.strata.yml "$@"
     else
         docker compose "$@"
@@ -890,6 +898,21 @@ cmd_start() {
     # Strata backend: host-native server via scripts/strata.sh (no Docker).
     if [[ "$(_inference_backend)" == "strata" ]]; then
         bash "$REPO_DIR/scripts/strata.sh" start || return $?
+        _start_web_services || true
+        echo ""
+        echo "  Run the agent: openmono agent"
+        return 0
+    fi
+
+    # Host-native llama-server (scripts/7940hs): systemd owns the process, so
+    # never start the container (it would fight for the port).
+    if _llama_host_native; then
+        if _inference_curl -sf "http://localhost:${INFERENCE_PORT}/health" &>/dev/null; then
+            ok "Native llama-server (scripts/7940hs) is healthy on port ${INFERENCE_PORT}"
+        else
+            warn "Native llama-server is not healthy on port ${INFERENCE_PORT}."
+            warn "Check: systemctl status openmono-7940hs-llama  (or scripts/7940hs/oma-7940hs.sh status)"
+        fi
         _start_web_services || true
         echo ""
         echo "  Run the agent: openmono agent"
@@ -1740,7 +1763,10 @@ cmd_agent_sandbox() {
                     fi
                 fi
             fi
-            if ! _inference_curl -sf "http://localhost:${_hport}/health" &>/dev/null; then
+            if _llama_host_native && ! _inference_curl -sf "http://localhost:${_hport}/health" &>/dev/null; then
+                warn "Native llama-server (scripts/7940hs) not responding on port ${_hport}."
+                warn "Check: systemctl status openmono-7940hs-llama"
+            elif ! _inference_curl -sf "http://localhost:${_hport}/health" &>/dev/null; then
                 info "llama-server not responding on port ${_hport} — restarting..."
                 docker compose up -d llama-server
                 info "Waiting for llama-server to be healthy (model load can take 1-2 min)..."
@@ -1776,6 +1802,11 @@ cmd_agent_sandbox() {
         [[ "$_port" == "$_host_port" ]] && _port=""   # no explicit port
         if [[ "$(_inference_backend)" == "strata" ]]; then
             _port="${_port:-$(_strata_port)}"
+            export OPENMONO_ENDPOINT="http://host.docker.internal:${_port}${_path}"
+        elif _llama_host_native; then
+            # Host-native llama-server (scripts/7940hs profile): same host-gateway
+            # rewrite as Strata, since there is no llama-server container.
+            _port="${_port:-7474}"
             export OPENMONO_ENDPOINT="http://host.docker.internal:${_port}${_path}"
         elif [[ "$NATIVE_INFERENCE" == "true" ]]; then
             # Apple-Silicon native Metal: llama-server is a host process bound

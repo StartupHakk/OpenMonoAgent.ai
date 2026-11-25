@@ -1,0 +1,12 @@
+# Managed by OpenMono scripts/7940hs (tweak: cpu-performance).
+[Unit]
+Description=OpenMono 7940HS profile: CPU governor, EPP and platform profile to performance
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=@PREFIX@/bin/cpu-perf.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

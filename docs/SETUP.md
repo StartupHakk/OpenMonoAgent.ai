@@ -102,6 +102,12 @@ RAM — first match wins, and the full policy is in [MODELS.md](MODELS.md):
 | AMD iGPU (7940HS / 780M), 32 GB+ RAM | Ternary-Bonsai-2-27B **PQ2_0** | ~7.2 GB | 27B (ternary) | 168k |
 | CPU | Qwen3.6-35B-A3B-UD-Q4_K_XL | ~17.6 GB | Full | 168k |
 
+> **7940HS native profile (opt-in).** For a dedicated 7940HS inference box,
+> [`scripts/7940hs`](../scripts/7940hs/README.md) runs Inkling 2 Mini Q4_0 on a
+> native Vulkan llama-server under systemd (about 16 tok/s for one user, 23
+> total for two), with kernel and power tuning and a full rollback. It is not
+> part of the default setup.
+
 Model, vision and parallel slots are hardware-defaulted — none of the three is
 asked. Pass `--options` to choose them yourself, or `--model=<name>` to pin one.
 (The role and GPU prompts in Phase 1 still ask; see above.)
