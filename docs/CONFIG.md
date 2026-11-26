@@ -30,16 +30,21 @@ Commands are grouped by which box they run on.
 | `openmono logs` | Tail llama-server logs |
 | `openmono status` | Show container, GPU, and model status |
 
-### Inference box — frpc tunnel (dual-box only)
+### Inference box — dual-box tunnel
 
 | Command | Description |
 |---------|-------------|
-| `openmono tunnel setup` | Install frpc + systemd unit (prompts for relay signup values) |
-| `openmono tunnel start` | Start the frpc tunnel |
-| `openmono tunnel stop` | Stop the frpc tunnel |
-| `openmono tunnel restart` | Restart the frpc tunnel |
-| `openmono tunnel status` | Show tunnel state and configured target |
-| `openmono tunnel logs` | Tail frpc logs (`journalctl -u frpc`) |
+| `openmono tunnel setup` | Install frpc + systemd unit (OpenMonoAgent relay; Linux) |
+| `openmono tunnel setup --tailscale` | Join/reuse Tailscale; print MagicDNS/`100.x` agent config (macOS + Linux) |
+| `openmono tunnel prepare` | Dual-box readiness checklist (`--inference` / `--agent`; auto-detects on macOS) |
+| `openmono tunnel rotate-key` | Rotate `LLAMA_API_KEY` and restart llama-server |
+| `openmono tunnel start` | Start the frpc tunnel (**frp only**) |
+| `openmono tunnel stop` | Stop the frpc tunnel (**frp only**) |
+| `openmono tunnel restart` | Restart the frpc tunnel (**frp only**) |
+| `openmono tunnel status` | Show frpc + Tailscale state and endpoints |
+| `openmono tunnel logs` | Tail frpc logs (`journalctl -u frpc`; **frp only**) |
+
+> `start` / `stop` / `restart` / `logs` manage the frp relay service only. Tailscale uses its own daemon (`tailscaled`).
 
 ### Global flags
 
