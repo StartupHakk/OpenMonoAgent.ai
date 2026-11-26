@@ -162,9 +162,15 @@ openmono config set llm.model Qwen3.8-Flash-Next
 
 Thinking levels: the agent's `off / low / medium / high` knob maps to Strata's
 `reasoning_effort` directly (the client's `xhigh` is clamped to `high`, which
-is Strata's documented max). `off` is fastest; `high` is best for hard
+is Strata's documented max for Qwen3.8-Flash-Next). `off` is fastest; `high` is best for hard
 questions. The legacy `chat_template_kwargs` payload is still sent alongside
 for llama.cpp compatibility — each backend reads what it understands.
+
+The RTX 3060 12GB profile is a different Strata: the **0.2.22 terminal**
+(`strata launch`) serving Inkling 2 Mini SQ-10, not this Qwen clone. Inkling's
+template rejects `high`. That profile sets `llm.reasoning_effort` to `low`, and
+an Inkling model name is not sent `high`. See [SETUP.md](SETUP.md#rtx-3060-12gb).
+Other GPUs still use the clone described above.
 
 ## Dual-box (agent laptop + Strata GPU box via relay)
 

@@ -290,6 +290,10 @@ public static class ConfigLoader
         if (!string.IsNullOrEmpty(repetitionPenalty) && double.TryParse(repetitionPenalty, out var rpVal) && rpVal > 0)
             config.Llm.RepetitionPenalty = rpVal;
 
+        var reasoningEffort = Environment.GetEnvironmentVariable("OPENMONO_REASONING_EFFORT");
+        if (!string.IsNullOrWhiteSpace(reasoningEffort))
+            config.Llm.ReasoningEffort = reasoningEffort.Trim();
+
         var modelPreset = Environment.GetEnvironmentVariable("OPENMONO_MODEL_PRESET");
         if (!string.IsNullOrEmpty(modelPreset) && config.ModelPresets.TryGetValue(modelPreset, out var mp))
         {

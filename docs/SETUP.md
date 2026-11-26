@@ -102,6 +102,8 @@ RAM — first match wins, and the full policy is in [MODELS.md](MODELS.md):
 | AMD iGPU (7940HS / 780M), 32 GB+ RAM | Ternary-Bonsai-2-27B **PQ2_0** | ~7.2 GB | 27B (ternary) | 168k |
 | CPU | Qwen3.6-35B-A3B-UD-Q4_K_XL | ~17.6 GB | Full | 168k |
 
+An **RTX 3060 12GB** on this branch does not use the 12 GB Bonsai row. See [RTX 3060 12GB](#rtx-3060-12gb). Every other GPU keeps the table above.
+
 Model, vision and parallel slots are hardware-defaulted — none of the three is
 asked. Pass `--options` to choose them yourself, or `--model=<name>` to pin one.
 (The role and GPU prompts in Phase 1 still ask; see above.)
@@ -267,6 +269,98 @@ The installer reads `hw.memsize` and picks the model for your memory tier:
 ### Intel Macs
 
 Intel Macs have no Metal GPU and no unified memory, so native inference is unsupported. The installer allows only the **agent** role on Intel — it runs the agent locally and connects to a separate Apple Silicon or Linux inference box (see [Dual-box setup](#dual-box-setup)).
+
+---
+
+## RTX 3060 12GB
+
+This branch installs the configuration measured on echo21 (Ubuntu, RTX 3060 12GB, 32 GB RAM) when `nvidia-smi` reports that card. A 3060 Ti, a 3060 with 8 GB, and every other GPU keep the stock installer. Pass `--options` or `--model=qwen` to keep the stock model on the 3060 as well.
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/StartupHakk/OpenMonoAgent.ai/refs/heads/3060-12GB/get-openmono.sh) 3060-12GB --full
+```
+
+What setup writes, only on that card:
+
+| | 32 GB RAM (measured) | 16 GB RAM (estimate, not measured) |
+|--|--|--|
+| Model | Inkling 2 Mini, Strata SQ-10 pack | same pack |
+| Server | Strata **0.2.22** (`strata launch`, not the older Qwen clone) | same |
+| KV cache | k8v8 (q8) | k8v4 |
+| Context | **64K** default, **128K** allowed | **32K** cap |
+| Slots | 1 | 1 |
+| Drafter | Strata auto drafter on | same |
+| Reasoning | `llm.reasoning_effort` = `low` | same |
+| Vision | off (the card is full at about 11.5 GB) | off |
+
+The SQ-10 pack does not fit entirely in 12 GB. Strata keeps about **8.6 GB of experts in host RAM** and computes those on the CPU. The installer does not pin that split; the 0.2.22 engine does it. Weights: [strata-engine/Inkling-2-Mini-Strata](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) (`Inkling-2-Mini-SQ-10.strata`, 10.47 GB).
+
+Strata listens on the LAN (`--access lan`, port 7474) with the same API key as `docker/.env`, so the agent container reaches it through `host.docker.internal`. `INFERENCE_BACKEND=strata` and `~/.openmono/rtx3060-12gb.env` mean `openmono agent` will not start the old llama.cpp container when the endpoint is loopback and nothing is listening. That container's Qwen 27B does not fit this card.
+
+### Measured on echo21 (32 GB, stock 170 W)
+
+| | |
+|--|--|
+| Decode, short | 66.3 tok/s (median of 3×512) |
+| Prefill | about 853 tok/s at 17K, 806 tok/s at 30K |
+| VRAM | 11.5 GB |
+| Decode at a full window | 13.0 tok/s at 64K, 10.9 at 128K, 5.3 at 256K, no OOM |
+| Coding | 22/22 hidden tests on 4 OMA tasks, 131 s, 15 tool calls, 0 failed |
+| RAM used | about 11.5 GB at 32K and 14.7 GB at 256K |
+
+256K fits, and it is slow. The profile allows 128K and starts at 64K. k8v4 was slightly slower on the short coding run (63.7 tok/s, 156 s) and is reserved for the 16 GB estimate.
+
+### 16 GB RAM
+
+Not tested on this card. Setup selects it when MemTotal is under 24 GiB (a 32 GB machine reports about 30 GiB). Context is capped at 32K and the KV cache is k8v4, which measured 63.7 tok/s on the 32 GB box. **A larger context will swap.** Do not raise it on a 16 GB machine.
+
+### Overclock
+
+On by default for this profile, because the NVML offsets reset at reboot. A boot service (`openmono-rtx3060-oc.service`) sets:
+
+- power limit **212 W** (the card's max; stock is 170 W)
+- core **+150 MHz**
+- memory **+2000 MHz**
+
+A 10-minute soak at that point passed 235/235 checks, no Xid errors, 68 C peak. Core +200 MHz crashed with Xid 13 and 43 and is not used. Gain versus stock: Inkling decode **71.5 tok/s (+7.8%)**, prefill **949.6 tok/s**.
+
+The service checks every 15 seconds. It restores stock and stays there on a kernel Xid, a GPU temperature of **83 C** or higher, or a failed check (the offsets did not stick, or `nvidia-smi` cannot read the card). After that backoff it does not apply again until you clear the latch. sudo is limited to `/usr/local/sbin/openmono-rtx3060-oc` (`status`, `apply`, `restore`, `watch`). The helper refuses to change any card that is not an RTX 3060 12GB.
+
+Opt out at install time:
+
+```bash
+OPENMONO_RTX3060_OC=0 openmono setup
+```
+
+Or later:
+
+```bash
+bash scripts/rtx3060-12gb.sh oc-disable    # stock clocks, stays off across reboots
+bash scripts/rtx3060-12gb.sh oc-restore    # stock clocks once
+bash scripts/rtx3060-12gb.sh oc-enable     # clear a backoff and apply at boot
+```
+
+Strata itself starts at boot as `openmono-rtx3060-strata.service`.
+
+### Revert
+
+```bash
+bash scripts/rtx3060-12gb.sh revert
+```
+
+That stops Strata, disables both boot services, restores stock clocks, and removes `~/.openmono/rtx3060-12gb.env`. The model file is kept. `docker/.env` stays on `INFERENCE_BACKEND=strata` so the old llama.cpp container is not started. To go back to the stock 12 GB model, check out `main` and run `openmono setup`.
+
+To remove the helper as well:
+
+```bash
+sudo rm /etc/sudoers.d/openmono-rtx3060-oc /usr/local/sbin/openmono-rtx3060-oc \
+  /etc/systemd/system/openmono-rtx3060-strata.service \
+  /etc/systemd/system/openmono-rtx3060-oc.service \
+  /etc/openmono/rtx3060-oc.disabled
+sudo systemctl daemon-reload
+```
+
+Reasoning effort is `llm.reasoning_effort` in `~/.openmono/settings.json` (or `OPENMONO_REASONING_EFFORT`). Remove the key to let the model profile decide. There is no effort proxy.
 
 ---
 

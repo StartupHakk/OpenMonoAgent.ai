@@ -23,6 +23,9 @@ PORT="$(grep '^INFERENCE_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '
 [[ -n "$PORT" ]] || PORT="$(grep '^STRATA_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true)"
 [[ -n "$PORT" ]] || PORT="$(grep '^LLAMA_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true)"
 PORT="${SETTINGS_PORT:-${PORT:-7474}}"
+if [[ -f "$HOME/.openmono/rtx3060-12gb.env" ]] && grep -q '^RTX3060_PROFILE=1$' "$HOME/.openmono/rtx3060-12gb.env"; then
+    BACKEND="strata"
+fi
 if [[ "$BACKEND" == "strata" ]] || [[ -z "$BACKEND" && -f "$HOME/.openmono/strata.env" ]]; then
     BACKEND="strata"
     LABEL="strata"

@@ -97,6 +97,19 @@ public sealed record ModelReasoningProfile
         PreserveThinking = true,
     };
 
+    // Inkling 2 Mini (Strata SQ packs). The chat template rejects "high"
+    // (the bench saw that on the same family of templates). 0.2.22 accepts
+    // low / medium / xhigh and defaults to low when the request says nothing.
+    // The RTX 3060 profile also sets llm.reasoning_effort so the request
+    // carries "low" instead of the "high" / "none" values those templates drop.
+    private static readonly ModelReasoningProfile _inkling = new()
+    {
+        Kind = ReasoningKind.EffortLevels,
+        DefaultEnabled = true,
+        DefaultLevel = "low",
+        Levels = ["off", "low", "medium", "xhigh"],
+    };
+
     public static ModelReasoningProfile Resolve(string? modelName)
         => Resolve(modelName, serverInfo: null);
 
@@ -130,6 +143,7 @@ public sealed record ModelReasoningProfile
     {
         var ordered = advertised
             .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(l => !IsInkling(modelName) || !l.Equals("high", StringComparison.OrdinalIgnoreCase))
             .OrderBy(l => EffortRank.TryGetValue(l, out var r) ? r : 99)
             .ToArray();
         var known = MapByName(modelName);
@@ -156,6 +170,8 @@ public sealed record ModelReasoningProfile
 
         var lower = modelName.ToLowerInvariant();
 
+        if (lower.Contains("inkling"))
+            return _inkling;
         if (lower.Contains("qwen-3.8") || lower.Contains("qwen3.8") || lower.StartsWith("qwen38-"))
             return _qwen38;
         if (lower.StartsWith("qwen"))
@@ -173,4 +189,73 @@ public sealed record ModelReasoningProfile
         DefaultEnabled = false,
         DefaultLevel = "off",
     };
+
+    public static bool IsInkling(string? modelName) =>
+        !string.IsNullOrWhiteSpace(modelName)
+        && modelName.Contains("inkling", StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsActiveEffort(string? effort) =>
+        !string.IsNullOrWhiteSpace(effort)
+        && !effort.Equals("off", StringComparison.OrdinalIgnoreCase)
+        && !effort.Equals("none", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Effort sent as the top-level <c>reasoning_effort</c> field.
+    /// Inkling templates reject "high", so that value becomes "low".
+    /// Other models keep the existing Strata clamp: "xhigh" becomes "high".
+    /// </summary>
+    public static string NormalizeTopLevelEffort(string? modelName, string effort)
+    {
+        if (IsInkling(modelName))
+        {
+            if (effort.Equals("high", StringComparison.OrdinalIgnoreCase))
+                return "low";
+            return effort;
+        }
+        if (effort.Equals("xhigh", StringComparison.OrdinalIgnoreCase))
+            return "high";
+        return effort;
+    }
+
+    /// <summary>
+    /// Effort sent inside <c>chat_template_kwargs</c>. Qwen keeps "xhigh" here
+    /// (llama.cpp understands it). Inkling still must not be sent "high".
+    /// </summary>
+    public static string NormalizeTemplateEffort(string? modelName, string effort)
+    {
+        if (IsInkling(modelName) && effort.Equals("high", StringComparison.OrdinalIgnoreCase))
+            return "low";
+        return effort;
+    }
+
+    /// <summary>
+    /// Which effort to put on the request. A configured <c>llm.reasoning_effort</c>
+    /// wins over the session or playbook level. When it is absent, the previous
+    /// rule stands: only effort-level models with thinking on send a level.
+    /// </summary>
+    public static string? SelectRequestEffort(string? configured, string? level, bool thinking, ReasoningKind kind)
+    {
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            var chosen = configured.Trim();
+            if (chosen.Equals("off", StringComparison.OrdinalIgnoreCase))
+                return null;
+            return chosen;
+        }
+        if (kind == ReasoningKind.EffortLevels && thinking && IsActiveEffort(level))
+            return level;
+        return null;
+    }
+
+    public static (bool Enabled, string Level) SessionThinking(ModelReasoningProfile profile, string? configured)
+    {
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            var level = configured.Trim();
+            var enabled = IsActiveEffort(level);
+            return (enabled, enabled ? level : "off");
+        }
+        var on = profile.DefaultEnabled && profile.DefaultLevel != "off";
+        return (on, profile.DefaultLevel);
+    }
 }

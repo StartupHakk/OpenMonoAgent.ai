@@ -138,8 +138,9 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     var session = SessionManager.CreateSession();
 
     var reasoningProfile = OpenMono.Utils.ModelReasoningProfile.Resolve(config.Llm.Model, config.Llm.ServerReasoning);
-    session.Meta.ThinkingLevel = reasoningProfile.DefaultLevel;
-    session.Meta.ThinkingEnabled = reasoningProfile.DefaultEnabled && reasoningProfile.DefaultLevel != "off";
+    var seeded = OpenMono.Utils.ModelReasoningProfile.SessionThinking(reasoningProfile, config.Llm.ReasoningEffort);
+    session.Meta.ThinkingLevel = seeded.Level;
+    session.Meta.ThinkingEnabled = seeded.Enabled;
 
     var enableTui = !acpOnly && (useTui ?? (!Console.IsInputRedirected && !Console.IsOutputRedirected));
     AnsiTuiRenderer? ansiTui = null;

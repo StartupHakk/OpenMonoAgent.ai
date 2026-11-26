@@ -386,6 +386,12 @@ public sealed class ConversationLoop : IDisposable
         var thinking = _session.Meta.ThinkingEnabled;
         var thinkingLevel = _session.Meta.ThinkingLevel ?? "off";
         var profile = Utils.ModelReasoningProfile.Resolve(_config.Llm.Model, _config.Llm.ServerReasoning);
+        var requestEffort = Utils.ModelReasoningProfile.SelectRequestEffort(
+            _config.Llm.ReasoningEffort, thinkingLevel, thinking, profile.Kind);
+        // llm.reasoning_effort is sent even when the session thinking flag is off,
+        // so the 3060 profile can force "low" without the effort proxy. Sampler
+        // overrides stay tied to the session flag.
+        var enableThinking = thinking || Utils.ModelReasoningProfile.IsActiveEffort(requestEffort);
 
         var options = new LlmOptions
         {
@@ -398,8 +404,8 @@ public sealed class ConversationLoop : IDisposable
 
             Temperature = thinking && profile.ThinkingTemperature is { } tt ? tt : _config.Llm.Temperature,
             PresencePenalty = thinking ? 0.0 : _config.Llm.PresencePenalty,
-            EnableThinking = thinking,
-            ReasoningEffort = profile.Kind == ReasoningKind.EffortLevels && thinking && !string.IsNullOrEmpty(thinkingLevel) && thinkingLevel != "off" ? thinkingLevel : null,
+            EnableThinking = enableThinking,
+            ReasoningEffort = requestEffort,
             PreserveThinking = profile.PreserveThinking && thinking,
         };
 

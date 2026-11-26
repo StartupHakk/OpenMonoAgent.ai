@@ -54,6 +54,8 @@ Rows 1 and 2 are the **same card** split by system RAM: the Flash-Next weights a
 48 GB-class. The gate tests 44 GB rather than 48 because a 48 GB box reports 46–47 GB
 once firmware and kernel reservations are subtracted.
 
+On the `3060-12GB` branch, an **RTX 3060 12GB** (the name, and 12 GB of VRAM — not a 3060 Ti) does not use row 4. Setup installs Inkling 2 Mini SQ-10 on Strata 0.2.22 instead. A 32 GB machine gets 64K context (128K allowed) and KV k8v8. Under 24 GiB of RAM the installer uses an unmeasured 16 GB estimate: 32K context and KV k8v4, and warns that a larger window will swap. Other 12 GB cards stay on row 4. See [SETUP.md](SETUP.md#rtx-3060-12gb).
+
 Row 3 stays on Qwen3.8-27B: IQ3_XXS (~12 GB) fits a 16 GB card with room for the KV
 cache, so there is no reason to fall back to a ternary quant. Row 4 is where Qwen has
 no 27B option left — a 12 GB card only fits the 9B model — which is exactly where

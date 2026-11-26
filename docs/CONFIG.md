@@ -206,6 +206,7 @@ Controls the active LLM connection and sampling parameters. At startup, `model` 
 | `presence_penalty` | float | `1.5` | Penalise repeated tokens |
 | `min_p` | float | `0.0` | Min-P sampling cutoff |
 | `repetition_penalty` | float | `1.0` | Repetition penalty multiplier |
+| `reasoning_effort` | string | *(unset)* | When set, this effort is sent on every request and overrides the session or playbook level. The RTX 3060 profile sets `low`. Remove the key to use the model profile |
 
 ---
 
@@ -465,6 +466,7 @@ server-reported `n_ctx` (at least 1024) takes precedence at startup.
 | `OPENMONO_PRESENCE_PENALTY` | `llm.presence_penalty` |
 | `OPENMONO_MIN_P` | `llm.min_p` |
 | `OPENMONO_REPETITION_PENALTY` | `llm.repetition_penalty` |
+| `OPENMONO_REASONING_EFFORT` | `llm.reasoning_effort` |
 | `OPENMONO_WORKSPACE` | `working_directory` |
 | `OPENMONO_HOST_WORKSPACE` | `host_working_directory` |
 | `OPENMONO_DATA_DIR` | `data_directory` |

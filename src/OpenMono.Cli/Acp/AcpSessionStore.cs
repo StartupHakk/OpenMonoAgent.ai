@@ -56,8 +56,9 @@ public sealed class AcpSessionStore : IDisposable
         state.Meta.PlanMode = true;
 
         var reasoningProfile = ResolveReasoning(state.Model);
-        state.Meta.ThinkingLevel = reasoningProfile.DefaultLevel;
-        state.Meta.ThinkingEnabled = reasoningProfile.DefaultEnabled && reasoningProfile.DefaultLevel != "off";
+        var seeded = ModelReasoningProfile.SessionThinking(reasoningProfile, _config.Llm.ReasoningEffort);
+        state.Meta.ThinkingLevel = seeded.Level;
+        state.Meta.ThinkingEnabled = seeded.Enabled;
 
         var session = new AcpSession { State = state, LastActivityAt = now };
         _live[session.Id] = session;
@@ -82,8 +83,9 @@ public sealed class AcpSessionStore : IDisposable
         if (state.Meta.ThinkingLevel is null)
         {
             var legacyProfile = ResolveReasoning(state.Model);
-            state.Meta.ThinkingLevel = legacyProfile.DefaultLevel;
-            state.Meta.ThinkingEnabled = legacyProfile.DefaultEnabled && legacyProfile.DefaultLevel != "off";
+            var seeded = ModelReasoningProfile.SessionThinking(legacyProfile, _config.Llm.ReasoningEffort);
+            state.Meta.ThinkingLevel = seeded.Level;
+            state.Meta.ThinkingEnabled = seeded.Enabled;
         }
 
         var session = new AcpSession

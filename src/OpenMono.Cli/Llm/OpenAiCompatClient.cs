@@ -520,7 +520,7 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                 ["enable_thinking"] = options.EnableThinking.Value,
             };
             if (options.ReasoningEffort is { Length: > 0 })
-                kwargs["reasoning_effort"] = options.ReasoningEffort;
+                kwargs["reasoning_effort"] = ModelReasoningProfile.NormalizeTemplateEffort(model, options.ReasoningEffort);
             if (options.PreserveThinking.HasValue)
                 kwargs["preserve_thinking"] = options.PreserveThinking.Value;
             body["chat_template_kwargs"] = kwargs;
@@ -530,15 +530,14 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
         // "reasoning_effort" (none|low|medium|high) instead of
         // chat_template_kwargs. llama.cpp ignores unknown top-level fields, so
         // sending both keeps one client working on either backend.
+        // Inkling templates reject "high"; that clamp is model-specific and
+        // does not change the Qwen xhigh→high rule.
         if (options.EnableThinking.HasValue || options.ReasoningEffort is { Length: > 0 })
         {
             var effort = !string.IsNullOrEmpty(options.ReasoningEffort)
                 ? options.ReasoningEffort
                 : options.EnableThinking == true ? "medium" : "none";
-            // Strata has no xhigh level — clamp to its documented max.
-            if (string.Equals(effort, "xhigh", StringComparison.OrdinalIgnoreCase))
-                effort = "high";
-            body["reasoning_effort"] = effort;
+            body["reasoning_effort"] = ModelReasoningProfile.NormalizeTopLevelEffort(model, effort);
         }
 
         if (tools.HasValue && tools.Value.ValueKind == JsonValueKind.Array &&

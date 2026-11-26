@@ -59,6 +59,7 @@ _STRATA_MODEL_ENV="${STRATA_MODEL:-}"
 _STRATA_CONTEXT_ENV="${STRATA_CONTEXT:-}"
 _STRATA_VISION_ENV="${STRATA_VISION:-}"
 _STRATA_DATA_DIR_ENV="${STRATA_DATA_DIR:-}"
+_STRATA_FLAVOR_ENV="${STRATA_FLAVOR:-}"
 
 STRATA_DIR="${STRATA_DIR:-$HOME/strata}"
 INFERENCE_PORT="${INFERENCE_PORT:-${STRATA_PORT:-7474}}"
@@ -148,6 +149,7 @@ load_env() {
     [[ -n "$_STRATA_CONTEXT_ENV" ]]  && STRATA_CONTEXT="$_STRATA_CONTEXT_ENV"
     [[ -n "$_STRATA_VISION_ENV" ]]   && STRATA_VISION="$_STRATA_VISION_ENV"
     [[ -n "$_STRATA_DATA_DIR_ENV" ]] && STRATA_DATA_DIR="$_STRATA_DATA_DIR_ENV"
+    [[ -n "${_STRATA_FLAVOR_ENV:-}" ]] && STRATA_FLAVOR="$_STRATA_FLAVOR_ENV"
     STRATA_DIR="${STRATA_DIR:-$HOME/strata}"
     INFERENCE_PORT="${INFERENCE_PORT:-${STRATA_PORT:-7474}}"
     INFERENCE_PARALLEL="${INFERENCE_PARALLEL:-${STRATA_PARALLEL:-}}"
@@ -576,6 +578,13 @@ _prompt_vision() {
     info "Vision: $STRATA_VISION"
 }
 
+# The RTX 3060 12GB profile serves Inkling with the Strata 0.2.22 terminal
+# (`strata launch`). Flash-Next installs leave STRATA_FLAVOR empty and keep
+# the git-clone setup.sh path below.
+use_rtx3060_cli() {
+    [[ "${STRATA_FLAVOR:-}" == "cli-0.2.22" ]]
+}
+
 cmd_install() {
     # `--yes` is consumed here (added to setup args); everything else after
     # `install` is forwarded to Strata's setup.sh verbatim,
@@ -583,6 +592,9 @@ cmd_install() {
     # Pick up a persisted install (dir/model/port/slots) so a re-run resumes it;
     # explicitly exported STRATA_* values still win over strata.env.
     load_env
+    if use_rtx3060_cli; then
+        exec bash "$SCRIPT_DIR/rtx3060-12gb.sh" prepare "$@"
+    fi
     ensure_clone
     # Vision (image input) is a user choice, not a silent default. Prompt unless
     # STRATA_VISION was preset (env) or --vision was passed through to setup.sh.
@@ -686,6 +698,9 @@ server_wait_healthy() {
 
 cmd_start() {
     load_env
+    if use_rtx3060_cli; then
+        exec bash "$SCRIPT_DIR/rtx3060-12gb.sh" serve "$@"
+    fi
     if [[ ! -f "$STRATA_DIR/setup.sh" ]]; then
         err "Strata is not installed at $STRATA_DIR. Run: openmono setup   (or scripts/strata.sh install)"
         exit 1
@@ -721,6 +736,9 @@ cmd_start() {
 
 cmd_stop() {
     load_env
+    if use_rtx3060_cli; then
+        exec bash "$SCRIPT_DIR/rtx3060-12gb.sh" stop "$@"
+    fi
     local stopped=0
     if [[ -f "$STRATA_PID_FILE" ]]; then
         local pid
@@ -747,6 +765,9 @@ cmd_stop() {
 
 cmd_status() {
     load_env
+    if use_rtx3060_cli; then
+        exec bash "$SCRIPT_DIR/rtx3060-12gb.sh" status "$@"
+    fi
     local url models
     url="$(strata_base_url)"
     echo -n "strata ($url): "
