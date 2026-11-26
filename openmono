@@ -239,11 +239,24 @@ _stop_inference_backend_applied() {
     fi
 }
 
+# The RTX 3060 12GB profile writes this marker. While it exists, inference is
+# the host Strata 0.2.22 server. Never treat that box as the llama.cpp container:
+# a loopback endpoint with no server is exactly when `openmono agent` would
+# otherwise `docker compose up` the old llama-server.
+_rtx3060_profile_active() {
+    local f="${HOME}/.openmono/rtx3060-12gb.env"
+    [[ -f "$f" ]] && grep -q '^RTX3060_PROFILE=1$' "$f"
+}
+
 # ── Inference backend selection (Linux) ─────────────────────────────────────
 # Strata (Qwen3.8-Flash-Next, host-native :7474/v1) is the default for fresh
 # installs on this branch; pre-existing installs without the marker keep the
 # legacy llama.cpp Docker path. macOS Apple Silicon always uses NATIVE_INFERENCE.
 _inference_backend() {
+    if _rtx3060_profile_active; then
+        printf 'strata'
+        return
+    fi
     local b
     b="$(_env_get INFERENCE_BACKEND)"
     if [[ "$b" == "strata" || "$b" == "llama" ]]; then

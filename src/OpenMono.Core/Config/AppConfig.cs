@@ -95,6 +95,14 @@ public class LlmConfig
     public double MinP { get; set; } = 0.0;
     public double RepetitionPenalty { get; set; } = 1.0;
 
+    /// <summary>
+    /// When set, this effort is sent on every chat request and overrides the
+    /// session or playbook level. The RTX 3060 profile sets it to "low"
+    /// because Inkling's template rejects "high". Leave it unset for the
+    /// model profile's own default.
+    /// </summary>
+    public string? ReasoningEffort { get; set; }
+
     [JsonIgnore]
     public bool ContextSizeExplicit { get; set; }
 
@@ -114,6 +122,7 @@ public class LlmConfig
         if (source.PresencePenalty != 0) PresencePenalty = source.PresencePenalty;
         if (source.MinP > 0) MinP = source.MinP;
         if (source.RepetitionPenalty > 0) RepetitionPenalty = source.RepetitionPenalty;
+        if (!string.IsNullOrWhiteSpace(source.ReasoningEffort)) ReasoningEffort = source.ReasoningEffort;
     }
 }
 

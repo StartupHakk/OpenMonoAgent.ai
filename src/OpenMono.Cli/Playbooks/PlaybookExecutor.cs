@@ -514,14 +514,19 @@ public sealed class PlaybookExecutor : IDisposable
             }
         }
         var thinkingEnabled = profile.Kind != ReasoningKind.None && thinkLevel is not null && thinkLevel != "off";
+        var requestEffort = ModelReasoningProfile.SelectRequestEffort(
+            _config.Llm.ReasoningEffort, thinkLevel, thinkingEnabled, profile.Kind);
+        var enableThinking = thinkingEnabled || ModelReasoningProfile.IsActiveEffort(requestEffort);
         var options = new LlmOptions
         {
             Model = _config.Llm.Model,
             Temperature = thinkingEnabled && profile.ThinkingTemperature is { } tt ? tt : (playbook.Temperature ?? _config.Llm.Temperature),
             TopP = thinkingEnabled && profile.ThinkingTopP is { } ttp ? ttp : _config.Llm.TopP,
             MaxTokens = _config.Llm.MaxOutputTokens,
-            EnableThinking = profile.Kind == ReasoningKind.None ? null : thinkingEnabled,
-            ReasoningEffort = profile.Kind == ReasoningKind.EffortLevels && thinkingEnabled ? thinkLevel : null,
+            EnableThinking = profile.Kind == ReasoningKind.None && !ModelReasoningProfile.IsActiveEffort(requestEffort)
+                ? null
+                : enableThinking,
+            ReasoningEffort = requestEffort,
             PreserveThinking = profile.PreserveThinking && thinkingEnabled,
         };
 

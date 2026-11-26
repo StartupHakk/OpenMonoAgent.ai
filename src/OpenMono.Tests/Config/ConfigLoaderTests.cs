@@ -19,6 +19,7 @@ public class ConfigLoaderTests : IDisposable
         "OPENMONO_DATA_DIR", "OPENMONO_CONTEXT_SIZE", "OPENMONO_MAX_OUTPUT_TOKENS", "OPENMONO_TOP_P",
         "OPENMONO_TOP_K", "OPENMONO_PRESENCE_PENALTY", "OPENMONO_MIN_P", "OPENMONO_REPETITION_PENALTY",
         "OPENMONO_MODEL_PRESET", "OPENMONO_PROVIDER", "OPENMONO_VISION_ENABLED",
+        "OPENMONO_REASONING_EFFORT",
     ];
 
     private readonly Dictionary<string, string?> _savedEnv = [];

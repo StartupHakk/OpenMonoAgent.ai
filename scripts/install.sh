@@ -388,6 +388,9 @@ next_step "Checking system requirements"
 # GPU_MODE is exported by install_prereqs.sh (1 = GPU, 0 = CPU).
 _VRAM_MB=0
 _GPU_TIER=0
+# RTX 3060 12GB profile (this branch). Stays 0 on every other GPU.
+_RTX3060_PROFILE=0
+_RTX3060_SERVING=0
 MODEL_NAME=""
 MODEL_ACCURACY=""
 MODEL_ALIAS=""
@@ -463,6 +466,41 @@ if [ "$OPENMONO_ROLE" != "agent" ]; then
             info "RAM: ${_MEM_GB}GB — Strata (Qwen3.8-Flash-Next, ~70GB weights) not offered; it needs a 48GB-class box."
         fi
     fi
+    # RTX 3060 12GB only. A different 12 GB card keeps the stock Bonsai pick.
+    # Explicit --model, --options, or OPENMONO_INFERENCE_BACKEND=llama still win.
+    _rtx3060_detect="$(bash "$SCRIPT_DIR/rtx3060-12gb.sh" detect 2>/dev/null || true)"
+    if printf '%s\n' "$_rtx3060_detect" | grep -q '^RTX3060_MATCH=1$'; then
+        if printf '%s\n' "$_rtx3060_detect" | grep -Eqv '^[A-Z0-9_]+=[A-Za-z0-9]+$'; then
+            warn "RTX 3060 detector returned unexpected output — keeping the stock model"
+        else
+            _RTX3060_PROFILE=1
+            # shellcheck disable=SC2086
+            eval "$_rtx3060_detect"
+            ok "RTX 3060 12GB detected — RAM profile ${RTX3060_RAM_PROFILE}"
+        fi
+    fi
+    if [ "$_RTX3060_PROFILE" = "1" ] \
+        && [ "${GPU_MODE:-0}" = "1" ] \
+        && [ "${OPENMONO_SETUP_OPTIONS:-0}" != "1" ] \
+        && { [ "${OPENMONO_MODEL:-auto}" = "auto" ] || [ "${OPENMONO_MODEL}" = "inkling-2-mini" ]; } \
+        && { [ -z "${OPENMONO_INFERENCE_BACKEND:-}" ] || [ "${OPENMONO_INFERENCE_BACKEND}" = "strata" ]; }; then
+        _RTX3060_SERVING=1
+        OPENMONO_MODEL=inkling-2-mini
+        export OPENMONO_MODEL
+        INFERENCE_BACKEND=strata
+        STRATA_FLAVOR=cli-0.2.22
+        STRATA_CONTEXT="$RTX3060_CONTEXT"
+        STRATA_CONTEXT_MAX="$RTX3060_CONTEXT_MAX"
+        STRATA_KV="$RTX3060_KV"
+        STRATA_VISION=no
+        export STRATA_FLAVOR STRATA_CONTEXT STRATA_CONTEXT_MAX STRATA_KV STRATA_VISION
+        export INFERENCE_PORT="${INFERENCE_PORT:-7474}"
+        info "RTX 3060 12GB profile: Inkling 2 Mini SQ-10, Strata 0.2.22, KV ${STRATA_KV}, context ${STRATA_CONTEXT} (max ${STRATA_CONTEXT_MAX}), 1 slot, reasoning effort low"
+        if [ "$RTX3060_RAM_PROFILE" = "16gb" ]; then
+            warn "16 GB RAM profile is an estimate (not measured on the 32 GB bench). Context stays at 32K. A larger window will swap."
+        fi
+        info "Pass --options or --model=qwen to keep the stock model on this card. OPENMONO_RTX3060_OC=0 skips the overclock."
+    fi
     # Unified picker: only offers what this box can run. Sets INFERENCE_BACKEND.
     # Without --options, hardware decides the model: export the policy pick so the
     # explicit-selection path in prompt_model_choice runs with no menu. An
@@ -473,7 +511,14 @@ if [ "$OPENMONO_ROLE" != "agent" ]; then
         info "Pass --options to choose the model, vision and parallel slots yourself"
     fi
     # offered only when this box supports them. Sets INFERENCE_BACKEND.
-    prompt_model_choice
+    # The 3060 profile already chose Strata 0.2.22. prompt_model_choice does not
+    # know that model and would fall back to llama.cpp.
+    if [ "${_RTX3060_SERVING:-0}" = "1" ]; then
+        INFERENCE_BACKEND=strata
+        info "RTX 3060 12GB profile selected — skipping the model menu"
+    else
+        prompt_model_choice
+    fi
     # Vision is a user choice (when the hardware+model allow it): ask it FIRST,
     # right after model selection, before the parallel-slots prompt. Asking
     # vision before slots keeps the slots question last, so a stray buffered
@@ -619,6 +664,12 @@ cd "$INSTALL_DIR"
 
 if [ "$INFERENCE_BACKEND" = "strata" ] && [ "$OPENMONO_ROLE" != "agent" ]; then
     next_step "Strata model setup (delegated to Strata installer)"
+    if [ "${_RTX3060_SERVING:-0}" = "1" ]; then
+        info "RTX 3060 12GB — Strata 0.2.22 and Inkling 2 Mini SQ-10 (not the Qwen3.8-Flash-Next clone)."
+        if ! STRATA_FLAVOR=cli-0.2.22 bash "$SCRIPT_DIR/rtx3060-12gb.sh" prepare; then
+            die "RTX 3060 profile install failed — retry: bash scripts/rtx3060-12gb.sh prepare"
+        fi
+    else
     info "Strata downloads its own Qwen3.8-Flash-Next weights (~70 GB, resumable)."
     _strata_flags=()
     # Default route: Strata must not ask anything. Unlike the llama.cpp backend,
@@ -638,6 +689,7 @@ if [ "$INFERENCE_BACKEND" = "strata" ] && [ "$OPENMONO_ROLE" != "agent" ]; then
     fi
     if ! STRATA_YES="$([[ ! -t 0 || "${OPENMONO_SETUP_OPTIONS:-0}" != "1" ]] && echo 1 || echo 0)" bash "$SCRIPT_DIR/strata.sh" install "${_strata_flags[@]}"; then
         die "Strata install failed — retry: bash scripts/strata.sh install (see docs/STRATA.md). Strata's own output: ~/.openmono/strata-setup.log"
+    fi
     fi
     ok "Strata model ready (server starts in the final step)"
 fi
@@ -1377,6 +1429,15 @@ if [ "$OPENMONO_ROLE" != "agent" ] && [ "$INFERENCE_BACKEND" = "strata" ]; then
     if ! bash "$SCRIPT_DIR/strata.sh" start; then
         warn "Strata did not become healthy yet — first boot can take several minutes."
         warn "Check: bash scripts/strata.sh logs   (or: openmono logs)"
+    fi
+    if [ "${_RTX3060_SERVING:-0}" = "1" ]; then
+        info "RTX 3060 12GB — enabling the Strata boot service (and the overclock, unless OPENMONO_RTX3060_OC=0)"
+        if bash "$SCRIPT_DIR/rtx3060-12gb.sh" install-services; then
+            ok "RTX 3060 boot services enabled"
+        else
+            warn "RTX 3060 boot services were not enabled. Inference setup continues."
+            warn "After setup: bash scripts/rtx3060-12gb.sh install-services"
+        fi
     fi
 fi
 

@@ -128,6 +128,11 @@ _backend() {
         printf 'native-metal'
         return
     fi
+    # RTX 3060 12GB profile: host Strata, never the llama.cpp container.
+    if [[ -f "$STATE_DIR/rtx3060-12gb.env" ]] && grep -q '^RTX3060_PROFILE=1$' "$STATE_DIR/rtx3060-12gb.env"; then
+        printf 'strata'
+        return
+    fi
     local b
     b="$(_env_get INFERENCE_BACKEND "$DOCKER_ENV")"
     case "$b" in
@@ -265,9 +270,17 @@ _ensure_api_key() {
 }
 
 _desired_ctx() {
-    local ctx
+    local ctx max
     ctx="$(_settings_get '.inference.ctx_size')"
     if [[ "$ctx" =~ ^[0-9]+$ ]] && (( ctx > 0 )); then
+        if [[ -f "$STATE_DIR/rtx3060-12gb.env" ]]; then
+            max="$(sed -n 's/^STRATA_CONTEXT_MAX=//p' "$STATE_DIR/rtx3060-12gb.env" | head -1)"
+            max="${max%\"}"; max="${max#\"}"
+            if [[ "$max" =~ ^[0-9]+$ ]] && (( ctx > max )); then
+                warn "RTX 3060 profile allows at most ${max} tokens of context (settings asked ${ctx}). Using ${max}."
+                ctx="$max"
+            fi
+        fi
         printf '%s' "$ctx"
     fi
 }
@@ -531,7 +544,11 @@ _apply() {
         else
             warn "Strata state file not found: $STRATA_ENV (run scripts/strata.sh install)"
         fi
-        _apply_strata "$port" "$parallel" "$key" "$ctx"
+        if [[ "$(_env_get STRATA_FLAVOR "$STRATA_ENV")" == "cli-0.2.22" ]]; then
+            info "Strata 0.2.22 profile — port, slots and context apply on the next strata launch"
+        else
+            _apply_strata "$port" "$parallel" "$key" "$ctx"
+        fi
     fi
 
     info "applied: backend=$backend port=$port slots=$parallel upstream=$upstream"
