@@ -2,6 +2,8 @@
 
 Design only. This document plans the **OpenMonoAgent.ai Control Panel**: a browser UI that ships with the agent install, talks to the agent through the existing ACP server, and also runs the installs on both sides of a split box. No panel code ships with this document.
 
+This file used to live at `docs/control-panel-plan.md`. It now lives in `src/cc/` with the rest of the Control Panel. The build-ready spec is [PLAN.md](PLAN.md). The HTTP contract is [api.md](api.md). Screen states are [screens.md](screens.md). Repo paths such as `docs/DEPLOYMENT-MODES.md` are still paths from the repository root.
+
 Reviewed 27 November 2026 from this repo at `main` `e4b8eae`, from the unmerged framework plan in [PR #166](https://github.com/StartupHakk/OpenMonoAgent.ai/pull/166) (`cursor/agent-framework-plan-c685`), and from [OpenHands/OpenHands](https://github.com/OpenHands/OpenHands) `main` `be48abe` (Agent Canvas 1.46.0, MIT). The VS Code extension `StartupHakk.openmono-agent` is a marketplace product. Its source is not in this repository; the behavior below is what this repo and the marketplace listing already document.
 
 Two names that already collide:
