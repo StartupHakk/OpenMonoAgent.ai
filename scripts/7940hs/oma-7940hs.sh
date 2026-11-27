@@ -5,7 +5,7 @@ set -euo pipefail
 # OpenMono.ai: AMD Ryzen 9 7940HS / Radeon 780M native inference profile
 #
 # Opt-in. Replaces the llama-server container on this box with a native
-# llama-server (Unsloth llama.cpp Vulkan build) run by systemd on the usual
+# llama-server (upstream llama.cpp Vulkan build) run by systemd on the usual
 # inference port, tuned from multi-day testing on a 7940HS mini PC. Nothing
 # here runs unless you call it; other hardware paths are unchanged.
 # See scripts/7940hs/README.md.
@@ -203,7 +203,8 @@ install_llama() {
         || die "llama.cpp download failed sha256 verification"
     as_root rm -rf "$dir.tmp"
     as_root install -d -m 0755 "$dir.tmp"
-    run as_root tar -xzf "$dl/$OMA_LLAMA_ASSET" -C "$dir.tmp" --no-same-owner || die "extract failed"
+    run as_root tar -xzf "$dl/$OMA_LLAMA_ASSET" -C "$dir.tmp" --no-same-owner \
+        --strip-components="${OMA_LLAMA_STRIP:-0}" || die "extract failed"
     as_root test -x "$dir.tmp/llama-server" || die "llama-server not found in $OMA_LLAMA_ASSET"
     printf '%s  %s\n' "$OMA_LLAMA_SHA256" "$OMA_LLAMA_ASSET" | as_root tee "$dir.tmp/.sha256-ok" >/dev/null
     as_root rm -rf "$dir"; as_root mv "$dir.tmp" "$dir"
@@ -240,7 +241,7 @@ write_conf() {
 # Edit values here, then: sudo systemctl restart ${OMA_UNIT}
 # Re-running install regenerates this file from profile.conf and the env.
 $(for v in OMA_LLAMA_TAG OMA_MODEL_ALIAS OMA_HOST OMA_PORT OMA_PARALLEL OMA_CTX \
-           OMA_CACHE_K OMA_CACHE_V OMA_FLASH_ATTN OMA_NGL OMA_BATCH OMA_UBATCH \
+           OMA_CACHE_K OMA_CACHE_V OMA_FLASH_ATTN OMA_NGL OMA_BATCH OMA_UBATCH OMA_CACHE_RAM \
            OMA_LOAD_MODE OMA_REASONING OMA_TEMPLATE_KWARGS OMA_EXTRA_ARGS OMA_ENV_EXTRA \
            OMA_GPU_GUARD_MIN_MIB OMA_KEY_FILE OMA_UNIT; do
     printf '%s=%q\n' "$v" "${!v}"

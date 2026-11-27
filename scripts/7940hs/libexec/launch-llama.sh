@@ -47,6 +47,8 @@ args=(
     --api-key-file "$OMA_KEY_FILE"
 )
 [[ -n "${OMA_TEMPLATE_KWARGS:-}" ]] && args+=(--chat-template-kwargs "$OMA_TEMPLATE_KWARGS")
+# Host prompt cache cap in MiB (-cram). Keeps RAM flat on long agent sessions.
+[[ -n "${OMA_CACHE_RAM:-}" ]] && args+=(-cram "$OMA_CACHE_RAM")
 if [[ -n "${OMA_EXTRA_ARGS:-}" ]]; then
     # shellcheck disable=SC2206  # word splitting of free-form extra flags is intended
     extra=( $OMA_EXTRA_ARGS )

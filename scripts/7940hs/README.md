@@ -1,7 +1,7 @@
 # AMD Ryzen 9 7940HS / Radeon 780M native profile
 
 An opt-in inference profile for 7940HS mini PCs. It replaces the
-`llama-server` container on the box with a native `llama-server` (Unsloth
+`llama-server` container on the box with a native `llama-server` (upstream
 llama.cpp, Vulkan on Mesa RADV) run by systemd on the usual inference port
 (7474), plus the kernel and power settings that made the difference in
 testing. Nothing here runs unless you call `oma-7940hs.sh`, and the default
@@ -14,6 +14,7 @@ three days of testing (November 2026).
 
 - [Hardware](#hardware)
 - [Recipe](#recipe)
+- [Host settings outside the installer](#host-settings-outside-the-installer)
 - [Results](#results)
 - [Install](#install)
 - [Verify](#verify)
@@ -29,7 +30,7 @@ three days of testing (November 2026).
 |---|---|
 | CPU / iGPU | AMD Ryzen 9 7940HS (8 cores, 16 threads), Radeon 780M (RDNA3, gfx1103) |
 | RAM | 2x 16 GB DDR5-5600 SO-DIMM (the 7940HS maximum), dual channel |
-| BIOS UMA carve-out | 6 GiB, which leaves 24.7 GiB visible to Linux |
+| BIOS UMA carve-out | 512M (`UMA_SPECIFIED`), which leaves 30.1 GiB visible to Linux. Factory default is 6 GiB (24.7 GiB visible); see [Host settings](#host-settings-outside-the-installer) |
 | OS | Ubuntu 26.04.1, kernel 7.0, Mesa/RADV 26.0.8 |
 | Disk | About 20 GB free needed (15.1 GB model plus the engine) |
 
@@ -42,16 +43,17 @@ bandwidth. Flags, threads and batch sizes barely move it (see
 | Piece | Setting | Status |
 |---|---|---|
 | Model | Inkling 2 Mini **Q4_0** GGUF from [bartowski](https://huggingface.co/bartowski/Inkling-2-Mini-GGUF), 15.1 GB, sha256 `e8a58319...7b9e37` | Proven |
-| Engine | [Unsloth llama.cpp](https://github.com/unslothai/llama.cpp/releases/tag/b12649-mix-c7059d6) `b12649-mix-c7059d6`, `linux-x64-vulkan` prebuilt, sha256 `debe9f92...2abee` | Proven |
-| Backend | Vulkan on Mesa RADV (the distro `mesa-vulkan-drivers`) | Tuning |
-| Slots / context | `--parallel 2`, `-c 65536` (total across slots) | Proven |
-| KV cache | `q8_0` for K and V | Proven |
+| Engine | [llama.cpp](https://github.com/ggml-org/llama.cpp/releases/tag/b12728) `b12728`, `ubuntu-vulkan-x64` prebuilt, sha256 `99b1a7a5...ba4979` | Proven |
+| Backend | Vulkan on Mesa RADV (the distro `mesa-vulkan-drivers`, 26.0.8) with `GGML_VK_ALLOW_GRAPHICS_QUEUE=1` | Proven |
+| Slots / context | `--parallel 2`, `-c 131072` (total across slots, so **64K per slot**) | Proven |
+| KV cache | `f16` for K and V | Proven |
 | Flash attention | `-fa on` | Proven |
 | Offload | `-ngl 99` (whole model on the iGPU) | Proven |
-| Batch | `-b 2048 -ub 256` | Tuning |
+| Batch | `-b 2048 -ub 512` | Proven |
+| Prompt cache | `-cram 2048` (host prompt cache capped at 2 GiB) | Proven |
 | Loading | `--no-host --load-mode mmap` | Proven |
 | Reasoning | `--reasoning off`, `reasoning_effort: none` | Proven |
-| Kernel | `amdgpu.gttsize=20480 ttm.pages_limit=5242880 ttm.page_pool_size=5242880` (20 GiB GTT) via a GRUB drop-in | Tuning |
+| Kernel | `amdgpu.gttsize=28672 ttm.pages_limit=7340032 ttm.page_pool_size=7340032` (28 GiB GTT) via a GRUB drop-in | Proven |
 | CPU power | governor, EPP and platform profile set to `performance` at boot | Proven |
 | GPU access | service user in the `render` and `video` groups, plus a GPU guard | Proven |
 | Service | `openmono-7940hs-llama.service` on port 7474, API key from a 0600 key file | Proven |
@@ -66,9 +68,33 @@ Not used, on purpose:
 - **Strata.** Strata 0.2.20 has no 780M build. Its generic AMD engine caused
   MES queue errors and MODE2 GPU resets on two separate days.
 
+## Host settings outside the installer
+
+Two settings on the reference box are not applied by `install`, because they
+need the BIOS or Secure Boot changes:
+
+- **UMA carve-out 512M.** BIOS, iGPU Configuration = `UMA_SPECIFIED`, size
+  512M. This frees about 5.5 GiB for Linux and is what makes the 28 GiB GTT
+  and 64K per slot fit. On the factory 6 GiB carve-out, install with
+  `OMA_GTT_MIB=20480 OMA_CTX=65536` (32K per slot).
+- **54 W power limit.** Stock firmware runs at 28 W STAPM. With Secure Boot
+  off, the `ryzen_smu` module plus RyzenAdj
+  (`--stapm-limit=54000 --fast-limit=64000 --slow-limit=54000`) at boot gave
+  +5% served speed (16.8 to 17.7 tok/s at 1 user). 65 W added nothing to
+  decode. The chip's own temperature limit is left alone; peak Tctl stayed
+  under 80 C.
+
+Without either one the recipe still runs, just with less free RAM or about
+5% less speed.
+
 ## Results
 
-All runs used llama.cpp `b12649` Vulkan with the full GPU offload above,
+The results tables below were measured on earlier recipes (llama.cpp
+`b12649` Vulkan, `-ub 256`, q8_0 KV, 32K per slot). The current recipe on the
+same box: **466/498** on the full set, **17.8 tok/s** at 1 user, **24.0 total**
+at 2 users (12.4 each), and 64K per slot at the same speed.
+
+Earlier runs used llama.cpp `b12649` Vulkan with the full GPU offload above,
 thinking off. Speed is decode tokens per second on a 512-token answer: one
 user, and the total for two users at once.
 
@@ -95,7 +121,7 @@ of Qwen3.8 27B on long work left under 2 GiB of free RAM.
 
 ### Inkling 2 Q4 sweep, 40 questions
 
-Same flags as the recipe (2 slots, 64K, q8_0 KV). 40 questions catch a real
+Flags of the recipe at the time (2 slots, 32K each, q8_0 KV, b12649). 40 questions catch a real
 drop but cannot separate quants within a point or two.
 
 | Quant | Source | Size | 1 user tok/s | 2 users total (per user) | Score |
@@ -107,10 +133,9 @@ drop but cannot separate quants within a point or two.
 | IQ4_NL | bartowski | 16.1 GB | 14.6 | 20.7 (10.7) | 40/40 |
 | **Q4_0** | bartowski | **15.1 GB** | **16.4** | **22.7 (11.8)** | **39/40** |
 
-Q4_0 is about 22% faster than UD-Q4_K_XL at the same score. A full
-498-question run of Q4_0 is still pending; if it drops more than a point or
-two against UD-Q4_K_XL, the recipe goes back to UD-Q4_K_XL (set
-`OMA_MODEL_REPO`, `OMA_MODEL_FILE`, `OMA_MODEL_SHA256` and `OMA_MODEL_SIZE`).
+Q4_0 is about 22% faster than UD-Q4_K_XL at the same score. The full
+498-question run confirmed it: Q4_0 scored 464/498 with q8_0 KV and 466/498
+with f16 KV, the same as UD-Q4_K_XL (466).
 
 Measured on the live service after the switch: a 600-token answer at
 16.8 tok/s, with 13.4 GiB of RAM still free at idle.
@@ -192,8 +217,8 @@ scripts/7940hs/oma-7940hs.sh check      # add --restart to restart first
 
 - `/health` answers on the port,
 - a request with no key gets HTTP 401 and one with the key gets 200,
-- a 600-token answer comes back, with decode tok/s printed (expect about 16
-  to 17 for one user),
+- a 600-token answer comes back, with decode tok/s printed (expect about 17.5
+  to 18.5 for one user on the full recipe),
 - free RAM stays above 2 GiB during the request,
 - VRAM plus GTT in use is at least `OMA_GPU_GUARD_MIN_MIB` (8000).
 
@@ -228,10 +253,10 @@ setting is a separate drop-in, so `/etc/default/grub` itself is never edited.
 
 ## Caveats
 
-- **BIOS carve-out.** These boxes ship with a 6 GiB UMA frame buffer and a
-  limited BIOS. Linux sees 24.7 GiB, which is why 2 slots of a 27B dense
-  model are tight while Inkling 2 Q4_0 at 2 slots and 64K leaves 11 to 13 GiB
-  free. Different carve-outs have not been tested yet.
+- **BIOS carve-out.** These boxes ship with a 6 GiB UMA frame buffer. The
+  recipe assumes 512M (see [Host settings](#host-settings-outside-the-installer)).
+  At 512M and 2 x 64K f16 KV, about 4.5 GiB of RAM is free at idle and 2.5 GiB
+  at the worst point of a 60K prompt.
 - **Vision is off.** The recipe loads no mmproj. Keep
   `OPENMONO_VISION_ENABLED=0` on agents that use this box.
 - **ROCm and Strata fail on the 780M** (see [Recipe](#recipe)). Do not switch
@@ -240,8 +265,16 @@ setting is a separate drop-in, so `/etc/default/grub` itself is never edited.
   `amdgpu.gttsize=28672` to `/etc/default/grub`. If both are present, this
   profile's drop-in comes later on the kernel command line and its value wins.
   Install warns when it sees that.
-- **Context per slot.** `-c 65536` with 2 slots gives each user about 32K of
-  context.
+- **Context per slot.** `-c` is the total across slots: `-c 131072` with 2
+  slots gives each user 64K. **Do not raise it on a 32 GB box.** 96K per slot
+  (`-c 196608`) dropped under 2 GiB free on a 60K prompt, and 128K per slot
+  (`-c 262144`) ran the kernel out of memory while loading (panic "System is
+  deadlocked on memory", the box needed a power cycle). The GPU buffers are
+  pinned, so the OOM killer cannot free them. 3 slots at 32K each
+  (`--parallel 3 -c 98304`) works: 27.2 tok/s total, 9.4 per user.
+- **Long prompts are slow to read.** Prefill runs at about 145 tok/s at 8K,
+  112 at 32K and 88 at 60K, so a 60K prompt takes about 11 minutes before the
+  first token. Prompt caching makes follow-up turns fast.
 - **Thinking off.** Inkling 2 still writes a short `reasoning_content` with
   reasoning off; the scored runs had the same behavior.
 - **`openmono status` / `openmono logs`** still describe the container. Use
@@ -259,14 +292,15 @@ tweak.
 
 | Area | What is being tried | Result so far |
 |---|---|---|
-| llama.cpp build | upstream ggml-org `b12728` Vulkan; Unsloth `b12675` / `b12676` | b12728: +9% prefill, +1.6% decode (llama-bench). Unsloth newer builds: within 1% |
-| llama.cpp flags | `-ub` 64 to 1024, `-b`, threads 4/8/16, flash attention off | decode stays at about 17.3 tok/s; `-ub` 512 to 1024 adds about 3 to 4% prefill; FA off costs decode |
-| Vulkan env | `GGML_VK_ALLOW_GRAPHICS_QUEUE=1`, `GGML_VK_DISABLE_COOPMAT`, `GGML_VK_DISABLE_INTEGER_DOT` | the two DISABLE flags cut prefill 12 to 20%; graphics queue pending |
-| Mesa / RADV | Mesa 26.3.1 RADV built from source, side by side through `VK_DRIVER_FILES` | pending |
-| Kernel | newer kernel / amdgpu | pending |
-| GTT | 20480 MiB now; 22528 is the next step | 20 GiB is enough for this model |
-| Power | raise the APU power limits with RyzenAdj (`ryzen_smu` module) | pending |
-| BIOS | UMA carve-out size, memory settings | waiting on BIOS screenshots; RAM already runs at 5600 MT/s, the CPU maximum |
+| llama.cpp build | upstream `b12728` vs Unsloth `b12649` / `b12675` / `b12676` | b12728 adopted (+18% prefill, +7% decode with the graphics queue). Unsloth newer builds within 1% |
+| llama.cpp flags | `-ub` 64 to 2048, `-b`, threads 4/8/16, flash attention off | `-ub 512` adopted; 1024 within 1%; threads and `-b` no change; FA off costs decode |
+| Vulkan env | `GGML_VK_ALLOW_GRAPHICS_QUEUE=1`, `GGML_VK_DISABLE_COOPMAT`, `GGML_VK_DISABLE_INTEGER_DOT` | graphics queue adopted (+7% decode); the two DISABLE flags cut prefill 12 to 20% |
+| Mesa / RADV | Mesa 26.3.1 RADV built from source, through `VK_DRIVER_FILES` | 465/498, +2% served: under the 3% bar, not adopted |
+| Kernel | mainline 7.3.6 vs 7.0.0-44 | under 1%, not adopted |
+| KV cache | q8_0 vs f16 | f16 adopted (466 vs 464/498, same speed, about 1 GiB more RAM) |
+| Context | 32K, 64K, 96K, 128K per slot | 64K adopted; 96K and 128K do not fit 32 GB (see [Caveats](#caveats)) |
+| Power | RyzenAdj 28 / 45 / 54 / 65 W | 54 W kept (+5%); decode flat past 45 W |
+| Reasoning | Inkling 2 reasoning on (low / medium effort) | pending |
 
 Free-form knobs for these tests are already wired in: `OMA_EXTRA_ARGS`
 (extra `llama-server` flags), `OMA_ENV_EXTRA` (extra env such as
