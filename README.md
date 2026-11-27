@@ -10,7 +10,7 @@
 <br>
 
 <div align="center">
-  <a href="#quickstart">Quickstart</a> · <a href="#free-course--get-started-with-oma">Free OMA Course</a> · <a href="#whats-shipping">What's shipping</a> · <a href="#how-it-compares">How it compares</a> · <a href="#whats-inside">What's inside</a> · <a href="#agent-host-whole-machine-mode">Agent Host</a> · <a href="#supported-hardware">Hardware</a> · <a href="#pick-your-model">Models</a> · <a href="#docs">Docs</a> · <a href="ROADMAP.md">Roadmap</a> · <a href="#contributing">Contributing</a>
+  <a href="#quickstart">Quickstart</a> · <a href="#free-course--get-started-with-oma">Free OMA Course</a> · <a href="#whats-shipping">What's shipping</a> · <a href="#how-it-compares">How it compares</a> · <a href="#whats-inside">What's inside</a> · <a href="#agent-host-whole-machine-mode">Agent Host</a> · <a href="#supported-hardware">Hardware</a> · <a href="#pick-your-model">Models</a> · <a href="#docs">Docs</a> · <a href="docs/ROADMAP.md">Roadmap</a> · <a href="#contributing">Contributing</a>
 </div>
 
 <br>
@@ -295,7 +295,7 @@ Stuck on setup, or want OpenMono on your own servers? We install and support pri
 
 <table width="100%" style="border-collapse:collapse;background:#111111;border:1px solid #232323;border-radius:4px;">
   <tr>
-    <td width="30%" style="padding:9px 16px;border-bottom:1px solid #1A1A1A;border-right:1px solid #232323;"><a href="ROADMAP.md"><code style="font-size:12px;">Roadmap</code></a></td>
+    <td width="30%" style="padding:9px 16px;border-bottom:1px solid #1A1A1A;border-right:1px solid #232323;"><a href="docs/ROADMAP.md"><code style="font-size:12px;">Roadmap</code></a></td>
     <td style="padding:9px 16px;border-bottom:1px solid #1A1A1A;"><sub style="color:#C8C8C0;">What's next</sub></td>
   </tr>
   <tr>
@@ -339,7 +339,7 @@ Stuck on setup, or want OpenMono on your own servers? We install and support pri
     <td style="padding:9px 16px;border-bottom:1px solid #1A1A1A;"><sub style="color:#C8C8C0;">Chat panel for VS Code 1.85+ · also works in Cursor · <a href="https://marketplace.visualstudio.com/items?itemName=StartupHakk.openmono-agent">Marketplace</a></sub></td>
   </tr>
   <tr>
-    <td style="padding:9px 16px;border-right:1px solid #232323;"><a href="CONTRIBUTING.md"><code style="font-size:12px;">Contributing</code></a></td>
+    <td style="padding:9px 16px;border-right:1px solid #232323;"><a href="docs/CONTRIBUTING.md"><code style="font-size:12px;">Contributing</code></a></td>
     <td style="padding:9px 16px;"><sub style="color:#C8C8C0;">How to contribute</sub></td>
   </tr>
 </table>
@@ -361,7 +361,7 @@ Stuck on setup, or want OpenMono on your own servers? We install and support pri
     <sub style="color:#C8C8C0;">OpenMono is early and moving fast. Contributions are welcome — new tools, providers, LSP servers, playbooks, bug fixes, or docs.</sub>
   </td></tr>
   <tr><td style="padding:0 18px 14px;">
-    <a href="CONTRIBUTING.md"><code style="font-size:11px;">→ Read the contributing guide before opening a PR</code></a>
+    <a href="docs/CONTRIBUTING.md"><code style="font-size:11px;">→ Read the contributing guide before opening a PR</code></a>
   </td></tr>
 </table>
 
@@ -376,7 +376,7 @@ Stuck on setup, or want OpenMono on your own servers? We install and support pri
 <br>
 
 <div align="center">
-  <a href="https://openmonoagent.ai/contact"><strong>Need Help?</strong></a> · <a href="CONTRIBUTING.md"><strong>Contributing</strong></a>
+  <a href="https://openmonoagent.ai/contact"><strong>Need Help?</strong></a> · <a href="docs/CONTRIBUTING.md"><strong>Contributing</strong></a>
 </div>
 
 <br>

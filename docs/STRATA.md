@@ -151,7 +151,7 @@ STRATA_FAMILY=qwen STRATA_MODEL=IQ2_XS STRATA_VISION=yes INFERENCE_PORT=7474 \
 
 ## Agent configuration
 
-Single-box (`config-examples/strata-single-box.settings.json`):
+Single-box (`docs/config-examples/strata-single-box.settings.json`):
 
 ```bash
 openmono config set llm.endpoint http://localhost:7474

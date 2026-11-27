@@ -563,7 +563,8 @@ cmd_help() {
     echo "  WORKSPACE=/my/repo openmono agent # Run agent against a specific repo"
     echo "  openmono graph /path/to/project   # Index a project for code search"
     echo ""
-    echo "Dual-box walkthrough: see setup/readme.md"
+    echo "Dual-box walkthrough: docs/SETUP.md#dual-box-setup"
+    echo "Setup scripts: scripts/install_prereqs.sh, scripts/install.sh; graph: scripts/setup-graph.sh"
     echo ""
 }
 
