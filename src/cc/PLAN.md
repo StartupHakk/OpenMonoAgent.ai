@@ -6,7 +6,7 @@ Reviewed against `main` `e4b8eae` and the ACP server in `src/OpenMono.Cli/Acp/`.
 
 ## 1. First slice
 
-A person can open a browser on the machine that runs the panel, finish a short wizard, point the agent at a model, pick one project folder, and chat. The same page can start and stop the model where the `openmono` CLI exists, and can show health, logs, and the install log. Windows runs the agent side only. The VS Code extension, `scripts/acp-smoke.sh`, and `OpenMono.HostBridge` keep working against the same port without sending any new header.
+A person can open a browser on the machine that runs the panel, finish a short wizard, point the agent at a model, pick one project folder, and chat. The same page can start and stop the model where the `openmono` CLI exists, and can show health and logs. The panel is installed last: it expects OpenMono to be installed already and never runs setup. If the agent is not installed, `openmono panel` exits with "OpenMono is not installed on this computer. Install it first, then start the panel." Windows runs the agent side only. The VS Code extension, `scripts/acp-smoke.sh`, and `OpenMono.HostBridge` keep working against the same port without sending any new header.
 
 Out of the first slice, on purpose: pairing codes, the relay card, upgrade Apply, the file tree, the playbook picker, a task queue, schedules, and more than one project. Those are later tasks in section 9. The HTTP shapes for them are still specified in [api.md](api.md) so the first routes do not have to be renamed.
 
@@ -128,7 +128,7 @@ Order of middleware, first match wins:
 
 - Sets `acp.Enabled = true` and takes the existing `--acp-only` branch (no TUI).
 - Default port stays 7475. `--acp-port` still overrides.
-- Does not set `BindAllInterfaces`. Docker's current `BindAllInterfaces = runningInDocker` is skipped when `--panel` is set. The panel binds loopback even inside a container. Publishing the container port onto `0.0.0.0` on the host is an operator choice in Compose, and LAN mode (section 7) is the only way the process itself listens beyond loopback.
+- Does not change binding. Docker's current `BindAllInterfaces = runningInDocker` stays as it is, so inside a container the panel listens the same way ACP does today and the host reaches it through the published port, exactly like the VS Code extension. Outside a container it binds loopback.
 - Writes or updates `~/.openmono/panel.json` with the chosen port. Mode `0600` on Unix. On Windows, an ACL that grants the current user only, as close as `File.SetUnixFileMode` allows; if the runtime cannot restrict the ACL, the file stays in the user profile and the log says so.
 - Does not open a browser itself. The tray, the systemd unit, and the bash `panel` command do that, and only when stdout is a desktop session (`DISPLAY` or `WAYLAND_DISPLAY` on Linux, an interactive user on Windows, not an SSH session without those variables).
 
@@ -162,9 +162,6 @@ The dictionary is fixed in source. A request whose `command` is not a key return
 
 | Name | Argv | Confirm | Windows |
 |---|---|---|---|
-| `setup-agent` | `openmono setup --agent` | no | no, the Windows installer is the exe, not this command |
-| `setup-inference` | `openmono setup --inference` plus `--gpu` or `--cpu` from the detected enum, not from free text | no | no |
-| `setup-full` | `openmono setup --full` with the same gpu enum | no | no |
 | `start-inference` | `openmono start` | no | no |
 | `stop-inference` | `openmono stop` | yes | no |
 | `restart-inference` | `openmono restart` | yes | no |
@@ -183,7 +180,7 @@ Environment passed to the child, and nothing else from the panel process environ
 
 Working directory is the repository root the `openmono` bash script already uses (`REPO_DIR`), not the project folder. The project folder is the agent's `--workdir`, which is a different process.
 
-One job at a time per machine. A second `POST /api/v1/panel/jobs` while one is running returns `409` `{ "error": "job_busy", "job_id" }`. Timeout is 15 minutes for setup (model download) and 2 minutes for start/stop/status. On timeout the child is killed and the job state is `failed` with `detail: "timed out"`.
+One job at a time per machine. A second `POST /api/v1/panel/jobs` while one is running returns `409` `{ "error": "job_busy", "job_id" }`. Timeout is 2 minutes for start/stop/status and 15 minutes for upgrade (it rebuilds the agent image). On timeout the child is killed and the job state is `failed` with `detail: "timed out"`.
 
 Confirm flow for `Confirm == true`:
 
@@ -193,11 +190,9 @@ Confirm flow for `Confirm == true`:
 
 Stdout and stderr are decoded as UTF-8 with replacement, split on newlines, and appended to the job log with a `seq`. ANSI CSI sequences are stripped before storage. The log ring is 5,000 lines.
 
-A setup script that asks for a reboot (NVIDIA driver) is detected by the existing installer message "reboot required" on stdout, or by exit code if the installer grows one. Job state becomes `needs_reboot`. The panel does not reboot the machine.
-
 On Windows every row above returns `501` `{ "error": "not_on_windows", "detail": "The model runs on another computer." }` except the in-process operations in [api.md](api.md) (`model`, `project`, `agent` start/stop). The Windows panel does not look for a bash `openmono`.
 
-Finding the CLI: `PanelCommandRunner` runs the `openmono` next to the published binary, then `~/openmono.ai/openmono`, then `PATH`. If none exist, jobs return `424` `{ "error": "cli_missing", "detail": "OpenMono is not installed on this computer." }`. The wizard then shows Install only where the platform can actually install (Linux and macOS). On Windows, Install is the installer that just ran; the page does not offer it again.
+Finding the CLI: `PanelCommandRunner` runs the `openmono` next to the published binary, then `~/openmono.ai/openmono`, then `PATH`. If none exist, jobs return `424` `{ "error": "cli_missing", "detail": "OpenMono is not installed on this computer." }`. The page shows that error. It never offers to install.
 
 ## 5. Agent-host pairing
 
@@ -269,7 +264,7 @@ Implemented in `LoopbackGuardMiddleware` for every request, and in `PanelCommand
 1. Kestrel binds `ListenLocalhost` unless `panel.json` `bind` is `lan`.
 2. `Host` must be `127.0.0.1`, `localhost`, or `[::1]`, with the actual port. Anything else is `421` with an empty body. In LAN mode the allowed hosts are those plus the configured names in `panel.json` `allowed_hosts`.
 3. If `Origin` is present it must equal `http://127.0.0.1:{port}` or `http://localhost:{port}` (and `https` when TLS is on). Else `403` `{ "error": "bad_origin" }`.
-4. If `Origin` is absent, the peer address must be loopback. Else `401`. This keeps the extension, curl, and the host bridge working on loopback, and rejects a LAN client that is not a browser and has no token.
+4. If `Origin` is absent, the request is not from a browser page and passes the Origin and header checks. Do not check the peer address: inside Docker the extension's requests arrive from the bridge network, not loopback. This keeps the extension, curl, and the host bridge working unchanged. LAN mode's bearer token (rule 6) is what stops a non-browser client on the network.
 5. Browser mutations (`POST`, `PUT`, `DELETE`) that carried an `Origin` must also send `X-OpenMono-Request: 1`. A cross-site form cannot set that header. Missing header is `403` `{ "error": "missing_request_header" }`.
 6. LAN mode requires `Authorization: Bearer {token}` on every `/api/` request. Compare in constant time. The token is created when LAN mode is turned on, shown once in the rotate response, and stored as SHA-256 in `panel.json`. GET never returns the token.
 7. `wwwroot` and `/api/v1/discovery` do not contain the token, the inference key, or provider keys.
@@ -318,7 +313,7 @@ Each task is one PR-sized change. Acceptance is the list under it. Do them in or
 **1.2 Loopback guard. S.**
 
 - The five rules in section 7 that apply without LAN mode are enforced on `/api/v1/*`.
-- Extension-style calls (no Origin, loopback peer) still create a session and run a turn.
+- Extension-style calls (no Origin, from loopback or from the Docker bridge network) still create a session and run a turn.
 - `LoopbackGuardTests` pass.
 
 **1.3 Panel library and `--panel`. M.**
@@ -338,13 +333,12 @@ Each task is one PR-sized change. Acceptance is the list under it. Do them in or
 **1.5 Jobs for the machines that have the CLI. M.**
 
 - The command table in section 4 is the allowlist.
-- Setup, start, stop, and upgrade-check stream logs on `GET /api/v1/panel/jobs/{id}/logs`.
+- Start, stop, and upgrade-check stream logs on `GET /api/v1/panel/jobs/{id}/logs`.
 - Windows returns `not_on_windows` for those commands.
-- A reboot line in stdout sets `needs_reboot`.
 
 **1.6 SPA: shell, wizard, connect, project, health, logs. M.**
 
-- Screens and states in [screens.md](screens.md) for the wizard, connect, project picker, health strip, install log, and logs exist.
+- Screens and states in [screens.md](screens.md) for the wizard, connect, project picker, health strip, and logs exist.
 - The checklist blocks the chat route until the wizard is complete.
 - `client/src/api` is the only `fetch` site. A unit test fails the build if another file imports `fetch`.
 
@@ -393,11 +387,9 @@ These wait on `AgentSession` and `openmono agent --headless` from the unmerged f
 |---|---|---|
 | Detach changes the extension | A client that drops the socket and expects the turn to stop | Opt-in header. Old tests stay. Smoke script stays header-less |
 | CLI dependency cycle | Panel library needs `AcpSession` | Session types stay in the CLI. The library takes `AppConfig` and delegates, it does not reference `OpenMono.Cli` |
-| Setup scripts are interactive | `OPENMONO_NONINTERACTIVE=1` still prompts on some paths | Job log shows the prompt. The task is failed, not hung, because of the timeout. A follow-up makes that prompt honor the env flag. Do not block the chat MVP on a fully silent NVIDIA install |
 | Self-upgrade kills the page | `openmono upgrade` rebuilds and the unit restarts | Phase 2 Apply is disabled during a turn. The SPA polls bootstrap until `revision` changes |
 | Windows has no `openmono` bash | Someone wires the Linux job table into the exe | `WindowsSupported` is false for those rows and tested |
 | `wwwroot` missing in publish | The exe starts and every route is the API only | Publish test asserts `index.html` is next to the binary. The process logs "panel UI missing" and still serves `/api` so the extension is not broken |
-| Reboot during driver install | The unit does not come back | `needs_reboot` state. The installer text already tells the person to run setup again. The unit is enabled before the reboot |
 | Pairing code guessed | 8 characters from 32 symbols is not a password for the whole machine | Single use, 10 minutes, rate limit, and the response is the inference key only, not a panel admin token. LAN mode still has its own bearer |
 
 ## 11. Open questions

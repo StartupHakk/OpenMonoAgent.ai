@@ -415,15 +415,15 @@ Allowed `command` values are the table in [PLAN.md](PLAN.md) section 4.
 ```json
 {
   "job_id": "job_0123abcd",
-  "command": "setup-inference",
-  "state": "needs_reboot",
+  "command": "start-inference",
+  "state": "succeeded",
   "exit_code": 0,
   "started_at": "2026-11-27T00:00:00.0000000Z",
   "finished_at": null
 }
 ```
 
-`state` is `running`, `succeeded`, `failed`, or `needs_reboot`. `404` unknown id.
+`state` is `running`, `succeeded`, or `failed`. `404` unknown id.
 
 ### `GET /api/v1/panel/jobs/{id}/logs?after={n}`
 

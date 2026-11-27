@@ -1,6 +1,6 @@
 # OpenMonoAgent.ai Control Panel
 
-Design only. This document plans the **OpenMonoAgent.ai Control Panel**: a browser UI that ships with the agent install, talks to the agent through the existing ACP server, and also runs the installs on both sides of a split box. No panel code ships with this document.
+Design only. This document plans the **OpenMonoAgent.ai Control Panel**: a browser UI that ships with the agent install, talks to the agent through the existing ACP server, and manages the agent and the agent-host once they are installed. The panel is installed last. It does not install OpenMono. No panel code ships with this document.
 
 This file used to live at `docs/control-panel-plan.md`. It now lives in `src/cc/` with the rest of the Control Panel. The build-ready spec is [PLAN.md](PLAN.md). The HTTP contract is [api.md](api.md). Screen states are [screens.md](screens.md). Repo paths such as `docs/DEPLOYMENT-MODES.md` are still paths from the repository root.
 
@@ -22,7 +22,7 @@ The agent loop, the tools, the permission engine, and ACP already exist. What a 
 
 Today the ways in are a terminal (`openmono agent`) or the VS Code / Cursor extension. The extension is a sidebar chat client. It connects to ACP on port `7475`, and it expects Docker so it can spawn the agent for the open folder. The Windows entry point in this repo is `install.ps1`: it checks for the .NET 10 SDK, builds `OpenMono.Cli`, and optionally runs `--acp-only`. It then tells the person to open VS Code. There is no Windows service, no tray icon, and no browser. The Linux and macOS installer (`get-openmono.sh` → `openmono setup`) is a shell questionnaire with three roles (both, inference, agent). Inference start/stop, the relay, and upgrades are more shell commands. `docs/DEPLOYMENT-MODES.md` says there is no systemd unit for the agent; the suggestion is tmux.
 
-The Control Panel is the third client of the same agent, and the first one that can also install and operate the machines. It should be easier than the CLI and easier than the extension: one local web page for setup, for chatting, and for "is the GPU box up?"
+The Control Panel is the third client of the same agent, and the first one that can also operate the machines. It should be easier than the CLI and easier than the extension: one local web page for configuring, for chatting, and for "is the GPU box up?"
 
 ```mermaid
 flowchart LR
@@ -94,22 +94,18 @@ Gaps that matter for a browser, measured against this code:
 
 `scripts/acp-smoke.sh` is the executable description of a healthy server: discovery, lock file, create session, one turn that ends in `event: done`.
 
-### 2.2 Installs the panel has to drive
+### 2.2 Commands the panel drives
 
-The shell CLI already has the operations. The panel should call them, not reimplement NVIDIA, Docker, or model download.
+The shell CLI already has the operations. The panel calls them and does not reimplement them. Installing is not one of them: that stays `get-openmono.sh` / `openmono setup` in a terminal, before the panel exists.
 
 | Person's goal | Command today | Where it runs |
 |---|---|---|
-| Install this computer as the model machine | `openmono setup --inference` (`--gpu` / `--cpu`, `--model=`) | Linux, Apple Silicon |
-| Install this computer as the agent only | `openmono setup --agent` | Linux, macOS. Windows is `install.ps1`, which only builds and runs ACP |
-| Install both on one computer | `openmono setup --full` | Linux, Apple Silicon |
 | Start / stop / restart the model | `openmono start`, `stop`, `restart` | Agent-host. Also starts a local model lazily when `llm.endpoint` is loopback and `openmono agent` is about to run |
 | Health | `openmono status`, `scripts/healthcheck.sh` | Probes `localhost:7474`. A remote endpoint is still a manual curl |
 | Logs | `openmono logs`, `openmono tunnel logs`, `~/.openmono/logs/host-daemon.log` | Agent-host, plus the host bridge |
 | Update | `openmono upgrade` (`--check` to preview). Fast-forwards the git checkout and rebuilds the agent image. Refuses a dirty tree. Not a git checkout means re-run `get-openmono.sh` | Linux/macOS checkout |
 | Point the agent at the model | `openmono config set llm.endpoint` and `llm.api_key` | Agent box. Keys also live in `docker/.env` as `LLAMA_API_KEY` and are mirrored into settings |
 | Reach a GPU box across the internet | `openmono tunnel setup` then `start` / `stop` / `status` / `logs` | Agent-host. Setup hands a code to [app.openmonoagent.ai](https://app.openmonoagent.ai); the endpoint and key come back by email. Linux uses an `frpc` systemd unit. Direct LAN and an SSH tunnel are the other two options in `docs/DEPLOYMENT-MODES.md` |
-| Optional search and fetch | `openmono setup gateway`, `setup search`, `setup scraper` | Agent-host. Caddy on the inference box fans `/v1`, `/search`, and `/scrape` |
 | Whole-machine commands | `openmono host daemon\|stop\|status\|requests\|approve\|deny` | The agent box, not the GPU box. Pair secret in `~/.openmono/host-bridge.json` mode `0600` |
 
 Settings load order is documented in `docs/CONFIG.md`: built-in defaults, `~/.openmono/settings.json`, project `.openmono/settings.json`, `--config`, environment, CLI flags. `openmono config` writes only the user file. API keys must stay there. The panel API returns `set: true`, never the key.
@@ -177,7 +173,7 @@ ACP is a good fit for the chat, the approvals, the diffs, and the session list. 
 
 **Chat and sessions** stay on the routes in section 2.1. The browser is a third ACP client, next to the extension and the host bridge.
 
-**Machine management** is a new allowlisted API on the same Kestrel host, prefix `/api/v1/panel/`. It starts the existing CLI as a subprocess (`openmono status`, `start`, `stop`, `logs`, `upgrade --check`, `setup` with the env flags the installer already honors: `OPENMONO_ROLE`, `OPENMONO_GPU`, `OPENMONO_CPU`, `OPENMONO_HOST_BRIDGE`). The handler does not accept a shell string. Each job has an id, a fixed command name, and streamed stdout. Destructive commands (stop the model, rotate the key, upgrade, uninstall) require a second click. `openmono uninstall --deep` is not in the allowlist.
+**Machine management** is a new allowlisted API on the same Kestrel host, prefix `/api/v1/panel/`. It starts the existing CLI as a subprocess (`openmono status`, `start`, `stop`, `logs`, `upgrade --check`). It never runs `setup`. The handler does not accept a shell string. Each job has an id, a fixed command name, and streamed stdout. Destructive commands (stop the model, rotate the key, upgrade) require a second click. `openmono uninstall --deep` is not in the allowlist.
 
 Why this lives in the existing .NET process:
 
@@ -248,7 +244,7 @@ AGPL: one person operating their own panel is ordinary use. A modified panel tha
 
 ---
 
-## 6. Managing both installs from the browser
+## 6. Managing both machines from the browser
 
 The panel's home page depends on the role of **this** machine. A single-box install shows both cards. A Windows laptop shows the agent card and a connection card. A GPU server shows the agent-host card.
 
@@ -256,7 +252,6 @@ The panel's home page depends on the role of **this** machine. A single-box inst
 
 | Action | What the person sees | What the panel runs |
 |---|---|---|
-| Install | A progress log, then "ready" or "the computer needs a restart" | Linux/macOS: `openmono setup --agent` non-interactively. Windows: the published installer, then this page. Optional host bridge stays a named advanced switch (`OPENMONO_HOST_BRIDGE=1`), default off |
 | Configure | Model source (section 6.3), project folder, plan/build default | Writes `~/.openmono/settings.json` through the same keys `openmono config` writes. Does not echo secrets back |
 | Start / stop | One button. Busy state if a job is already running | Starts `openmono agent --acp-only --workdir <folder>`. Stop is SIGINT, the path `Program.cs` already handles. On Windows the panel process is the agent |
 | Health | Green only if discovery returns and the model probe succeeds | `GET /api/v1/discovery` plus a short request to `llm.endpoint` `/health` or `/v1/models` with the stored key |
@@ -271,7 +266,6 @@ This card exists on Linux and Apple Silicon. It is absent on Windows, with the s
 
 | Action | What the person sees | What the panel runs |
 |---|---|---|
-| Install | "This computer will run the model." GPU yes/no is detected. The model choice is a short list in plain language (the installer already picks from VRAM and RAM; `--options` remains the escape hatch) | `openmono setup --inference` or `--full`. A new NVIDIA driver still needs a reboot. The page stops, says restart, and the unit comes back and resumes. It does not hide a reboot behind a spinner |
 | Configure | Port `7474`, parallel slots, vision on/off, API key rotate | `scripts/apply_settings.sh`. Status already reports desired-vs-applied drift; the page shows that drift and offers Start to apply it |
 | Start / stop / restart | The model, and separately the optional search and scraper containers | `openmono start`, `stop`, `restart`. Stop asks for confirmation because every agent pointed here will stall |
 | Health | Backend name, model id, context, VRAM, whether settings are applied | `openmono status --json` once it exists. Until then the probes `openmono status` already makes: `/health`, `/v1/models`, `nvidia-smi` |
@@ -279,7 +273,7 @@ This card exists on Linux and Apple Silicon. It is absent on Windows, with the s
 | Update | Same preview as the agent card. Strata's own updater stays a second, labeled action so a model-engine update is not confused with an agent update | `openmono upgrade`. Strata: `scripts/strata.sh update` only from an advanced row |
 | Relay | Status of `frpc`, the public endpoint, start/stop | `openmono tunnel status\|start\|stop\|logs`. First-time signup stays on `app.openmonoagent.ai` (the code and the email are that site's flow). The panel then has two fields: endpoint and key. Rotate key is a confirmed button (`openmono tunnel rotate-key`) |
 
-Search and scrape (`setup search`, `setup scraper`, the Caddy gateway) are an "Extras" row on this card, off by default. They are how `WebSearch` and `WebFetch` stay on the operator's machine. They are not required to chat.
+Search and scrape (the Caddy gateway) are an "Extras" row on this card when they are installed. Installing them stays `openmono setup search` / `setup scraper` in a terminal. They are how `WebSearch` and `WebFetch` stay on the operator's machine. They are not required to chat.
 
 ### 6.3 Connecting the agent to the agent-host
 
@@ -301,7 +295,7 @@ The panel never stores the inference key in the SPA's local storage. The browser
 
 The first page is a wizard, not a JSON editor.
 
-1. **What is this computer?** "It runs the model", "It runs the agent", or "It does both". Windows only offers the agent. The choice maps to `--inference`, `--agent`, or `--full`.
+1. **What is this computer?** "It runs the model", "It runs the agent", or "It does both". Windows only offers the agent. The choice only decides which cards the page shows. It does not install anything.
 2. **Where is the model?** This computer, another computer I own, OpenAI, Anthropic, or Ollama. Local and Strata stay the default when this computer has a GPU the installer recognizes. Hosted providers are the existing `providers.<name>.active` switch. Keys are entered once, then masked.
 3. **Test.** A button. Success is "the model answered". Failure is the sentence from section 6.3.
 4. **Which folder should the agent work in?** Recent folders, a path, and on Windows a native folder dialog from the tray. The wizard refuses the home directory and the drive root unless the person confirms. New chats start in Plan mode, with one sentence: the agent will look and propose before it changes files.
@@ -338,7 +332,7 @@ Slash commands keep working if typed. The buttons cover plan, build, undo, and p
 | Chats | Session list and the open chat |
 | Project | Folder, sandbox vs folder-only, read-only file tree (a panel route that lists and reads files inside `PathGuard`, not a second shell) |
 | Permissions | The allow/deny/ask globs from `settings.json`, edited as rows. Default remains ask |
-| Activity | Jobs the panel started (install, update, start), with their logs |
+| Activity | Jobs the panel started (start, stop, update), with their logs |
 | Settings | Port, bind (loopback / LAN), token rotate, theme, "open source at this revision" |
 
 Logs and health are on the cards and on Activity, not hidden in a debug menu. A red strip on every page links to the failing card.
@@ -352,7 +346,7 @@ The extension already has streaming chat, tool cards, permission prompts, plan/b
 | Priority | Capability | Why it is here | Depends on |
 |---|---|---|---|
 | P0 | Wizard, connect agent to agent-host, chat, approvals, diffs, sessions, health | The reason to exist | ACP as it is, plus a detached event stream |
-| P0 | Install, configure, start, stop, logs, update, for the role of this machine | The owner asked for the panel to run the installs. The commands exist | Allowlisted `openmono` jobs, `status --json` |
+| P0 | Configure, start, stop, logs, update, for the role of this machine | One place to operate what is already installed. The commands exist | Allowlisted `openmono` jobs, `status --json` |
 | P1 | Multi-session list with "waiting for you" on a paused approval | Neither UI shows every paused session at once | Poll `GET /sessions` plus pause state. A push can wait |
 | P1 | Read-only file tree and playbook picker | Makes the diff and `/playbook` features findable | Small panel routes over `PathGuard` and `PlaybookRegistry` |
 | P1 | Pairing code between the two panels | Replaces copying a key out of email or `docker/.env` | Agent-host panel reachable on the LAN, or a shown card when it is not |
@@ -391,23 +385,23 @@ The SPA bundle is part of this AGPL program. A network user of a modified panel 
 
 ## 10. Security
 
-The panel can install software, start a shell-capable agent, and hold API keys. Localhost is not a security boundary by itself: a page the user already has open can call `127.0.0.1`.
+The panel can start and stop services, start a shell-capable agent, and hold API keys. Localhost is not a security boundary by itself: a page the user already has open can call `127.0.0.1`.
 
 | Risk | What goes wrong | Mitigation |
 |---|---|---|
-| CSRF against loopback | Another site issues `POST /api/v1/sessions/{id}/turn` or a panel install job | Bind `127.0.0.1`. Require a custom header on every state-changing request (browsers will not set it on a cross-site form POST). Reject any `Origin` that is not the panel's own origin. A missing `Origin` is allowed only from a loopback peer, which is how the extension, curl, and the host bridge talk to ACP today |
+| CSRF against loopback | Another site issues `POST /api/v1/sessions/{id}/turn` or a panel job | Bind `127.0.0.1`. Require a custom header on every state-changing request (browsers will not set it on a cross-site form POST). Reject any `Origin` that is not the panel's own origin. A request with no `Origin` is not from a browser page and is allowed, which is how the extension, curl, and the host bridge talk to ACP today. The sender's address is not checked, because in Docker the extension's requests come from the bridge network |
 | DNS rebinding | An attacker's name resolves to `127.0.0.1` after the browser's check, so the page is "same origin" as the panel | Allow only `Host: 127.0.0.1` and `Host: localhost` (and the configured port). This is the Canvas loopback rule. A reverse proxy hostname has to be listed, the way `OH_ALLOWED_HOSTS` is |
 | Binding all interfaces by accident | Docker already sets `BindAllInterfaces` and `ASPNETCORE_URLS=http://0.0.0.0:7475` | The panel defaults to loopback even inside the container, and the published port on the host stays `127.0.0.1` unless LAN mode is on. LAN mode requires the token and TLS. Discovery does not include the token |
 | Token leakage | Token in a query string, in a log, or in the SPA bundle | Show once, store mode `0600`, exchange for a cookie, never return it from GET. Do not inject it into HTML the way a loopback-only session key can be. When the bind is not loopback, the operator pastes it |
-| A website drives the shell | Approving a tool, or a confused deputy calling panel jobs | Same-origin plus the header check. Install/stop/upgrade/rotate are allowlisted names with a confirm step. No request body is passed to a shell. Sub-agents still cannot approve themselves |
+| A website drives the shell | Approving a tool, or a confused deputy calling panel jobs | Same-origin plus the header check. Stop/upgrade/rotate are allowlisted names with a confirm step. No request body is passed to a shell. Sub-agents still cannot approve themselves |
 | Host bridge from the chat | `POST .../host` with `action: on` escalates out of the sandbox | Off on the wizard path. The advanced switch still shows `HostConsent` cards, including as-root. The panel does not auto-answer them |
 | Keys in the browser | Inference key or provider key readable from JS later | Post once, store in `settings.json`, return `set: true`. The pairing code is not the key |
 | Relay used as a panel tunnel | The public relay starts forwarding whatever the agent will run | Panel traffic stays off the relay. Only `:7474` is tunneled, which is the current design |
-| Update or install as root | A browser bug becomes a system compromise | The service runs as the user. `sudo` remains inside the existing installer scripts (Docker, systemd), which already ask. The panel surfaces that prompt in the job log. It does not start a root helper of its own |
+| Update as root | A browser bug becomes a system compromise | The service runs as the user. The panel never runs setup, and it does not start a root helper of its own |
 | Multi-user on one token | Everyone who has the LAN token is the operator | One operator per machine in this plan. Real accounts are P3 |
 | AGPL source | A modified network install with no source | Footer link and revision. Out of scope to host other people's agents |
 
-The extension keeps working on loopback: it sends no `Origin`, from `127.0.0.1`, to `/api/v1/...`. The new header rule applies to browser traffic. A native client on loopback is unchanged. A native client on a LAN bind uses the same bearer token.
+The extension keeps working, directly or through Docker: it sends no `Origin` to `/api/v1/...`. The new header rule applies to browser traffic. A native client on loopback is unchanged. A native client on a LAN bind uses the same bearer token.
 
 ---
 
@@ -428,7 +422,7 @@ Done means:
 1. `openmono panel` (and the Windows tray) serves the UI on `127.0.0.1:7475` and opens a browser on a desktop.
 2. The wizard sets the provider or the remote endpoint, stores the key, tests the model, and picks one project folder.
 3. Chat streams, approvals map to the existing pause bodies, diffs undo, sessions list and resume, Plan is the default.
-4. On a machine where `openmono` already exists, the matching card can start, stop, show status, follow logs, and preview an upgrade. Install runs the existing setup command and shows its log, including a reboot stop.
+4. On a machine where `openmono` already exists, the matching card can start, stop, show status, follow logs, and preview an upgrade. The panel never runs setup. If the agent is not installed, it exits with an error.
 5. Windows does the agent card and the connection form. It does not offer local inference.
 6. Loopback `Host` / `Origin` checks are on. LAN bind is off.
 7. The extension and `acp-smoke.sh` still pass against the same port.
@@ -468,14 +462,14 @@ Done means:
 3. **Is "agent-host" the GPU box or `openmono host`?** This document uses the owner's meaning: the inference / relay machine. The host bridge keeps its current name in the UI ("whole-machine access") so the two are not one button.
 4. **Windows service or tray?** Recommendation: a per-user logon task plus a tray. Not LocalSystem. The task has no desktop to click, so the tray is how a person opens the page.
 5. **Can the panel drive host-bridge mode?** Recommendation: not on the default path. An advanced switch may call `POST .../host`, and the consent cards stay mandatory. `--acp-only` plus `--host` stays refused until someone deliberately redesigns that guard.
-6. **Who installs the agent-host the first time?** A browser on the laptop cannot install Ubuntu packages on a server it cannot already reach. The first step on that machine is still `get-openmono.sh` (or the panel unit an admin starts). After that, install-the-model, start, stop, logs, and the connection card are the page. Remote bare-metal install over SSH is not in this plan.
+6. **Who installs the agent-host the first time?** A browser on the laptop cannot install Ubuntu packages on a server it cannot already reach. The first step on that machine is still `get-openmono.sh` (or the panel unit an admin starts). After that, start, stop, logs, and the connection card are the page. Remote bare-metal install over SSH is not in this plan.
 7. **Pairing when the two panels cannot route to each other.** Recommendation: show the endpoint and a one-time key reveal on the agent-host screen. Do not invent a cloud rendezvous for the panel.
 8. **Should upgrade be allowed to run from the page while a chat is in flight?** Recommendation: no. The button is disabled with "a chat is running" until the turn ends or the person stops it.
 9. **Sandbox default when Docker is missing on Windows.** Recommendation: `PathGuard` on the chosen folder, with the one-line warning. Do not block the wizard on Docker Desktop.
-10. **Does the panel replace the extension?** Recommendation: no. The extension stays the in-editor client. Both speak ACP. The panel is the install and the out-of-editor client.
+10. **Does the panel replace the extension?** Recommendation: no. The extension stays the in-editor client. Both speak ACP. The panel is the out-of-editor client.
 
 ---
 
 ## 13. Recommendation
 
-Ship the OpenMonoAgent.ai Control Panel as a static React app inside the agent process that already serves ACP on `127.0.0.1:7475`. Chat, approvals, diffs, and sessions use the protocol the VS Code extension uses. Install, start, stop, status, logs, update, and "connect the agent to the agent-host" are allowlisted calls to the `openmono` CLI this repo already has, with a Windows agent-only path that writes settings and starts ACP in-process. Keep loopback as the default, treat DNS rebinding and localhost CSRF as launch blockers, and leave Agent Canvas's cloud, marketplace, automations product, and `elkjs` dependency out. The first slice a non-technical person can use is: open the browser, point it at the model computer, pick a folder, and talk to the agent, with start, stop, health, and logs on the same page.
+Ship the OpenMonoAgent.ai Control Panel as a static React app inside the agent process that already serves ACP on `127.0.0.1:7475`. Chat, approvals, diffs, and sessions use the protocol the VS Code extension uses. Start, stop, status, logs, update, and "connect the agent to the agent-host" are allowlisted calls to the `openmono` CLI this repo already has, with a Windows agent-only path that writes settings and starts ACP in-process. Keep loopback as the default, treat DNS rebinding and localhost CSRF as launch blockers, and leave Agent Canvas's cloud, marketplace, automations product, and `elkjs` dependency out. The first slice a non-technical person can use is: open the browser, point it at the model computer, pick a folder, and talk to the agent, with start, stop, health, and logs on the same page.

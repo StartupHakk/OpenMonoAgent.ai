@@ -13,7 +13,6 @@ Visible on every screen after the process is up.
 | `loading` | A blank main region and the word "Connecting". Bootstrap has not returned. |
 | `down` | "The panel is not answering." Retry calls `GET /api/v1/panel/bootstrap` again. |
 | `ready` | Health strip plus the current screen. |
-| `reboot` | A banner above everything: "Restart this computer, then open this page again." Shown when the latest job `state` is `needs_reboot`. The banner stays until a later health check shows the model `up` or the person dismisses it after reboot. |
 
 The health strip is five dots, each `up` (green), `down` (red), `absent` (grey), or `unknown` (grey, while the health request is in flight).
 
@@ -29,7 +28,7 @@ The health strip is five dots, each `up` (green), `down` (red), `absent` (grey),
 
 ## Setup wizard
 
-Shown when `wizard_complete` is false. Four steps. Back is allowed until Install has started. The checklist in the sidebar is the same four steps and is removed when the wizard finishes.
+Shown when `wizard_complete` is false. Three steps. Back is always allowed. The checklist in the sidebar is the same three steps and is removed when the wizard finishes.
 
 ### Step 1 — This computer
 
@@ -39,28 +38,13 @@ Shown when `wizard_complete` is false. Four steps. Back is allowed until Install
 | `saving` | The Next button is disabled. |
 | `error` | PUT of the role failed. The choices stay. |
 
-The choice writes `role` on bootstrap via the model/project flow's stored panel.json. It does not start an install by itself.
+The choice writes `role` on bootstrap via the model/project flow's stored panel.json. It only decides which cards the page shows. The panel never installs anything.
 
-### Step 2 — Install
-
-Skipped when the role's software is already present: `cli_present` and, for inference or full, a later health `inference_process.state` of `up` or `down` (installed but stopped still counts as present). Windows agent role skips this step because the installer already ran.
-
-| State | What the person sees |
-|---|---|
-| `ready` | "Install OpenMono on this computer." One Install button. |
-| `running` | The job log, auto-scrolled, and a disabled Install button. |
-| `needs_reboot` | The log plus "Restart this computer, then open this page again." No other button. |
-| `failed` | The log plus the job's last stderr line and a Retry button. |
-| `cli_missing` | On Linux or macOS, the same Install button. On Windows this state does not appear. |
-| `not_supported` | Windows if a bug asked for inference install: "The model runs on another computer." |
-
-Install starts `setup-agent`, `setup-inference`, or `setup-full` from the step 1 choice.
-
-### Step 3 — Connect the model
+### Step 2 — Connect the model
 
 This is the connect screen, embedded in the wizard and available later from the health strip. See the next section. The wizard cannot advance while the last test is not `ok`.
 
-### Step 4 — Project folder
+### Step 3 — Project folder
 
 See the project picker. Finish writes `wizard_complete: true` only after the project PUT returns `200` and the model test is `ok`. Finish then navigates to a new empty chat.
 
@@ -209,9 +193,7 @@ Route `/logs?source=`.
 
 Source picker: "This page", "Agent", and, when `inference_supported`, "Model".
 
-## Install log
-
-Not a separate route. It is the `running`, `failed`, and `needs_reboot` states of wizard step 2, and the same component on the agent-host card after the wizard.
+## Agent-host card
 
 The agent-host card (role `inference` or `full`, and `inference_supported`):
 
