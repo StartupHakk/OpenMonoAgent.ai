@@ -289,7 +289,7 @@ curl -sf http://localhost:7474/health
 ```
 
 `~/.openmono/settings.json` on this box points at local inference (see
-`config-examples/single-box.settings.json`):
+`docs/config-examples/single-box.settings.json`):
 
 ```jsonc
 {
@@ -426,7 +426,7 @@ openmono config set llm.endpoint http://<INFERENCE_HOST>:7474
 openmono config set llm.api_key <LLAMA_API_KEY>
 ```
 
-(`config-examples/split-agent-box.settings.json` shows the same two keys as a
+(`docs/config-examples/split-agent-box.settings.json` shows the same two keys as a
 file. `<INFERENCE_HOST>` is the inference box's LAN/VPN address;
 `<LLAMA_API_KEY>` is the value of `LLAMA_API_KEY` in the inference box's
 `docker/.env`. Both are placeholders - no real secrets are checked in.)

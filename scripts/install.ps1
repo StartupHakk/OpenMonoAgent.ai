@@ -6,10 +6,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$csproj = Join-Path $PSScriptRoot "src/OpenMono.Cli/OpenMono.Cli.csproj"
+# This file lives in <repo>/scripts. The repo root is its parent, so the
+# script finds the project no matter which directory it is launched from.
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$csproj = Join-Path $repoRoot "src/OpenMono.Cli/OpenMono.Cli.csproj"
 
 if (-not (Test-Path $csproj)) {
-    Write-Error "Could not find $csproj. Run this script from the cloned 'public' directory."
+    Write-Error "Could not find $csproj. scripts/install.ps1 must stay in the OpenMono repository's scripts directory."
     exit 1
 }
 
